@@ -1,0 +1,455 @@
+/**
+ * @file phase_change.cu
+ * @brief Implementation of phase change solver using enthalpy method
+ */
+
+#include "physics/phase_change.h"
+#include "physics/material_properties.h"
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+#include <cmath>
+#include <stdexcept>
+
+namespace lbm {
+namespace physics {
+
+// Device constant memory for material properties (defined in material_database.cu)
+// No need to declare here - already declared in material_properties.h
+
+//==============================================================================
+// CUDA Kernels
+//==============================================================================
+
+/**
+ * @brief Compute enthalpy from temperature
+ *
+ * H = ρ_ref·cp_ref·T + fl(T)·ρ_ref·L_fusion
+ *
+ * We use reference density (solid) for consistency in Newton solver
+ *
+ * Units check:
+ *   [J/m³] = [kg/m³]·[J/(kg·K)]·[K] + [1]·[kg/m³]·[J/kg]
+ *   [J/m³] = [J/m³] + [J/m³] ✓
+ */
+__global__ void computeEnthalpyFromTemperatureKernel(
+    const float* temperature,
+    float* enthalpy,
+    float* liquid_fraction,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    float T = temperature[idx];
+
+    // Compute liquid fraction
+    float fl = d_material.liquidFraction(T);
+
+    // Use solid density and cp as reference for enthalpy calculation
+    // This ensures consistency with the Newton solver
+    float rho_ref = d_material.rho_solid;
+    float cp_ref = d_material.cp_solid;
+
+    // Compute total enthalpy: H = ρ_ref·cp_ref·T + fl·ρ_ref·L_fusion
+    // Units: [J/m³] = [kg/m³]·[J/(kg·K)]·[K] + [kg/m³]·[J/kg]
+    float H = rho_ref * cp_ref * T + fl * rho_ref * d_material.L_fusion;
+
+    enthalpy[idx] = H;
+    liquid_fraction[idx] = fl;
+}
+
+/**
+ * @brief Solve for temperature from enthalpy using Newton-Raphson
+ *
+ * We need to solve: H = ρ_ref·cp_ref·T + fl(T)·ρ_ref·L_fusion
+ * for T given H.
+ *
+ * Define: f(T) = ρ_ref·cp_ref·T + fl(T)·ρ_ref·L_fusion - H = 0
+ *
+ * Newton iteration: T_new = T_old - f(T_old)/f'(T_old)
+ *
+ * where f'(T) = ρ_ref·cp_ref + (dfl/dT)·ρ_ref·L_fusion
+ *       dfl/dT = 1/ΔT_melt in mushy zone, 0 otherwise
+ *
+ * IMPORTANT: We use solid properties as reference for consistency
+ */
+__global__ void solveTemperatureFromEnthalpyKernel(
+    const float* enthalpy,
+    float* temperature,
+    float* liquid_fraction,
+    int* converged,
+    float tolerance,
+    int max_iterations,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    float H_target = enthalpy[idx];
+    float T = temperature[idx];  // Use current T as initial guess
+
+    // Use solid properties as reference (consistent with H calculation)
+    float rho_ref = d_material.rho_solid;
+    float cp_ref = d_material.cp_solid;
+
+    // Determine which phase we're likely in based on enthalpy
+    // H_solidus = rho*cp*T_solidus
+    // H_liquidus = rho*cp*T_liquidus + rho*L
+    float H_solidus = rho_ref * cp_ref * d_material.T_solidus;
+    float H_liquidus = rho_ref * cp_ref * d_material.T_liquidus + rho_ref * d_material.L_fusion;
+
+    // Better initial guess if current T is far off
+    if (H_target < H_solidus) {
+        // Solid phase: H = rho*cp*T => T = H/(rho*cp)
+        T = H_target / (rho_ref * cp_ref);
+    } else if (H_target > H_liquidus) {
+        // Liquid phase: H = rho*cp*T + rho*L => T = (H - rho*L)/(rho*cp)
+        T = (H_target - rho_ref * d_material.L_fusion) / (rho_ref * cp_ref);
+    } else {
+        // Mushy zone: use bisection for initial guess
+        T = (d_material.T_solidus + d_material.T_liquidus) / 2.0f;
+    }
+
+    // Newton-Raphson iteration
+    bool conv = false;
+    for (int iter = 0; iter < max_iterations; ++iter) {
+        // Compute current liquid fraction
+        float fl = d_material.liquidFraction(T);
+
+        // Compute f(T) = ρ_ref·cp_ref·T + fl·ρ_ref·L - H
+        float H_current = rho_ref * cp_ref * T + fl * rho_ref * d_material.L_fusion;
+        float f = H_current - H_target;
+
+        // Check convergence
+        if (fabsf(f) < tolerance * rho_ref * cp_ref) {
+            conv = true;
+            break;
+        }
+
+        // Compute derivative f'(T) = ρ_ref·cp_ref + (dfl/dT)·ρ_ref·L
+        float dfl_dT = 0.0f;
+        if (d_material.isMushy(T)) {
+            // In mushy zone: dfl/dT = 1/(T_liquidus - T_solidus)
+            dfl_dT = 1.0f / (d_material.T_liquidus - d_material.T_solidus);
+        }
+        float df_dT = rho_ref * cp_ref + dfl_dT * rho_ref * d_material.L_fusion;
+
+        // Newton update
+        float dT = f / df_dT;
+        T -= dT;
+
+        // CRITICAL FIX: Clamp to prevent thermal runaway
+        // T_MAX should be limited to 1.2 * T_boil to prevent temperatures
+        // far above the boiling point where the physics model breaks down
+        float T_MAX_SAFE = fminf(T_MAX, 1.2f * d_material.T_vaporization);
+        T = fmaxf(T_MIN, fminf(T_MAX_SAFE, T));
+    }
+
+    // CRITICAL FIX: Bisection fallback if Newton-Raphson failed
+    if (!conv) {
+        // Use bisection method as robust fallback
+        float T_MAX_SAFE = fminf(T_MAX, 1.2f * d_material.T_vaporization);
+        float T_low = T_MIN;
+        float T_high = T_MAX_SAFE;
+
+        for (int iter = 0; iter < max_iterations; ++iter) {
+            T = (T_low + T_high) / 2.0f;
+            float fl = d_material.liquidFraction(T);
+            float H_current = rho_ref * cp_ref * T + fl * rho_ref * d_material.L_fusion;
+            float f = H_current - H_target;
+
+            if (fabsf(f) < tolerance * rho_ref * cp_ref) {
+                conv = true;
+                break;
+            }
+
+            if (f > 0.0f) {
+                T_high = T;  // H too high, reduce T
+            } else {
+                T_low = T;   // H too low, increase T
+            }
+        }
+    }
+
+    // Update outputs
+    temperature[idx] = T;
+    liquid_fraction[idx] = d_material.liquidFraction(T);
+    converged[idx] = conv ? 1 : 0;
+}
+
+/**
+ * @brief Update liquid fraction from temperature
+ */
+__global__ void updateLiquidFractionKernel(
+    const float* temperature,
+    float* liquid_fraction,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    float T = temperature[idx];
+    liquid_fraction[idx] = d_material.liquidFraction(T);
+}
+
+/**
+ * @brief Add enthalpy change
+ */
+__global__ void addEnthalpyChangeKernel(
+    float* enthalpy,
+    const float* dH,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    enthalpy[idx] += dH[idx];
+}
+
+/**
+ * @brief Compute liquid fraction rate of change
+ */
+__global__ void computeLiquidFractionRateKernel(
+    const float* fl_curr,
+    const float* fl_prev,
+    float* dfl_dt,
+    float dt,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    dfl_dt[idx] = (fl_curr[idx] - fl_prev[idx]) / dt;
+}
+
+/**
+ * @brief Store current liquid fraction for next step
+ */
+__global__ void storeLiquidFractionKernel(
+    const float* fl_curr,
+    float* fl_prev,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    fl_prev[idx] = fl_curr[idx];
+}
+
+/**
+ * @brief Compute total energy (reduction)
+ *
+ * Each block computes partial sum, then host reduces
+ */
+__global__ void computeTotalEnergyKernel(
+    const float* enthalpy,
+    float* partial_sums,
+    int num_cells,
+    float cell_volume)
+{
+    extern __shared__ float sdata[];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Load data into shared memory
+    float sum = (idx < num_cells) ? enthalpy[idx] * cell_volume : 0.0f;
+    sdata[tid] = sum;
+    __syncthreads();
+
+    // Parallel reduction in shared memory
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    // Write block result to global memory
+    if (tid == 0) {
+        partial_sums[blockIdx.x] = sdata[0];
+    }
+}
+
+//==============================================================================
+// PhaseChangeSolver Implementation
+//==============================================================================
+
+PhaseChangeSolver::PhaseChangeSolver(int nx, int ny, int nz,
+                                     const MaterialProperties& material)
+    : nx_(nx), ny_(ny), nz_(nz),
+      num_cells_(nx * ny * nz),
+      material_(material),
+      d_enthalpy(nullptr),
+      d_liquid_fraction(nullptr),
+      d_liquid_fraction_prev_(nullptr),
+      d_dfl_dt_(nullptr)
+{
+    allocateMemory();
+}
+
+PhaseChangeSolver::~PhaseChangeSolver() {
+    freeMemory();
+}
+
+void PhaseChangeSolver::allocateMemory() {
+    size_t size = num_cells_ * sizeof(float);
+
+    cudaMalloc(&d_enthalpy, size);
+    cudaMalloc(&d_liquid_fraction, size);
+    cudaMalloc(&d_liquid_fraction_prev_, size);
+    cudaMalloc(&d_dfl_dt_, size);
+
+    // Initialize to zero
+    cudaMemset(d_enthalpy, 0, size);
+    cudaMemset(d_liquid_fraction, 0, size);
+    cudaMemset(d_liquid_fraction_prev_, 0, size);
+    cudaMemset(d_dfl_dt_, 0, size);
+}
+
+void PhaseChangeSolver::freeMemory() {
+    if (d_enthalpy) cudaFree(d_enthalpy);
+    if (d_liquid_fraction) cudaFree(d_liquid_fraction);
+    if (d_liquid_fraction_prev_) cudaFree(d_liquid_fraction_prev_);
+    if (d_dfl_dt_) cudaFree(d_dfl_dt_);
+}
+
+void PhaseChangeSolver::initializeFromTemperature(const float* temperature) {
+    // Copy material to device constant memory
+    cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties));
+
+    // Compute initial enthalpy
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    computeEnthalpyFromTemperatureKernel<<<blocks, threads>>>(
+        temperature, d_enthalpy, d_liquid_fraction, num_cells_);
+
+    cudaDeviceSynchronize();
+}
+
+void PhaseChangeSolver::updateEnthalpyFromTemperature(const float* temperature) {
+    // Ensure material is in device constant memory
+    cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties));
+
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    computeEnthalpyFromTemperatureKernel<<<blocks, threads>>>(
+        temperature, d_enthalpy, d_liquid_fraction, num_cells_);
+}
+
+int PhaseChangeSolver::updateTemperatureFromEnthalpy(float* temperature,
+                                                      float tolerance,
+                                                      int max_iterations) {
+    // Ensure material is in device constant memory
+    cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties));
+
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    // Allocate convergence flag array
+    int* d_converged;
+    cudaMalloc(&d_converged, num_cells_ * sizeof(int));
+
+    solveTemperatureFromEnthalpyKernel<<<blocks, threads>>>(
+        d_enthalpy, temperature, d_liquid_fraction, d_converged,
+        tolerance, max_iterations, num_cells_);
+
+    cudaDeviceSynchronize();
+
+    // Count how many cells actually converged
+    int* h_converged = new int[num_cells_];
+    cudaMemcpy(h_converged, d_converged, num_cells_ * sizeof(int),
+               cudaMemcpyDeviceToHost);
+
+    int total_converged = 0;
+    for (int i = 0; i < num_cells_; ++i) {
+        total_converged += h_converged[i];
+    }
+
+    delete[] h_converged;
+    cudaFree(d_converged);
+
+    return total_converged;
+}
+
+void PhaseChangeSolver::updateLiquidFraction(const float* temperature) {
+    // CRITICAL FIX: Ensure material is in device constant memory
+    // Without this, d_material.T_solidus and d_material.T_liquidus are uninitialized,
+    // causing all temperatures to be classified as solid (f_l = 0.0)
+    cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties));
+
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    updateLiquidFractionKernel<<<blocks, threads>>>(
+        temperature, d_liquid_fraction, num_cells_);
+}
+
+void PhaseChangeSolver::addEnthalpyChange(const float* dH) {
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    addEnthalpyChangeKernel<<<blocks, threads>>>(
+        d_enthalpy, dH, num_cells_);
+}
+
+void PhaseChangeSolver::copyEnthalpyToHost(float* host_enthalpy) const {
+    cudaMemcpy(host_enthalpy, d_enthalpy, num_cells_ * sizeof(float),
+               cudaMemcpyDeviceToHost);
+}
+
+void PhaseChangeSolver::copyLiquidFractionToHost(float* host_fl) const {
+    cudaMemcpy(host_fl, d_liquid_fraction, num_cells_ * sizeof(float),
+               cudaMemcpyDeviceToHost);
+}
+
+float PhaseChangeSolver::computeTotalEnergy() const {
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    // Allocate partial sums
+    float* d_partial_sums;
+    cudaMalloc(&d_partial_sums, blocks * sizeof(float));
+
+    // Assume unit cell volume for now (dx = dy = dz = 1)
+    float cell_volume = 1.0f;
+
+    computeTotalEnergyKernel<<<blocks, threads, threads * sizeof(float)>>>(
+        d_enthalpy, d_partial_sums, num_cells_, cell_volume);
+
+    // Copy partial sums to host and reduce
+    float* h_partial_sums = new float[blocks];
+    cudaMemcpy(h_partial_sums, d_partial_sums, blocks * sizeof(float),
+               cudaMemcpyDeviceToHost);
+
+    float total_energy = 0.0f;
+    for (int i = 0; i < blocks; ++i) {
+        total_energy += h_partial_sums[i];
+    }
+
+    delete[] h_partial_sums;
+    cudaFree(d_partial_sums);
+
+    return total_energy;
+}
+
+void PhaseChangeSolver::computeLiquidFractionRate(float dt) {
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    computeLiquidFractionRateKernel<<<blocks, threads>>>(
+        d_liquid_fraction, d_liquid_fraction_prev_, d_dfl_dt_, dt, num_cells_);
+}
+
+void PhaseChangeSolver::storePreviousLiquidFraction() {
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    storeLiquidFractionKernel<<<blocks, threads>>>(
+        d_liquid_fraction, d_liquid_fraction_prev_, num_cells_);
+}
+
+} // namespace physics
+} // namespace lbm

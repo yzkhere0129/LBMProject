@@ -1,0 +1,964 @@
+/**
+ * @file fluid_lbm.cu
+ * @brief Implementation of fluid LBM solver
+ */
+
+#include "physics/fluid_lbm.h"
+#include "core/collision_bgk.h"
+#include "core/streaming.h"
+#include <iostream>
+#include <stdexcept>
+#include <vector>
+
+namespace lbm {
+namespace physics {
+
+using namespace lbm::core;
+
+// Constructor
+FluidLBM::FluidLBM(int nx, int ny, int nz,
+                   float kinematic_viscosity,
+                   float density,
+                   BoundaryType boundary_x,
+                   BoundaryType boundary_y,
+                   BoundaryType boundary_z,
+                   float dt, float dx)
+    : nx_(nx), ny_(ny), nz_(nz),
+      num_cells_(nx * ny * nz),
+      dt_(dt), dx_(dx),
+      nu_physical_(kinematic_viscosity),
+      rho0_(density),
+      boundary_x_(boundary_x),
+      boundary_y_(boundary_y),
+      boundary_z_(boundary_z),
+      d_f_src(nullptr), d_f_dst(nullptr),
+      d_rho(nullptr), d_ux(nullptr), d_uy(nullptr), d_uz(nullptr),
+      d_pressure(nullptr),
+      d_boundary_nodes_(nullptr),
+      n_boundary_nodes_(0)
+{
+    // Initialize D3Q19 lattice on device
+    if (!D3Q19::isInitialized()) {
+        D3Q19::initializeDevice();
+    }
+
+    // ============================================================================
+    // CRITICAL FIX: Convert kinematic viscosity to lattice units
+    // ============================================================================
+    // LBM requires dimensionless viscosity in lattice units
+    // Formula: nu_lattice = nu_physical * dt / (dx²)
+    //
+    // Physical: nu ~ 4.5e-7 m²/s (Ti-6Al-4V liquid)
+    // dt: e.g., 1e-7 s (0.1 μs)
+    // dx: e.g., 2e-6 m (2 μm)
+    //
+    // Example: nu_lattice = 4.5e-7 * 1e-7 / (2e-6)² = 0.01125 (dimensionless)
+    // ============================================================================
+
+    nu_lattice_ = kinematic_viscosity * dt / (dx * dx);
+
+    // Compute tau from LATTICE viscosity
+    // For D3Q19: nu = cs^2 * (tau - 0.5)
+    // Therefore: tau = nu / cs^2 + 0.5
+    tau_ = nu_lattice_ / D3Q19::CS2 + 0.5f;
+    omega_ = 1.0f / tau_;
+
+    // Stability check
+    if (tau_ < 0.51f) {
+        std::cout << "[WARNING] FluidLBM: tau=" << tau_ << " < 0.51 (unstable!)\n";
+        std::cout << "          Clamping to tau=0.51 for stability.\n";
+        tau_ = 0.51f;
+        omega_ = 1.0f / tau_;
+    }
+
+    std::cout << "FluidLBM initialized:\n"
+              << "  Domain: " << nx_ << " x " << ny_ << " x " << nz_ << "\n"
+              << "  dt = " << dt_ << " s\n"
+              << "  dx = " << dx_ << " m\n"
+              << "  nu_physical = " << nu_physical_ << " m²/s\n"
+              << "  nu_lattice = " << nu_lattice_ << " (dimensionless)\n"
+              << "  tau = " << tau_ << "\n"
+              << "  omega = " << omega_ << "\n"
+              << "  Density: " << rho0_ << " kg/m³" << std::endl;
+
+    allocateMemory();
+    initializeBoundaryNodes();
+}
+
+// Destructor
+FluidLBM::~FluidLBM() {
+    freeMemory();
+}
+
+// Allocate device memory
+void FluidLBM::allocateMemory() {
+    size_t f_size = num_cells_ * D3Q19::Q * sizeof(float);
+    size_t macro_size = num_cells_ * sizeof(float);
+
+    // Clear any previous CUDA errors before allocation
+    cudaGetLastError();
+
+    cudaError_t error;
+
+    error = cudaMalloc(&d_f_src, f_size);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM: Failed to allocate d_f_src (" +
+                               std::to_string(f_size / (1024*1024)) + " MB): " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    error = cudaMalloc(&d_f_dst, f_size);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM: Failed to allocate d_f_dst (" +
+                               std::to_string(f_size / (1024*1024)) + " MB): " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    error = cudaMalloc(&d_rho, macro_size);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM: Failed to allocate d_rho: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    error = cudaMalloc(&d_ux, macro_size);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM: Failed to allocate d_ux: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    error = cudaMalloc(&d_uy, macro_size);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM: Failed to allocate d_uy: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    error = cudaMalloc(&d_uz, macro_size);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM: Failed to allocate d_uz: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    error = cudaMalloc(&d_pressure, macro_size);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM: Failed to allocate d_pressure: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+}
+
+// Free device memory
+void FluidLBM::freeMemory() {
+    if (d_f_src) cudaFree(d_f_src);
+    if (d_f_dst) cudaFree(d_f_dst);
+    if (d_rho) cudaFree(d_rho);
+    if (d_ux) cudaFree(d_ux);
+    if (d_uy) cudaFree(d_uy);
+    if (d_uz) cudaFree(d_uz);
+    if (d_pressure) cudaFree(d_pressure);
+    if (d_boundary_nodes_) cudaFree(d_boundary_nodes_);
+
+    d_f_src = d_f_dst = nullptr;
+    d_rho = d_ux = d_uy = d_uz = d_pressure = nullptr;
+    d_boundary_nodes_ = nullptr;
+}
+
+// Initialize with uniform conditions
+void FluidLBM::initialize(float initial_density,
+                         float initial_ux,
+                         float initial_uy,
+                         float initial_uz) {
+    // Allocate host memory for initialization
+    size_t f_size = num_cells_ * D3Q19::Q;
+    float* h_f = new float[f_size];
+
+    // Initialize with equilibrium distribution
+    for (int id = 0; id < num_cells_; ++id) {
+        for (int q = 0; q < D3Q19::Q; ++q) {
+            h_f[id + q * num_cells_] = D3Q19::computeEquilibrium(
+                q, initial_density, initial_ux, initial_uy, initial_uz);
+        }
+    }
+
+    // Copy to device
+    cudaMemcpy(d_f_src, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_f_dst, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice);
+
+    delete[] h_f;
+
+    // Initialize macroscopic quantities
+    float* h_macro = new float[num_cells_];
+    std::fill(h_macro, h_macro + num_cells_, initial_density);
+    cudaMemcpy(d_rho, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+
+    std::fill(h_macro, h_macro + num_cells_, initial_ux);
+    cudaMemcpy(d_ux, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+
+    std::fill(h_macro, h_macro + num_cells_, initial_uy);
+    cudaMemcpy(d_uy, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+
+    std::fill(h_macro, h_macro + num_cells_, initial_uz);
+    cudaMemcpy(d_uz, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+
+    // Initialize pressure: p = cs²(ρ - ρ₀)
+    for (int id = 0; id < num_cells_; ++id) {
+        h_macro[id] = D3Q19::CS2 * (initial_density - rho0_);
+    }
+    cudaMemcpy(d_pressure, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+
+    delete[] h_macro;
+
+    cudaDeviceSynchronize();
+}
+
+// Initialize with custom distribution
+void FluidLBM::initialize(const float* density,
+                         const float* ux,
+                         const float* uy,
+                         const float* uz) {
+    // Copy macroscopic quantities to device
+    cudaMemcpy(d_rho, density, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_ux, ux, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_uy, uy, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_uz, uz, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
+
+    // Copy to host to initialize distribution functions
+    float* h_rho = new float[num_cells_];
+    float* h_ux = new float[num_cells_];
+    float* h_uy = new float[num_cells_];
+    float* h_uz = new float[num_cells_];
+
+    cudaMemcpy(h_rho, density, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_ux, ux, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_uy, uy, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_uz, uz, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+
+    // Initialize distribution functions
+    size_t f_size = num_cells_ * D3Q19::Q;
+    float* h_f = new float[f_size];
+
+    for (int id = 0; id < num_cells_; ++id) {
+        for (int q = 0; q < D3Q19::Q; ++q) {
+            h_f[id + q * num_cells_] = D3Q19::computeEquilibrium(
+                q, h_rho[id], h_ux[id], h_uy[id], h_uz[id]);
+        }
+    }
+
+    cudaMemcpy(d_f_src, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_f_dst, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice);
+
+    // Compute pressure
+    float* h_pressure = new float[num_cells_];
+    for (int id = 0; id < num_cells_; ++id) {
+        h_pressure[id] = D3Q19::CS2 * (h_rho[id] - rho0_);
+    }
+    cudaMemcpy(d_pressure, h_pressure, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+
+    delete[] h_f;
+    delete[] h_rho;
+    delete[] h_ux;
+    delete[] h_uy;
+    delete[] h_uz;
+    delete[] h_pressure;
+
+    cudaDeviceSynchronize();
+}
+
+// Collision with uniform force
+void FluidLBM::collisionBGK(float force_x, float force_y, float force_z) {
+    dim3 block(8, 8, 8);
+    dim3 grid((nx_ + block.x - 1) / block.x,
+             (ny_ + block.y - 1) / block.y,
+             (nz_ + block.z - 1) / block.z);
+
+    fluidBGKCollisionKernel<<<grid, block>>>(
+        d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+        force_x, force_y, force_z, omega_,
+        nx_, ny_, nz_);
+
+    cudaDeviceSynchronize();
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM collision kernel failed: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    swapDistributions();
+}
+
+// Collision with spatially-varying forces
+void FluidLBM::collisionBGK(const float* force_x,
+                            const float* force_y,
+                            const float* force_z) {
+    dim3 block(8, 8, 8);
+    dim3 grid((nx_ + block.x - 1) / block.x,
+             (ny_ + block.y - 1) / block.y,
+             (nz_ + block.z - 1) / block.z);
+
+    fluidBGKCollisionVaryingForceKernel<<<grid, block>>>(
+        d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+        force_x, force_y, force_z, omega_,
+        nx_, ny_, nz_);
+
+    cudaDeviceSynchronize();
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM collision kernel (varying force) failed: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    swapDistributions();
+}
+
+// Streaming
+void FluidLBM::streaming() {
+    dim3 block(8, 8, 8);
+    dim3 grid((nx_ + block.x - 1) / block.x,
+             (ny_ + block.y - 1) / block.y,
+             (nz_ + block.z - 1) / block.z);
+
+    // Determine if all boundaries are periodic
+    bool all_periodic = (boundary_x_ == BoundaryType::PERIODIC &&
+                        boundary_y_ == BoundaryType::PERIODIC &&
+                        boundary_z_ == BoundaryType::PERIODIC);
+
+    if (all_periodic) {
+        // Use periodic streaming kernel
+        fluidStreamingKernel<<<grid, block>>>(
+            d_f_src, d_f_dst, nx_, ny_, nz_);
+    } else {
+        // Use boundary-aware streaming kernel
+        int periodic_x = (boundary_x_ == BoundaryType::PERIODIC) ? 1 : 0;
+        int periodic_y = (boundary_y_ == BoundaryType::PERIODIC) ? 1 : 0;
+        int periodic_z = (boundary_z_ == BoundaryType::PERIODIC) ? 1 : 0;
+
+        fluidStreamingKernelWithWalls<<<grid, block>>>(
+            d_f_src, d_f_dst, nx_, ny_, nz_,
+            periodic_x, periodic_y, periodic_z);
+    }
+
+    cudaDeviceSynchronize();
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM streaming kernel failed: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    swapDistributions();
+}
+
+// Apply boundary conditions
+void FluidLBM::applyBoundaryConditions(int boundary_type) {
+    // If boundary_type is 0 (periodic) or no boundary nodes, do nothing
+    if (boundary_type == 0 || n_boundary_nodes_ == 0) {
+        return;
+    }
+
+    // Apply bounce-back boundary conditions on wall boundaries
+    int block_size = 256;
+    int grid_size = (n_boundary_nodes_ + block_size - 1) / block_size;
+
+    applyBounceBackKernel<<<grid_size, block_size>>>(
+        d_f_src,
+        d_boundary_nodes_,
+        n_boundary_nodes_,
+        nx_, ny_, nz_
+    );
+
+    cudaDeviceSynchronize();
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM applyBoundaryConditions failed: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+}
+
+// Compute macroscopic quantities
+void FluidLBM::computeMacroscopic() {
+    int block_size = 256;
+    int grid_size = (num_cells_ + block_size - 1) / block_size;
+
+    computeMacroscopicKernel<<<grid_size, block_size>>>(
+        d_f_src, d_rho, d_ux, d_uy, d_uz, num_cells_);
+
+    // Compute pressure
+    computePressureKernel<<<grid_size, block_size>>>(
+        d_rho, d_pressure, rho0_, D3Q19::CS2, num_cells_);
+
+    cudaDeviceSynchronize();
+}
+
+// Compute buoyancy force
+void FluidLBM::computeBuoyancyForce(const float* temperature,
+                                   float T_ref,
+                                   float beta,
+                                   float gravity_x,
+                                   float gravity_y,
+                                   float gravity_z,
+                                   float* force_x,
+                                   float* force_y,
+                                   float* force_z) const {
+    int block_size = 256;
+    int grid_size = (num_cells_ + block_size - 1) / block_size;
+
+    computeBuoyancyForceKernel<<<grid_size, block_size>>>(
+        temperature, force_x, force_y, force_z,
+        T_ref, beta, rho0_,
+        gravity_x, gravity_y, gravity_z,
+        num_cells_);
+
+    cudaDeviceSynchronize();
+}
+
+// Apply Darcy damping
+void FluidLBM::applyDarcyDamping(const float* liquid_fraction,
+                                float darcy_constant,
+                                float* force_x,
+                                float* force_y,
+                                float* force_z) const {
+    int block_size = 256;
+    int grid_size = (num_cells_ + block_size - 1) / block_size;
+
+    applyDarcyDampingKernel<<<grid_size, block_size>>>(
+        liquid_fraction, d_ux, d_uy, d_uz,
+        force_x, force_y, force_z,
+        darcy_constant, num_cells_);
+
+    cudaDeviceSynchronize();
+}
+
+// Copy velocity to host
+void FluidLBM::copyVelocityToHost(float* host_ux, float* host_uy, float* host_uz) const {
+    if (host_ux != nullptr) {
+        cudaMemcpy(host_ux, d_ux, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    }
+    if (host_uy != nullptr) {
+        cudaMemcpy(host_uy, d_uy, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    }
+    if (host_uz != nullptr) {
+        cudaMemcpy(host_uz, d_uz, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    }
+}
+
+// Copy density to host
+void FluidLBM::copyDensityToHost(float* host_rho) const {
+    cudaMemcpy(host_rho, d_rho, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+}
+
+// Copy pressure to host
+void FluidLBM::copyPressureToHost(float* host_pressure) const {
+    cudaMemcpy(host_pressure, d_pressure, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+}
+
+// Compute Reynolds number
+float FluidLBM::computeReynoldsNumber(float characteristic_velocity,
+                                     float characteristic_length) const {
+    return characteristic_velocity * characteristic_length / nu_physical_;
+}
+
+// Initialize boundary nodes based on boundary configuration
+void FluidLBM::initializeBoundaryNodes() {
+    // Count boundary nodes
+    std::vector<BoundaryNode> h_boundary_nodes;
+
+    // Add wall boundaries based on configuration
+    // X boundaries
+    if (boundary_x_ == BoundaryType::WALL) {
+        for (int z = 0; z < nz_; ++z) {
+            for (int y = 0; y < ny_; ++y) {
+                // X-min boundary
+                BoundaryNode node_min;
+                node_min.x = 0;
+                node_min.y = y;
+                node_min.z = z;
+                node_min.type = core::BoundaryType::BOUNCE_BACK;
+                node_min.ux = 0.0f;
+                node_min.uy = 0.0f;
+                node_min.uz = 0.0f;
+                node_min.pressure = 0.0f;
+                node_min.directions = Streaming::BOUNDARY_X_MIN;
+                h_boundary_nodes.push_back(node_min);
+
+                // X-max boundary
+                BoundaryNode node_max;
+                node_max.x = nx_ - 1;
+                node_max.y = y;
+                node_max.z = z;
+                node_max.type = core::BoundaryType::BOUNCE_BACK;
+                node_max.ux = 0.0f;
+                node_max.uy = 0.0f;
+                node_max.uz = 0.0f;
+                node_max.pressure = 0.0f;
+                node_max.directions = Streaming::BOUNDARY_X_MAX;
+                h_boundary_nodes.push_back(node_max);
+            }
+        }
+    }
+
+    // Y boundaries
+    if (boundary_y_ == BoundaryType::WALL) {
+        for (int z = 0; z < nz_; ++z) {
+            for (int x = 0; x < nx_; ++x) {
+                // Y-min boundary
+                BoundaryNode node_min;
+                node_min.x = x;
+                node_min.y = 0;
+                node_min.z = z;
+                node_min.type = core::BoundaryType::BOUNCE_BACK;
+                node_min.ux = 0.0f;
+                node_min.uy = 0.0f;
+                node_min.uz = 0.0f;
+                node_min.pressure = 0.0f;
+                node_min.directions = Streaming::BOUNDARY_Y_MIN;
+                h_boundary_nodes.push_back(node_min);
+
+                // Y-max boundary
+                BoundaryNode node_max;
+                node_max.x = x;
+                node_max.y = ny_ - 1;
+                node_max.z = z;
+                node_max.type = core::BoundaryType::BOUNCE_BACK;
+                node_max.ux = 0.0f;
+                node_max.uy = 0.0f;
+                node_max.uz = 0.0f;
+                node_max.pressure = 0.0f;
+                node_max.directions = Streaming::BOUNDARY_Y_MAX;
+                h_boundary_nodes.push_back(node_max);
+            }
+        }
+    }
+
+    // Z boundaries
+    if (boundary_z_ == BoundaryType::WALL) {
+        for (int y = 0; y < ny_; ++y) {
+            for (int x = 0; x < nx_; ++x) {
+                // Z-min boundary
+                BoundaryNode node_min;
+                node_min.x = x;
+                node_min.y = y;
+                node_min.z = 0;
+                node_min.type = core::BoundaryType::BOUNCE_BACK;
+                node_min.ux = 0.0f;
+                node_min.uy = 0.0f;
+                node_min.uz = 0.0f;
+                node_min.pressure = 0.0f;
+                node_min.directions = Streaming::BOUNDARY_Z_MIN;
+                h_boundary_nodes.push_back(node_min);
+
+                // Z-max boundary
+                BoundaryNode node_max;
+                node_max.x = x;
+                node_max.y = y;
+                node_max.z = nz_ - 1;
+                node_max.type = core::BoundaryType::BOUNCE_BACK;
+                node_max.ux = 0.0f;
+                node_max.uy = 0.0f;
+                node_max.uz = 0.0f;
+                node_max.pressure = 0.0f;
+                node_max.directions = Streaming::BOUNDARY_Z_MAX;
+                h_boundary_nodes.push_back(node_max);
+            }
+        }
+    }
+
+    n_boundary_nodes_ = h_boundary_nodes.size();
+
+    // Allocate and copy to device if we have boundary nodes
+    if (n_boundary_nodes_ > 0) {
+        cudaMalloc(&d_boundary_nodes_, n_boundary_nodes_ * sizeof(BoundaryNode));
+        cudaMemcpy(d_boundary_nodes_, h_boundary_nodes.data(),
+                   n_boundary_nodes_ * sizeof(BoundaryNode),
+                   cudaMemcpyHostToDevice);
+
+        cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess) {
+            throw std::runtime_error("FluidLBM: Boundary node allocation failed: " +
+                                   std::string(cudaGetErrorString(error)));
+        }
+    }
+}
+
+// Swap distribution function pointers
+void FluidLBM::swapDistributions() {
+    float* temp = d_f_src;
+    d_f_src = d_f_dst;
+    d_f_dst = temp;
+}
+
+//=============================================================================
+// CUDA Kernels
+//=============================================================================
+
+// Fluid BGK collision with uniform force (Guo forcing scheme)
+__global__ void fluidBGKCollisionKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    float force_x,
+    float force_y,
+    float force_z,
+    float omega,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Compute macroscopic quantities from distribution functions
+    float m_rho = 0.0f;
+    float m_ux_star = 0.0f;  // Uncorrected momentum / rho
+    float m_uy_star = 0.0f;
+    float m_uz_star = 0.0f;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f = f_src[id + q * n_cells];
+        m_rho += f;
+        m_ux_star += ex[q] * f;
+        m_uy_star += ey[q] * f;
+        m_uz_star += ez[q] * f;
+    }
+
+    // Compute uncorrected velocity with safety check
+    const float RHO_MIN = 1e-6f;
+    float inv_rho = 1.0f / fmaxf(m_rho, RHO_MIN);
+    float m_ux_uncorrected = m_ux_star * inv_rho;
+    float m_uy_uncorrected = m_uy_star * inv_rho;
+    float m_uz_uncorrected = m_uz_star * inv_rho;
+
+    // Apply Guo forcing scheme: u = u_uncorrected + 0.5 * F / ρ
+    float m_ux = m_ux_uncorrected + 0.5f * force_x * inv_rho;
+    float m_uy = m_uy_uncorrected + 0.5f * force_y * inv_rho;
+    float m_uz = m_uz_uncorrected + 0.5f * force_z * inv_rho;
+
+    // Store corrected macroscopic quantities
+    rho[id] = m_rho;
+    ux[id] = m_ux;
+    uy[id] = m_uy;
+    uz[id] = m_uz;
+
+    // Use corrected velocity for equilibrium
+    float m_ux_force = m_ux;
+    float m_uy_force = m_uy;
+    float m_uz_force = m_uz;
+
+    // BGK collision with forcing
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f = f_src[id + q * n_cells];
+
+        // Equilibrium distribution with force-corrected velocity
+        float feq = D3Q19::computeEquilibrium(q, m_rho, m_ux_force, m_uy_force, m_uz_force);
+
+        // Complete Guo forcing term: F_i = (1 - ω/2) * w_i * [3(c_i - u)·F + 9(c_i·u)(c_i·F)]
+        float ci_dot_F = ex[q] * force_x + ey[q] * force_y + ez[q] * force_z;
+        float ci_dot_u = ex[q] * m_ux + ey[q] * m_uy + ez[q] * m_uz;
+
+        // First term: 3(c_i - u)·F = 3*c_i·F - 3*u·F
+        float u_dot_F = m_ux * force_x + m_uy * force_y + m_uz * force_z;
+        float term1 = 3.0f * (ci_dot_F - u_dot_F);
+
+        // Second term: 9(c_i·u)(c_i·F)
+        float term2 = 9.0f * ci_dot_u * ci_dot_F;
+
+        float force_term = (1.0f - 0.5f * omega) * w[q] * (term1 + term2);
+
+        // BGK collision with force
+        f_dst[id + q * n_cells] = f - omega * (f - feq) + force_term;
+    }
+}
+
+// Fluid BGK collision with spatially-varying forces
+__global__ void fluidBGKCollisionVaryingForceKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    float omega,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Read local forces
+    float fx = force_x[id];
+    float fy = force_y[id];
+    float fz = force_z[id];
+
+    // Compute macroscopic quantities from distribution functions
+    float m_rho = 0.0f;
+    float m_ux_star = 0.0f;
+    float m_uy_star = 0.0f;
+    float m_uz_star = 0.0f;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f = f_src[id + q * n_cells];
+        m_rho += f;
+        m_ux_star += ex[q] * f;
+        m_uy_star += ey[q] * f;
+        m_uz_star += ez[q] * f;
+    }
+
+    // Compute uncorrected velocity with safety check
+    const float RHO_MIN = 1e-6f;
+    float inv_rho = 1.0f / fmaxf(m_rho, RHO_MIN);
+    float m_ux_uncorrected = m_ux_star * inv_rho;
+    float m_uy_uncorrected = m_uy_star * inv_rho;
+    float m_uz_uncorrected = m_uz_star * inv_rho;
+
+    // Apply Guo forcing scheme: u = u_uncorrected + 0.5 * F / ρ
+    float m_ux = m_ux_uncorrected + 0.5f * fx * inv_rho;
+    float m_uy = m_uy_uncorrected + 0.5f * fy * inv_rho;
+    float m_uz = m_uz_uncorrected + 0.5f * fz * inv_rho;
+
+    // Store corrected macroscopic quantities
+    rho[id] = m_rho;
+    ux[id] = m_ux;
+    uy[id] = m_uy;
+    uz[id] = m_uz;
+
+    // Use corrected velocity for equilibrium
+    float m_ux_force = m_ux;
+    float m_uy_force = m_uy;
+    float m_uz_force = m_uz;
+
+    // BGK collision with forcing
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f = f_src[id + q * n_cells];
+
+        float feq = D3Q19::computeEquilibrium(q, m_rho, m_ux_force, m_uy_force, m_uz_force);
+
+        // Complete Guo forcing term: F_i = (1 - ω/2) * w_i * [3(c_i - u)·F + 9(c_i·u)(c_i·F)]
+        float ci_dot_F = ex[q] * fx + ey[q] * fy + ez[q] * fz;
+        float ci_dot_u = ex[q] * m_ux + ey[q] * m_uy + ez[q] * m_uz;
+
+        // First term: 3(c_i - u)·F
+        float u_dot_F = m_ux * fx + m_uy * fy + m_uz * fz;
+        float term1 = 3.0f * (ci_dot_F - u_dot_F);
+
+        // Second term: 9(c_i·u)(c_i·F)
+        float term2 = 9.0f * ci_dot_u * ci_dot_F;
+
+        float force_term = (1.0f - 0.5f * omega) * w[q] * (term1 + term2);
+
+        f_dst[id + q * n_cells] = f - omega * (f - feq) + force_term;
+    }
+}
+
+// Streaming (periodic boundaries)
+__global__ void fluidStreamingKernel(
+    const float* f_src,
+    float* f_dst,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Stream each distribution function
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        // Destination coordinates (with periodic BC)
+        int dst_x = (idx + ex[q] + nx) % nx;
+        int dst_y = (idy + ey[q] + ny) % ny;
+        int dst_z = (idz + ez[q] + nz) % nz;
+        int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
+
+        // Copy distribution function to destination
+        f_dst[dst_id + q * n_cells] = f_src[id + q * n_cells];
+    }
+}
+
+// Streaming with mixed boundary conditions (periodic/wall)
+__global__ void fluidStreamingKernelWithWalls(
+    const float* f_src,
+    float* f_dst,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Stream each distribution function
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        // Compute destination coordinates
+        int dst_x = idx + ex[q];
+        int dst_y = idy + ey[q];
+        int dst_z = idz + ez[q];
+
+        // Apply periodic wrapping only in periodic directions
+        if (periodic_x) {
+            dst_x = (dst_x + nx) % nx;
+        }
+        if (periodic_y) {
+            dst_y = (dst_y + ny) % ny;
+        }
+        if (periodic_z) {
+            dst_z = (dst_z + nz) % nz;
+        }
+
+        // Check if destination is within bounds
+        if (dst_x >= 0 && dst_x < nx &&
+            dst_y >= 0 && dst_y < ny &&
+            dst_z >= 0 && dst_z < nz) {
+
+            int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
+            f_dst[dst_id + q * n_cells] = f_src[id + q * n_cells];
+        }
+        // If destination is out of bounds (wall), don't stream
+        // The bounce-back will handle it
+    }
+}
+
+// Compute macroscopic quantities from distribution functions
+__global__ void computeMacroscopicKernel(
+    const float* f,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    int num_cells)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= num_cells) return;
+
+    // Compute density
+    float m_rho = 0.0f;
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        m_rho += f[id + q * num_cells];
+    }
+
+    // Compute momentum
+    float m_ux = 0.0f;
+    float m_uy = 0.0f;
+    float m_uz = 0.0f;
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float fq = f[id + q * num_cells];
+        m_ux += ex[q] * fq;
+        m_uy += ey[q] * fq;
+        m_uz += ez[q] * fq;
+    }
+
+    // Store results
+    rho[id] = m_rho;
+
+    // Compute velocity with safety check to prevent NaN
+    if (m_rho > 1e-10f && !isnan(m_rho)) {
+        ux[id] = m_ux / m_rho;
+        uy[id] = m_uy / m_rho;
+        uz[id] = m_uz / m_rho;
+    } else {
+        // Safety: set to zero if density is invalid or near-zero
+        ux[id] = 0.0f;
+        uy[id] = 0.0f;
+        uz[id] = 0.0f;
+    }
+}
+
+// Compute pressure from density
+__global__ void computePressureKernel(
+    const float* rho,
+    float* pressure,
+    float rho0,
+    float cs2,
+    int num_cells)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= num_cells) return;
+
+    // Equation of state: p = c_s² · (ρ - ρ₀)
+    pressure[id] = cs2 * (rho[id] - rho0);
+}
+
+// Compute buoyancy force (Boussinesq approximation)
+__global__ void computeBuoyancyForceKernel(
+    const float* temperature,
+    float* force_x,
+    float* force_y,
+    float* force_z,
+    float T_ref,
+    float beta,
+    float rho0,
+    float gravity_x,
+    float gravity_y,
+    float gravity_z,
+    int num_cells)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= num_cells) return;
+
+    // F_buoyancy = ρ₀·β·(T - T_ref)·g
+    float dT = temperature[id] - T_ref;
+
+    // NaN protection for stability
+    if (isnan(dT) || isinf(dT)) {
+        dT = 0.0f;
+    }
+
+    float factor = rho0 * beta * dT;
+
+    // CRITICAL: Use += to accumulate with other forces (Marangoni, surface tension)
+    force_x[id] += factor * gravity_x;
+    force_y[id] += factor * gravity_y;
+    force_z[id] += factor * gravity_z;
+}
+
+// Apply Darcy damping for mushy zone
+__global__ void applyDarcyDampingKernel(
+    const float* liquid_fraction,
+    const float* ux,
+    const float* uy,
+    const float* uz,
+    float* force_x,
+    float* force_y,
+    float* force_z,
+    float darcy_constant,
+    int num_cells)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= num_cells) return;
+
+    float fl = liquid_fraction[id];
+
+    // Carman-Kozeny model: F_darcy = -C·(1 - fl)²/(fl³ + ε)·u
+    // Epsilon prevents division by zero in fully solid regions
+    // Literature: ε ~ 1e-4 to 1e-5 (Voller & Prakash 1987)
+    // Too large: weakens damping in liquid; too small: numerical instability
+    const float eps = 1e-4f;  // Literature-supported value
+
+    // Compute damping factor using Carman-Kozeny relation
+    float damping_factor = -darcy_constant * (1.0f - fl) * (1.0f - fl) / (fl * fl * fl + eps);
+
+    // Add damping to existing forces
+    force_x[id] += damping_factor * ux[id];
+    force_y[id] += damping_factor * uy[id];
+    force_z[id] += damping_factor * uz[id];
+}
+
+} // namespace physics
+} // namespace lbm

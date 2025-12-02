@@ -1,0 +1,68 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows Zone.Identifier files
+*:Zone.Identifier
+
+# Compiled objects
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+
+# Executables
+*.exe
+*.out
+
+# VTK output files (simulation results)
+*.vtk
+*.vtu
+*.pvd
+visualization_output/
+test_output/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Analysis tools
+.VSCodeCounter/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Core dumps
+core
+core.*
+
+# CUDA compiled files
+*.cubin
+*.fatbin
+*.ptx
+
+# Documentation builds (keep source)
+docs/_build/
+
+# Large data files
+*.dat
+*.bin
+*.raw
+
+# Keep important markdown docs
+!README.md
+!CLAUDE.md
+!ARCHITECTURE.md
+!docs/*.md

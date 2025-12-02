@@ -1,0 +1,265 @@
+/**
+ * @file validation_case_single_spot.cu
+ * @brief Validation case: Single-spot laser melting of Ti6Al4V
+ *
+ * This case demonstrates:
+ * 1. Thermal physics: laser absorption, heat diffusion, phase change
+ * 2. Marangoni flow: thermocapillary convection in melt pool
+ * 3. Stability: long-duration run (200 μs) with gradual cooling
+ * 4. Physical realism: Compare to literature (Khairallah 2016, Panwisawas 2017)
+ *
+ * Expected outcomes:
+ * - Melt pool depth: ~30-50 μm (depends on power/speed)
+ * - Melt pool width: ~80-120 μm
+ * - Peak temperature: ~2500-3000 K (below boiling 3533 K)
+ * - Marangoni velocity: ~0.5-2 m/s
+ * - No numerical instability for 200 μs
+ */
+
+#include "physics/multiphysics_solver.h"
+#include "io/vtk_writer.h"
+#include <iostream>
+#include <iomanip>
+#include <cuda_runtime.h>
+#include <cmath>
+
+using namespace lbm::physics;
+using namespace lbm::io;
+
+int main() {
+    std::cout << "==============================================\n";
+    std::cout << "  VALIDATION: Single-Spot Laser Melting      \n";
+    std::cout << "  Ti6Al4V substrate with realistic parameters\n";
+    std::cout << "==============================================\n\n";
+
+    // =========================================================================
+    // CONFIGURATION - Realistic LPBF parameters from literature
+    // =========================================================================
+
+    MultiphysicsConfig config;
+
+    // Domain: 300 x 300 x 150 μm (larger for full melt pool observation)
+    config.nx = 150;
+    config.ny = 150;
+    config.nz = 75;
+    config.dx = 2.0e-6f;  // 2 μm resolution
+
+    // Time step: 0.1 μs (stable for our CFL limiter)
+    config.dt = 1.0e-7f;  // 0.1 μs
+
+    // Physics flags
+    config.enable_thermal = true;
+    config.enable_phase_change = true;
+    config.enable_fluid = true;
+    config.enable_vof = true;
+    config.enable_vof_advection = false;  // Keep interface static for validation
+    config.enable_surface_tension = false;  // Focus on Marangoni
+    config.enable_marangoni = true;
+    config.enable_laser = true;
+    config.enable_darcy = true;
+
+    // Material: Ti6Al4V (from literature)
+    config.material = MaterialProperties::Ti6Al4V();
+
+    // Thermal properties
+    config.thermal_diffusivity = 5.8e-6f;  // m²/s, Ti6Al4V liquid
+
+    // Fluid properties (lattice units for stability)
+    config.kinematic_viscosity = 0.0333f;  // Lattice units (tau=0.6)
+    config.density = 4110.0f;  // kg/m³, Ti6Al4V liquid
+    config.darcy_coefficient = 1e7f;  // Strong damping in solid
+
+    // Surface properties
+    config.surface_tension_coeff = 1.65f;  // N/m
+    config.dsigma_dT = -0.26e-3f;  // N/(m·K), Ti6Al4V
+
+    // Laser parameters - TYPICAL LPBF CONDITIONS
+    // Reference: Khairallah et al. (2016), P=200W, v=800mm/s, r=50μm
+    config.laser_power = 25.0f;  // 25W (reduced for periodic domain)
+    config.laser_spot_radius = 50.0e-6f;  // 50 μm (standard)
+    config.laser_absorptivity = 0.35f;  // 35% (Ti6Al4V typical)
+    config.laser_penetration_depth = 10.0e-6f;  // 10 μm (Beer-Lambert)
+    config.laser_shutoff_time = 100.0e-6f;  // Turn off at 100 μs, observe cooling
+
+    // Boundary conditions
+    config.boundary_type = 0;  // Periodic (adiabatic boundaries in thermal module)
+
+    // Simulation control
+    const int num_steps = 2000;      // 200 μs total (100 μs laser + 100 μs cooling)
+    const int output_interval = 20;  // Output every 2 μs
+
+    std::cout << "Configuration:\n";
+    std::cout << "  Domain: " << config.nx << " x " << config.ny << " x " << config.nz << " cells\n";
+    std::cout << "  Physical size: " << config.nx * config.dx * 1e6 << " x "
+              << config.ny * config.dx * 1e6 << " x " << config.nz * config.dx * 1e6 << " μm³\n";
+    std::cout << "  Resolution: " << config.dx * 1e6 << " μm/cell\n";
+    std::cout << "  Time step: " << config.dt * 1e6 << " μs\n";
+    std::cout << "  Total time: " << num_steps * config.dt * 1e6 << " μs\n";
+    std::cout << "  Laser power: " << config.laser_power << " W\n";
+    std::cout << "  Laser spot: " << config.laser_spot_radius * 1e6 << " μm\n";
+    std::cout << "  Laser shutoff: " << config.laser_shutoff_time * 1e6 << " μs\n";
+    std::cout << "\n";
+
+    // =========================================================================
+    // INITIALIZE SOLVER
+    // =========================================================================
+
+    std::cout << "Initializing MultiphysicsSolver...\n";
+    MultiphysicsSolver solver(config);
+    std::cout << "✓ Solver initialized\n\n";
+
+    // =========================================================================
+    // INITIAL CONDITIONS - Cold Ti6Al4V substrate
+    // =========================================================================
+
+    std::cout << "Setting initial conditions...\n";
+
+    int num_cells = config.nx * config.ny * config.nz;
+    std::vector<float> h_temperature(num_cells, 300.0f);  // Room temperature
+    std::vector<float> h_fill_level(num_cells, 1.0f);    // All liquid VOF (substrate)
+
+    // Set interface at mid-height
+    int interface_z = config.nz / 2;
+    for (int k = 0; k < config.nz; ++k) {
+        for (int j = 0; j < config.ny; ++j) {
+            for (int i = 0; i < config.nx; ++i) {
+                int idx = i + config.nx * (j + config.ny * k);
+
+                // Interface transition (smooth over 3 cells)
+                if (k < interface_z - 1) {
+                    h_fill_level[idx] = 1.0f;  // Below interface: metal
+                } else if (k > interface_z + 1) {
+                    h_fill_level[idx] = 0.0f;  // Above interface: gas
+                } else {
+                    // Smooth transition
+                    float frac = 0.5f + 0.5f * (interface_z - k);
+                    h_fill_level[idx] = fmax(0.0f, fmin(1.0f, frac));
+                }
+            }
+        }
+    }
+
+    // Upload to device
+    float* d_temperature = solver.getTemperature();
+    float* d_fill_level = solver.getFillLevel();
+    cudaMemcpy(d_temperature, h_temperature.data(), num_cells * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_fill_level, h_fill_level.data(), num_cells * sizeof(float), cudaMemcpyHostToDevice);
+
+    std::cout << "✓ Initial conditions set:\n";
+    std::cout << "  - Temperature: 300 K (room temperature)\n";
+    std::cout << "  - Interface at z = " << interface_z << " (height = "
+              << interface_z * config.dx * 1e6 << " μm)\n\n";
+
+    // =========================================================================
+    // VTK OUTPUT SETUP
+    // =========================================================================
+
+    std::string output_dir = "validation_single_spot";
+    system(("mkdir -p " + output_dir).c_str());
+
+    VTKWriter vtk_writer(config.nx, config.ny, config.nz, config.dx);
+
+    std::cout << "Starting time integration...\n";
+    std::cout << "Output directory: " << output_dir << "/\n\n";
+
+    // =========================================================================
+    // TIME INTEGRATION LOOP
+    // =========================================================================
+
+    std::cout << "Progress:\n";
+    std::cout << "─────────────────────────────────────────────────────────────────\n";
+    std::cout << "  Step      Time [μs]   T_max [K]   T_avg [K]   v_max [m/s]   Status\n";
+    std::cout << "─────────────────────────────────────────────────────────────────\n";
+
+    for (int step = 0; step <= num_steps; ++step) {
+        float current_time = step * config.dt;
+
+        // Output VTK
+        if (step % output_interval == 0) {
+            // Get data from device
+            cudaMemcpy(h_temperature.data(), d_temperature, num_cells * sizeof(float),
+                      cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_fill_level.data(), d_fill_level, num_cells * sizeof(float),
+                      cudaMemcpyDeviceToHost);
+
+            std::vector<float> h_vx(num_cells), h_vy(num_cells), h_vz(num_cells);
+            cudaMemcpy(h_vx.data(), solver.getVelocityX(), num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_vy.data(), solver.getVelocityY(), num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_vz.data(), solver.getVelocityZ(), num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+
+            std::vector<float> h_liquid_frac(num_cells);
+            cudaMemcpy(h_liquid_frac.data(), solver.getLiquidFraction(), num_cells * sizeof(float),
+                      cudaMemcpyDeviceToHost);
+
+            // Compute statistics
+            float T_max = 0.0f, T_sum = 0.0f, T_min = 1e10f;
+            float v_max = 0.0f;
+            int liquid_cells = 0;
+
+            for (int i = 0; i < num_cells; ++i) {
+                T_max = fmax(T_max, h_temperature[i]);
+                T_min = fmin(T_min, h_temperature[i]);
+                T_sum += h_temperature[i];
+
+                float v_mag = sqrt(h_vx[i]*h_vx[i] + h_vy[i]*h_vy[i] + h_vz[i]*h_vz[i]);
+                v_max = fmax(v_max, v_mag);
+
+                if (h_liquid_frac[i] > 0.5f) liquid_cells++;
+            }
+            float T_avg = T_sum / num_cells;
+
+            // Status message
+            std::string status = "";
+            if (current_time < config.laser_shutoff_time) {
+                status = "Laser ON";
+            } else {
+                status = "Cooling";
+            }
+
+            std::cout << std::setw(6) << step
+                      << std::setw(14) << std::fixed << std::setprecision(2) << current_time * 1e6
+                      << std::setw(12) << std::setprecision(1) << T_max
+                      << std::setw(12) << std::setprecision(1) << T_avg
+                      << std::setw(14) << std::setprecision(3) << v_max
+                      << "   " << status << "\n";
+
+            // Write VTK
+            char filename[256];
+            snprintf(filename, sizeof(filename), "%s/validation_%06d.vtk",
+                    output_dir.c_str(), step);
+
+            vtk_writer.writeVTK(
+                filename,
+                h_temperature.data(),
+                h_vx.data(),
+                h_vy.data(),
+                h_vz.data(),
+                h_fill_level.data(),
+                h_liquid_frac.data()
+            );
+        }
+
+        // Take time step
+        if (step < num_steps) {
+            solver.step(config.dt);
+        }
+    }
+
+    std::cout << "─────────────────────────────────────────────────────────────────\n";
+    std::cout << "\n✓ Simulation completed successfully!\n";
+    std::cout << "  VTK files written to: " << output_dir << "/\n";
+    std::cout << "  Total files: " << (num_steps / output_interval + 1) << "\n\n";
+
+    std::cout << "Expected validation results:\n";
+    std::cout << "  1. Peak temperature: 2500-3000 K (below T_boiling = 3533 K)\n";
+    std::cout << "  2. Marangoni velocity: 0.5-2.0 m/s (typical for LPBF)\n";
+    std::cout << "  3. Melt pool depth: 30-50 μm (depends on parameters)\n";
+    std::cout << "  4. No NaN or divergence during 200 μs run\n";
+    std::cout << "  5. Smooth cooling after laser shutoff at 100 μs\n\n";
+
+    std::cout << "Compare with literature:\n";
+    std::cout << "  - Khairallah et al. (2016): Nat Mater, melt pool dynamics\n";
+    std::cout << "  - Panwisawas et al. (2017): Comp Mater Sci, Ti6Al4V melting\n\n";
+
+    return 0;
+}

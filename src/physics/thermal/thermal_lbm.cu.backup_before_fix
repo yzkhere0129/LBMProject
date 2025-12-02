@@ -1,0 +1,779 @@
+/**
+ * @file thermal_lbm.cu
+ * @brief Implementation of Thermal Lattice Boltzmann Method solver
+ */
+
+#include "physics/thermal_lbm.h"
+#include <iostream>
+#include <stdexcept>
+#include <cstring>
+
+namespace lbm {
+namespace physics {
+
+// External reference to D3Q7 lattice constants (defined in lattice_d3q7.cu)
+extern __constant__ int tex[7];
+extern __constant__ int tey[7];
+extern __constant__ int tez[7];
+
+// Forward declaration of kernel
+__global__ void initializeEquilibriumKernel(float* g_src, const float* temperature, int num_cells);
+
+// Constructor (deprecated - for backward compatibility)
+ThermalLBM::ThermalLBM(int nx, int ny, int nz, float thermal_diffusivity,
+                       float density, float specific_heat)
+    : nx_(nx), ny_(ny), nz_(nz), num_cells_(nx * ny * nz),
+      thermal_diff_(thermal_diffusivity), rho_(density), cp_(specific_heat),
+      emissivity_(0.35f),  // Default emissivity
+      phase_solver_(nullptr), has_material_(false) {
+
+    // Initialize D3Q7 lattice if not already done
+    if (!D3Q7::isInitialized()) {
+        D3Q7::initializeDevice();
+    }
+
+    // Compute thermal relaxation time
+    // For D3Q7: alpha = cs^2 * (tau_T - 0.5) * dt/dx^2
+    // With dt = dx = 1 (lattice units): tau_T = alpha/(cs^2) + 0.5
+    tau_T_ = thermal_diff_ / D3Q7::CS2 + 0.5f;
+    omega_T_ = 1.0f / tau_T_;
+
+    // Stability check: omega must be < 2.0, cap at 1.95 for safety
+    if (omega_T_ >= 1.95f) {
+        std::cout << "WARNING: omega_T = " << omega_T_ << " is near instability limit!\n";
+        std::cout << "         Capping omega_T at 1.95 for stability.\n";
+        omega_T_ = 1.95f;
+        tau_T_ = 1.0f / omega_T_;
+    }
+
+    std::cout << "ThermalLBM initialized:\n"
+              << "  Domain: " << nx_ << " x " << ny_ << " x " << nz_ << "\n"
+              << "  Thermal diffusivity: " << thermal_diff_ << "\n"
+              << "  Thermal tau: " << tau_T_ << "\n"
+              << "  Thermal omega: " << omega_T_ << "\n"
+              << "  Density: " << rho_ << " kg/m³\n"
+              << "  Specific heat: " << cp_ << " J/(kg·K)" << std::endl;
+
+    // Allocate device memory
+    allocateMemory();
+}
+
+// Constructor with phase change support
+ThermalLBM::ThermalLBM(int nx, int ny, int nz,
+                       const MaterialProperties& material,
+                       float thermal_diffusivity,
+                       bool enable_phase_change)
+    : nx_(nx), ny_(ny), nz_(nz), num_cells_(nx * ny * nz),
+      thermal_diff_(thermal_diffusivity),
+      rho_(material.rho_solid), cp_(material.cp_solid),
+      emissivity_(0.35f),  // Default emissivity (will be overridden by config)
+      material_(material), has_material_(true),
+      phase_solver_(nullptr) {
+
+    // Initialize D3Q7 lattice if not already done
+    if (!D3Q7::isInitialized()) {
+        D3Q7::initializeDevice();
+    }
+
+    // Compute thermal relaxation time
+    tau_T_ = thermal_diff_ / D3Q7::CS2 + 0.5f;
+    omega_T_ = 1.0f / tau_T_;
+
+    // Stability check
+    if (omega_T_ >= 1.95f) {
+        std::cout << "WARNING: omega_T = " << omega_T_ << " is near instability limit!\n";
+        std::cout << "         Capping omega_T at 1.95 for stability.\n";
+        omega_T_ = 1.95f;
+        tau_T_ = 1.0f / omega_T_;
+    }
+
+    std::cout << "ThermalLBM initialized with phase change:\n"
+              << "  Domain: " << nx_ << " x " << ny_ << " x " << nz_ << "\n"
+              << "  Material: " << material_.name << "\n"
+              << "  Thermal diffusivity: " << thermal_diff_ << "\n"
+              << "  Thermal tau: " << tau_T_ << "\n"
+              << "  Thermal omega: " << omega_T_ << "\n"
+              << "  Density: " << rho_ << " kg/m³\n"
+              << "  Specific heat: " << cp_ << " J/(kg·K)\n"
+              << "  Melting point: " << material_.T_liquidus << " K\n"
+              << "  Phase change: " << (enable_phase_change ? "ENABLED" : "DISABLED") << std::endl;
+
+    // Allocate device memory
+    allocateMemory();
+
+    // Create phase change solver if enabled
+    if (enable_phase_change) {
+        phase_solver_ = new PhaseChangeSolver(nx_, ny_, nz_, material_);
+        std::cout << "  Phase change solver created\n";
+    }
+}
+
+// Destructor
+ThermalLBM::~ThermalLBM() {
+    freeMemory();
+    if (phase_solver_) {
+        delete phase_solver_;
+    }
+}
+
+// Allocate device memory
+void ThermalLBM::allocateMemory() {
+    cudaError_t err;
+    size_t size_dist = num_cells_ * D3Q7::Q * sizeof(float);
+    size_t size_scalar = num_cells_ * sizeof(float);
+
+    // Allocate distribution functions
+    err = cudaMalloc(&d_g_src, size_dist);
+    if (err != cudaSuccess) {
+        throw std::runtime_error("Failed to allocate d_g_src: " +
+                               std::string(cudaGetErrorString(err)));
+    }
+
+    err = cudaMalloc(&d_g_dst, size_dist);
+    if (err != cudaSuccess) {
+        cudaFree(d_g_src);
+        throw std::runtime_error("Failed to allocate d_g_dst: " +
+                               std::string(cudaGetErrorString(err)));
+    }
+
+    // Allocate temperature field
+    err = cudaMalloc(&d_temperature, size_scalar);
+    if (err != cudaSuccess) {
+        cudaFree(d_g_src);
+        cudaFree(d_g_dst);
+        throw std::runtime_error("Failed to allocate d_temperature: " +
+                               std::string(cudaGetErrorString(err)));
+    }
+
+    // Initialize to zero
+    cudaMemset(d_g_src, 0, size_dist);
+    cudaMemset(d_g_dst, 0, size_dist);
+    cudaMemset(d_temperature, 0, size_scalar);
+}
+
+// Free device memory
+void ThermalLBM::freeMemory() {
+    if (d_g_src) cudaFree(d_g_src);
+    if (d_g_dst) cudaFree(d_g_dst);
+    if (d_temperature) cudaFree(d_temperature);
+}
+
+// Swap source and destination distributions
+void ThermalLBM::swapDistributions() {
+    float* temp = d_g_src;
+    d_g_src = d_g_dst;
+    d_g_dst = temp;
+}
+
+// Initialize with uniform temperature
+void ThermalLBM::initialize(float initial_temp) {
+    // Set uniform temperature
+    cudaMemset(d_temperature, 0, num_cells_ * sizeof(float));
+
+    // Create uniform temperature array
+    float* h_temp = new float[num_cells_];
+    for (int i = 0; i < num_cells_; ++i) {
+        h_temp[i] = initial_temp;
+    }
+
+    // Copy to device
+    cudaMemcpy(d_temperature, h_temp, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+    delete[] h_temp;
+
+    // Initialize distribution functions to equilibrium
+    int blockSize = 256;
+    int gridSize = (num_cells_ + blockSize - 1) / blockSize;
+
+    // Simple kernel launch without lambda
+    initializeEquilibriumKernel<<<gridSize, blockSize>>>(d_g_src, d_temperature, num_cells_);
+
+    cudaDeviceSynchronize();
+
+    // Initialize phase change solver if enabled
+    if (phase_solver_) {
+        phase_solver_->initializeFromTemperature(d_temperature);
+    }
+}
+
+// Initialize with custom temperature field
+void ThermalLBM::initialize(const float* temp_field) {
+    // Copy temperature field to device
+    cudaMemcpy(d_temperature, temp_field, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+
+    // Initialize distribution functions to equilibrium
+    int blockSize = 256;
+    int gridSize = (num_cells_ + blockSize - 1) / blockSize;
+
+    // Simple kernel launch without lambda
+    initializeEquilibriumKernel<<<gridSize, blockSize>>>(d_g_src, d_temperature, num_cells_);
+
+    cudaDeviceSynchronize();
+
+    // Initialize phase change solver if enabled
+    if (phase_solver_) {
+        phase_solver_->initializeFromTemperature(d_temperature);
+    }
+}
+
+// Perform BGK collision
+void ThermalLBM::collisionBGK(const float* ux, const float* uy, const float* uz) {
+    dim3 blockSize(8, 8, 8);
+    dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
+                  (ny_ + blockSize.y - 1) / blockSize.y,
+                  (nz_ + blockSize.z - 1) / blockSize.z);
+
+    thermalBGKCollisionKernel<<<gridSize, blockSize>>>(
+        d_g_src, d_temperature, ux, uy, uz, omega_T_, nx_, ny_, nz_);
+
+    cudaDeviceSynchronize();
+}
+
+// Perform streaming
+void ThermalLBM::streaming() {
+    dim3 blockSize(8, 8, 8);
+    dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
+                  (ny_ + blockSize.y - 1) / blockSize.y,
+                  (nz_ + blockSize.z - 1) / blockSize.z);
+
+    // ADIABATIC BOUNDARIES: Initialize g_dst to zero
+    // Bounce-back will write reflected distributions
+    cudaMemset(d_g_dst, 0, num_cells_ * D3Q7::Q * sizeof(float));
+
+    // Stream all distributions with adiabatic bounce-back at boundaries
+    thermalStreamingKernel<<<gridSize, blockSize>>>(
+        d_g_src, d_g_dst, nx_, ny_, nz_, emissivity_);
+
+    cudaDeviceSynchronize();
+    swapDistributions();
+}
+
+// Apply boundary conditions
+void ThermalLBM::applyBoundaryConditions(int boundary_type, float boundary_value) {
+    if (boundary_type == 0) {
+        // Periodic boundaries - handled automatically in streaming
+        return;
+    } else if (boundary_type == 1) {
+        // Constant temperature boundaries
+        dim3 blockSize(256);
+
+        // Apply to all 6 faces
+        for (int face = 0; face < 6; ++face) {
+            int face_size;
+            if (face < 2) face_size = ny_ * nz_;       // x-faces
+            else if (face < 4) face_size = nx_ * nz_;  // y-faces
+            else face_size = nx_ * ny_;                // z-faces
+
+            dim3 gridSize((face_size + blockSize.x - 1) / blockSize.x);
+
+            applyConstantTemperatureBoundary<<<gridSize, blockSize>>>(
+                d_g_src, d_temperature, boundary_value, nx_, ny_, nz_, face);
+        }
+        cudaDeviceSynchronize();
+
+    } else if (boundary_type == 2) {
+        // Adiabatic boundaries
+        dim3 blockSize(256);
+
+        // Apply to all 6 faces
+        for (int face = 0; face < 6; ++face) {
+            int face_size;
+            if (face < 2) face_size = ny_ * nz_;       // x-faces
+            else if (face < 4) face_size = nx_ * nz_;  // y-faces
+            else face_size = nx_ * ny_;                // z-faces
+
+            dim3 gridSize((face_size + blockSize.x - 1) / blockSize.x);
+
+            applyAdiabaticBoundary<<<gridSize, blockSize>>>(
+                d_g_src, nx_, ny_, nz_, face);
+        }
+        cudaDeviceSynchronize();
+    }
+}
+
+// Add heat source
+void ThermalLBM::addHeatSource(const float* heat_source, float dt) {
+    int blockSize = 256;
+    int gridSize = (num_cells_ + blockSize - 1) / blockSize;
+
+    addHeatSourceKernel<<<gridSize, blockSize>>>(
+        d_g_src, heat_source, dt, rho_, cp_, num_cells_);
+
+    cudaDeviceSynchronize();
+
+    // CRITICAL: Update temperature field after adding heat
+    // The collision step uses d_temperature, so we must recompute it
+    computeTemperature();
+}
+
+// Apply radiation boundary condition
+void ThermalLBM::applyRadiationBC(float dt, float dx, float epsilon, float T_ambient) {
+    // Launch 2D grid for top surface (nx × ny)
+    dim3 blockSize(16, 16);
+    dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
+                  (ny_ + blockSize.y - 1) / blockSize.y);
+
+    applyRadiationBoundaryCondition<<<gridSize, blockSize>>>(
+        d_g_src, d_temperature, nx_, ny_, nz_,
+        dx, dt, epsilon, rho_, cp_, T_ambient);
+
+    cudaDeviceSynchronize();
+
+    // Update temperature field after radiation cooling
+    computeTemperature();
+}
+
+// Compute temperature from distribution
+void ThermalLBM::computeTemperature() {
+    int blockSize = 256;
+    int gridSize = (num_cells_ + blockSize - 1) / blockSize;
+
+    computeTemperatureKernel<<<gridSize, blockSize>>>(
+        d_g_src, d_temperature, num_cells_);
+
+    cudaDeviceSynchronize();
+
+    // Update liquid fraction if phase change is enabled
+    if (phase_solver_) {
+        phase_solver_->updateLiquidFraction(d_temperature);
+    }
+}
+
+// Copy temperature to host
+void ThermalLBM::copyTemperatureToHost(float* host_temp) const {
+    cudaMemcpy(host_temp, d_temperature, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+}
+
+// Compute thermal relaxation time
+float ThermalLBM::computeThermalTau(float alpha, float dx, float dt) {
+    // Convert physical diffusivity to lattice units
+    float alpha_lattice = alpha * dt / (dx * dx);
+    return alpha_lattice / D3Q7::CS2 + 0.5f;
+}
+
+// Get liquid fraction field (non-const)
+float* ThermalLBM::getLiquidFraction() {
+    if (!phase_solver_) {
+        return nullptr;
+    }
+    return phase_solver_->getLiquidFraction();
+}
+
+// Get liquid fraction field (const)
+const float* ThermalLBM::getLiquidFraction() const {
+    if (!phase_solver_) {
+        return nullptr;
+    }
+    return phase_solver_->getLiquidFraction();
+}
+
+// Copy liquid fraction to host
+void ThermalLBM::copyLiquidFractionToHost(float* host_fl) const {
+    if (!phase_solver_) {
+        throw std::runtime_error("Phase change is not enabled in this ThermalLBM instance");
+    }
+    phase_solver_->copyLiquidFractionToHost(host_fl);
+}
+
+// ============= CUDA Kernels =============
+
+// Helper kernel for initialization
+__global__ void initializeEquilibriumKernel(float* g_src, const float* temperature, int num_cells) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    float T = temperature[idx];
+    // At rest: g_eq = w_i * T
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        g_src[idx * D3Q7::Q + q] = D3Q7::computeThermalEquilibrium(q, T, 0.0f, 0.0f, 0.0f);
+    }
+}
+
+__global__ void thermalBGKCollisionKernel(
+    float* g_src,
+    const float* temperature,
+    const float* ux,
+    const float* uy,
+    const float* uz,
+    float omega_T,
+    int nx, int ny, int nz) {
+
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (x >= nx || y >= ny || z >= nz) return;
+
+    int idx = x + y * nx + z * nx * ny;
+    float T = temperature[idx];
+
+    // Get velocity (use zero if not provided)
+    float vel_x = ux ? ux[idx] : 0.0f;
+    float vel_y = uy ? uy[idx] : 0.0f;
+    float vel_z = uz ? uz[idx] : 0.0f;
+
+    // BGK collision for each direction
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        int dist_idx = idx * D3Q7::Q + q;
+        float g_eq = D3Q7::computeThermalEquilibrium(q, T, vel_x, vel_y, vel_z);
+
+        // BGK collision: g_new = g - omega * (g - g_eq)
+        g_src[dist_idx] = g_src[dist_idx] - omega_T * (g_src[dist_idx] - g_eq);
+    }
+}
+
+__global__ void thermalStreamingKernel(
+    const float* g_src,
+    float* g_dst,
+    int nx, int ny, int nz,
+    float emissivity) {
+
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (x >= nx || y >= ny || z >= nz) return;
+
+    int idx = x + y * nx + z * nx * ny;
+
+    // HYBRID BOUNDARY CONDITIONS:
+    // - X, Y boundaries: Adiabatic (bounce-back for zero flux)
+    // - Z-top (z=nz-1): Partial reflection (allows some heat loss to environment)
+    // - Z-bottom (z=0): Adiabatic (substrate)
+
+    // STABILITY FIX: Temperature-dependent radiation at top surface
+    // Prevents thermal runaway while allowing proper melting
+    // Compute local temperature first (used for dynamic radiation)
+    float T_local = 0.0f;
+    for (int q_temp = 0; q_temp < D3Q7::Q; ++q_temp) {
+        T_local += g_src[idx * D3Q7::Q + q_temp];
+    }
+
+    // Stefan-Boltzmann radiation law: q_rad = ε·σ·(T^4 - T_amb^4)
+    // Effective reflection coefficient based on physical radiation model
+    // NOTE: emissivity is now passed as parameter from config
+    const float stefan_boltzmann = 5.67e-8f;  // W/(m²·K⁴)
+    const float T_ambient = 300.0f;  // K
+    const float thermal_conductivity = 35.0f;  // W/(m·K) for Ti6Al4V
+    const float characteristic_length = 1e-6f;  // 1 μm (lattice spacing approximation)
+
+    // Radiation heat flux: q_rad = ε·σ·(T^4 - T_amb^4)
+    float q_rad = emissivity * stefan_boltzmann *
+                  (powf(T_local, 4) - powf(T_ambient, 4));
+
+    // Approximate conduction flux for normalization: q_cond ~ κ·ΔT/dx
+    float q_cond_approx = thermal_conductivity * (T_local - T_ambient) / characteristic_length;
+
+    // Effective reflection coefficient: higher radiation → lower reflection
+    // reflection_coeff = 1 - q_rad / q_cond (capped to [0.7, 0.98])
+    float reflection_coeff = 1.0f - q_rad / fmaxf(q_cond_approx, 1e-6f);
+    reflection_coeff = fmaxf(0.70f, fminf(0.98f, reflection_coeff));
+
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        int cx, cy, cz;
+#ifdef __CUDA_ARCH__
+        cx = tex[q];
+        cy = tey[q];
+        cz = tez[q];
+#else
+        cx = 0; cy = 0; cz = 0;
+#endif
+
+        // Calculate target position
+        int nx_target = x + cx;
+        int ny_target = y + cy;
+        int nz_target = z + cz;
+
+        // Check if target is inside domain
+        if (nx_target >= 0 && nx_target < nx &&
+            ny_target >= 0 && ny_target < ny &&
+            nz_target >= 0 && nz_target < nz) {
+
+            // Normal streaming: target is inside domain
+            int target_idx = nx_target + ny_target * nx + nz_target * nx * ny;
+            g_dst[target_idx * D3Q7::Q + q] = g_src[idx * D3Q7::Q + q];
+        } else {
+            // Boundary: determine which face
+            bool is_top_surface = (z == nz - 1 && cz == 1);  // At top, trying to go +z
+
+            // Find opposite direction for bounce-back
+            int q_opposite = 0;
+            if (q == 1) q_opposite = 2;      // +x -> -x
+            else if (q == 2) q_opposite = 1; // -x -> +x
+            else if (q == 3) q_opposite = 4; // +y -> -y
+            else if (q == 4) q_opposite = 3; // -y -> +y
+            else if (q == 5) q_opposite = 6; // +z -> -z
+            else if (q == 6) q_opposite = 5; // -z -> +z
+
+            if (is_top_surface) {
+                // Top surface: temperature-dependent partial reflection
+                // At low T: ~98% reflection (minimal loss, allows heating/melting)
+                // At high T: ~70-85% reflection (strong radiation prevents runaway)
+                g_dst[idx * D3Q7::Q + q_opposite] = reflection_coeff * g_src[idx * D3Q7::Q + q];
+            } else {
+                // Other boundaries: full adiabatic bounce-back
+                g_dst[idx * D3Q7::Q + q_opposite] = g_src[idx * D3Q7::Q + q];
+            }
+        }
+    }
+}
+
+__global__ void computeTemperatureKernel(
+    const float* g,
+    float* temperature,
+    int num_cells) {
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    // Sum all distribution functions
+    float T = 0.0f;
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        T += g[idx * D3Q7::Q + q];
+    }
+
+    // Safety: Prevent negative temperatures from numerical errors
+    // Upper limit removed - radiation BC will prevent thermal runaway
+    T = fmaxf(T, 0.0f);
+
+    temperature[idx] = T;
+}
+
+__global__ void applyConstantTemperatureBoundary(
+    float* g,
+    float* temperature,
+    float T_boundary,
+    int nx, int ny, int nz,
+    int boundary_face) {
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int x, y, z;
+
+    // Determine position based on boundary face
+    switch (boundary_face) {
+        case 0: // x_min
+            if (tid >= ny * nz) return;
+            x = 0;
+            y = tid % ny;
+            z = tid / ny;
+            break;
+        case 1: // x_max
+            if (tid >= ny * nz) return;
+            x = nx - 1;
+            y = tid % ny;
+            z = tid / ny;
+            break;
+        case 2: // y_min
+            if (tid >= nx * nz) return;
+            y = 0;
+            x = tid % nx;
+            z = tid / nx;
+            break;
+        case 3: // y_max
+            if (tid >= nx * nz) return;
+            y = ny - 1;
+            x = tid % nx;
+            z = tid / nx;
+            break;
+        case 4: // z_min
+            if (tid >= nx * ny) return;
+            z = 0;
+            x = tid % nx;
+            y = tid / nx;
+            break;
+        case 5: // z_max
+            if (tid >= nx * ny) return;
+            z = nz - 1;
+            x = tid % nx;
+            y = tid / nx;
+            break;
+        default:
+            return;
+    }
+
+    int idx = x + y * nx + z * nx * ny;
+
+    // Set temperature
+    temperature[idx] = T_boundary;
+
+    // Set equilibrium distribution for boundary temperature
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        g[idx * D3Q7::Q + q] = D3Q7::computeThermalEquilibrium(q, T_boundary, 0.0f, 0.0f, 0.0f);
+    }
+}
+
+__global__ void applyAdiabaticBoundary(
+    float* g,
+    int nx, int ny, int nz,
+    int boundary_face) {
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int x, y, z;
+
+    // Determine position based on boundary face
+    switch (boundary_face) {
+        case 0: // x_min
+            if (tid >= ny * nz) return;
+            x = 0;
+            y = tid % ny;
+            z = tid / ny;
+            break;
+        case 1: // x_max
+            if (tid >= ny * nz) return;
+            x = nx - 1;
+            y = tid % ny;
+            z = tid / ny;
+            break;
+        case 2: // y_min
+            if (tid >= nx * nz) return;
+            y = 0;
+            x = tid % nx;
+            z = tid / nx;
+            break;
+        case 3: // y_max
+            if (tid >= nx * nz) return;
+            y = ny - 1;
+            x = tid % nx;
+            z = tid / nx;
+            break;
+        case 4: // z_min
+            if (tid >= nx * ny) return;
+            z = 0;
+            x = tid % nx;
+            y = tid / nx;
+            break;
+        case 5: // z_max
+            if (tid >= nx * ny) return;
+            z = nz - 1;
+            x = tid % nx;
+            y = tid / nx;
+            break;
+        default:
+            return;
+    }
+
+    int idx = x + y * nx + z * nx * ny;
+
+    // For adiabatic boundary, copy distribution from neighboring interior cell
+    // This implements zero-flux condition
+    int interior_x = x, interior_y = y, interior_z = z;
+
+    if (boundary_face == 0) interior_x = 1;
+    else if (boundary_face == 1) interior_x = nx - 2;
+    else if (boundary_face == 2) interior_y = 1;
+    else if (boundary_face == 3) interior_y = ny - 2;
+    else if (boundary_face == 4) interior_z = 1;
+    else if (boundary_face == 5) interior_z = nz - 2;
+
+    int interior_idx = interior_x + interior_y * nx + interior_z * nx * ny;
+
+    // Copy distribution from interior
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        g[idx * D3Q7::Q + q] = g[interior_idx * D3Q7::Q + q];
+    }
+}
+
+__global__ void addHeatSourceKernel(
+    float* g,
+    const float* heat_source,
+    float dt,
+    float rho,
+    float cp,
+    int num_cells) {
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    // Heat source Q is in [W/m³] = [J/(m³·s)]
+    // Convert to temperature increase:
+    // Q * dt gives [J/m³] (energy density)
+    // dT = Q * dt / (rho * cp)  [K]
+    //
+    // Where:
+    //   Q: volumetric heat source [W/m³]
+    //   dt: time step [s]
+    //   rho: density [kg/m³]
+    //   cp: specific heat [J/(kg·K)]
+    float Q = heat_source[idx];
+    float dT = (Q * dt) / (rho * cp);
+
+    // D3Q7 weights: w0 = 1/4, w1-6 = 1/8
+    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+
+    // Add temperature increase equally to all distributions
+    // This preserves the temperature increase while maintaining isotropy
+    for (int q = 0; q < 7; ++q) {
+        g[idx * 7 + q] += weights[q] * dT;
+    }
+}
+
+/**
+ * @brief Apply radiation boundary condition to top surface
+ *
+ * Implements Stefan-Boltzmann radiation heat loss:
+ *   q_rad = ε·σ·(T_surface⁴ - T_ambient⁴)  [W/m²]
+ *
+ * Heat loss causes temperature decrease:
+ *   ΔT = -q_rad · dt / (ρ·c_p·dx)  [K]
+ *
+ * Physics:
+ *   - Emissivity ε: fraction of blackbody radiation (0-1)
+ *   - Stefan-Boltzmann constant σ = 5.67×10⁻⁸ W/(m²·K⁴)
+ *   - T_ambient: environment temperature (typically 300 K)
+ *   - dx: characteristic length scale (lattice spacing in physical units)
+ *
+ * Numerical stability:
+ *   - Explicit scheme requires careful time step selection
+ *   - Cooling rate is limited to prevent negative temperatures
+ *   - Most significant at high temperatures (T⁴ dependence)
+ */
+__global__ void applyRadiationBoundaryCondition(
+    float* g,
+    const float* temperature,
+    int nx, int ny, int nz,
+    float dx,
+    float dt,
+    float epsilon,
+    float rho,
+    float cp,
+    float T_ambient) {
+
+    // Top surface only (z = nz-1)
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= nx || y >= ny) return;
+
+    int z = nz - 1;  // Top surface
+    int idx = x + y * nx + z * nx * ny;
+
+    float T_surf = temperature[idx];
+
+    // Stefan-Boltzmann radiation law
+    const float sigma = 5.67e-8f;  // W/(m²·K⁴)
+
+    // Radiation heat flux [W/m²]
+    float q_rad = epsilon * sigma * (powf(T_surf, 4.0f) - powf(T_ambient, 4.0f));
+
+    // Convert to temperature decrease
+    // q_rad [W/m²] → energy loss per unit volume [W/m³] = q_rad / dx
+    // Temperature change: ΔT = -(q_rad/dx) · dt / (ρ·c_p)
+    float dT = -(q_rad / dx) * dt / (rho * cp);
+
+    // Stability: limit cooling rate to 10% of current temperature per step
+    // This prevents overshooting and negative temperatures
+    float max_cooling = -0.10f * T_surf;
+    if (dT < max_cooling) {
+        dT = max_cooling;
+    }
+
+    // Apply temperature change to all distributions (maintains isotropy)
+    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        g[idx * D3Q7::Q + q] += weights[q] * dT;
+    }
+}
+
+} // namespace physics
+} // namespace lbm

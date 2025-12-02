@@ -1,0 +1,39 @@
+# Temporary CMakeLists for diagnostic test
+cmake_minimum_required(VERSION 3.18)
+project(diagnostic_force_propagation CUDA CXX)
+
+set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CXX_STANDARD 14)
+
+# Find CUDA
+find_package(CUDA REQUIRED)
+
+# Include directories
+include_directories(
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/external/googletest/googletest/include
+)
+
+# Source files
+set(SOURCE_FILES
+    tests/diagnostic_force_propagation.cu
+    src/core/lattice_d3q19.cu
+    src/core/collision_bgk.cu
+    src/core/streaming.cu
+    src/core/boundary_conditions.cu
+    src/physics/fluid/fluid_lbm.cu
+    src/physics/material_properties.cu
+)
+
+# Create executable
+add_executable(diagnostic_force_propagation ${SOURCE_FILES})
+
+# Link libraries
+target_link_libraries(diagnostic_force_propagation
+    cudart
+)
+
+set_target_properties(diagnostic_force_propagation PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "75"
+)
