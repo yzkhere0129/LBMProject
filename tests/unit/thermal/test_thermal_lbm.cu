@@ -25,9 +25,12 @@ protected:
 // Test 1: Constructor and initialization
 TEST_F(ThermalLBMTest, ConstructorAndInitialization) {
     int nx = 10, ny = 10, nz = 10;
-    float thermal_diff = 0.1f;
+    // Use realistic thermal diffusivity for Ti6Al4V (not 0.1!)
+    float alpha_physical = 5.8e-6f;  // m²/s
+    float dt = 1.0e-7f;  // 0.1 μs
+    float dx = 2.0e-6f;  // 2 μm
 
-    ThermalLBM solver(nx, ny, nz, thermal_diff);
+    ThermalLBM solver(nx, ny, nz, alpha_physical, 8000.0f, 500.0f, dt, dx);
 
     // Check dimensions
     EXPECT_EQ(solver.getNx(), nx);
@@ -35,8 +38,13 @@ TEST_F(ThermalLBMTest, ConstructorAndInitialization) {
     EXPECT_EQ(solver.getNz(), nz);
 
     // Check thermal tau computation
-    float expected_tau = thermal_diff / D3Q7::CS2 + 0.5f;
-    EXPECT_FLOAT_EQ(solver.getThermalTau(), expected_tau);
+    // alpha_lattice = alpha_physical * dt / dx² = 5.8e-6 * 1e-7 / 4e-12 = 0.145
+    // tau = alpha_lattice / cs² + 0.5 = 0.145 / 0.25 + 0.5 = 1.08
+    float alpha_lattice = alpha_physical * dt / (dx * dx);
+    float expected_tau = alpha_lattice / D3Q7::CS2 + 0.5f;
+    EXPECT_NEAR(solver.getThermalTau(), expected_tau, 0.01f);
+    EXPECT_GT(solver.getThermalTau(), 0.5f);  // Must be > 0.5 for stability
+    EXPECT_LT(solver.getThermalTau(), 2.0f);  // Should be O(1) for physical systems
 }
 
 // Test 2: Uniform temperature initialization

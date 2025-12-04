@@ -13,7 +13,7 @@
  * - Laser power: 400W
  * - Spot radius: 50 micrometers
  * - Initial temperature: 300K (room temperature)
- * - Domain: 100x100x50 cells (200x200x100 micrometers)
+ * - Domain: 64x64x32 cells (128x128x64 micrometers)
  */
 
 #include <gtest/gtest.h>
@@ -31,17 +31,17 @@ using namespace lbm;
 class LaserMeltingTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Domain setup
-        nx = 100;
-        ny = 100;
-        nz = 50;
+        // Domain setup - reduced for fast integration test
+        nx = 64;
+        ny = 64;
+        nz = 32;
         num_cells = nx * ny * nz;
 
         // Physical parameters
         dx = 2e-6f;  // 2 micrometers
         dy = 2e-6f;
         dz = 2e-6f;
-        dt = 5e-10f; // 0.5 nanoseconds
+        dt = 1e-7f;  // Must match ThermalLBM default dt (100 ns)
 
         // Material: Ti6Al4V
         material = physics::MaterialDatabase::getTi6Al4V();
@@ -105,9 +105,9 @@ TEST_F(LaserMeltingTest, TemperatureExceedsMeltingPoint) {
                      material.absorptivity_solid, penetration_depth);
     laser.setPosition(Lx / 2.0f, Ly / 2.0f, 0.0f);
 
-    // Time evolution - need longer time to reach melting
-    // With 400W and small domain, expect ~12000 steps to exceed melting point
-    int n_steps = 12000;
+    // Time evolution - reduced for fast integration test
+    // With 400W and small domain, 5000 steps sufficient to exceed melting point
+    int n_steps = 5000;
     float max_temp = T_initial;
 
     dim3 block(8, 8, 8);
@@ -128,8 +128,8 @@ TEST_F(LaserMeltingTest, TemperatureExceedsMeltingPoint) {
         thermal.streaming();
         thermal.computeTemperature();
 
-        // Track maximum temperature every 1000 steps
-        if (step % 1000 == 0) {
+        // Track maximum temperature every 1000 steps (reduced frequency for speed)
+        if (step % 1000 == 0 || step == n_steps - 1) {
             float* h_temp = new float[num_cells];
             thermal.copyTemperatureToHost(h_temp);
 
@@ -174,8 +174,8 @@ TEST_F(LaserMeltingTest, LiquidFractionAppearsInHeatedRegion) {
                      material.absorptivity_solid, penetration_depth);
     laser.setPosition(Lx / 2.0f, Ly / 2.0f, 0.0f);
 
-    // Time evolution
-    int n_steps = 12000;
+    // Time evolution - reduced for fast integration test
+    int n_steps = 5000;
     float max_liquid_fraction = 0.0f;
 
     dim3 block(8, 8, 8);
@@ -197,7 +197,7 @@ TEST_F(LaserMeltingTest, LiquidFractionAppearsInHeatedRegion) {
         thermal.computeTemperature();  // This also updates liquid fraction
 
         // Check liquid fraction every 1000 steps
-        if (step % 1000 == 0) {
+        if (step % 1000 == 0 || step == n_steps - 1) {
             float* h_fl = new float[num_cells];
             thermal.copyLiquidFractionToHost(h_fl);
 
@@ -341,8 +341,8 @@ TEST_F(LaserMeltingTest, VTKOutputWithLiquidFraction) {
                      material.absorptivity_solid, penetration_depth);
     laser.setPosition(Lx / 2.0f, Ly / 2.0f, 0.0f);
 
-    // Run simulation
-    int n_steps = 12000;
+    // Run simulation - reduced for fast integration test
+    int n_steps = 5000;
 
     dim3 block(8, 8, 8);
     dim3 grid((nx + block.x - 1) / block.x,

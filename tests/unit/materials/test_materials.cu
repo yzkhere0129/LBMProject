@@ -50,7 +50,7 @@ TEST_F(MaterialPropertiesTest, Ti6Al4VBasicProperties) {
     // Check phase change parameters
     EXPECT_FLOAT_EQ(ti64.T_solidus, 1878.0f);
     EXPECT_FLOAT_EQ(ti64.T_liquidus, 1923.0f);
-    EXPECT_FLOAT_EQ(ti64.T_vaporization, 3533.0f);
+    EXPECT_FLOAT_EQ(ti64.T_vaporization, 3560.0f);
     EXPECT_FLOAT_EQ(ti64.L_fusion, 286000.0f);
     EXPECT_FLOAT_EQ(ti64.L_vaporization, 9830000.0f);
 

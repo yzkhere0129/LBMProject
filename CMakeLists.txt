@@ -423,3 +423,30 @@ target_link_libraries(benchmark_thermal_lpbf
     lbm_io
     CUDA::cudart
 )
+add_executable(test_evaporation_diagnostic test_evaporation_diagnostic.cu)
+set_target_properties(test_evaporation_diagnostic PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_link_libraries(test_evaporation_diagnostic lbm_physics CUDA::cudart)
+
+# Marangoni benchmark test (visualization output for comparison with waLBerla)
+add_executable(test_marangoni_benchmark tests/visualization/test_marangoni_benchmark.cu)
+set_target_properties(test_marangoni_benchmark PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+target_link_libraries(test_marangoni_benchmark
+    lbm_physics
+    lbm_io
+    CUDA::cudart
+    gtest
+    gtest_main
+)
+
+# LBM Performance Benchmark (comprehensive performance metrics for waLBerla comparison)
+add_executable(test_lbm_benchmark tests/performance/test_lbm_benchmark.cu)
+set_target_properties(test_lbm_benchmark PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+target_link_libraries(test_lbm_benchmark
+    CUDA::cudart
+    gtest
+    gtest_main
+)

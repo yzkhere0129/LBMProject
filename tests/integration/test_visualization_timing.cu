@@ -77,7 +77,7 @@ TEST_F(VisualizationTimingTest, TenThousandStepsInsufficientForMelting) {
     std::cout << "Expected result: liquid fraction = 0 throughout simulation\n\n";
 
     float thermal_diffusivity = material.getThermalDiffusivity(T_initial);
-    physics::ThermalLBM thermal(nx, ny, nz, material, thermal_diffusivity, true);
+    physics::ThermalLBM thermal(nx, ny, nz, material, thermal_diffusivity, true, dt, dx);
     thermal.initialize(T_initial);
 
     ASSERT_TRUE(thermal.hasPhaseChange()) << "Phase change must be enabled";
@@ -182,7 +182,7 @@ TEST_F(VisualizationTimingTest, TwelveThousandStepsSufficientForMelting) {
     std::cout << "Expected result: liquid fraction > 0.5 observed\n\n";
 
     float thermal_diffusivity = material.getThermalDiffusivity(T_initial);
-    physics::ThermalLBM thermal(nx, ny, nz, material, thermal_diffusivity, true);
+    physics::ThermalLBM thermal(nx, ny, nz, material, thermal_diffusivity, true, dt, dx);
     thermal.initialize(T_initial);
 
     float Lx = nx * dx;
@@ -271,7 +271,7 @@ TEST_F(VisualizationTimingTest, FindExactMeltingStartTime) {
     std::cout << "Monitor every 100 steps to find when fl first becomes > 0\n\n";
 
     float thermal_diffusivity = material.getThermalDiffusivity(T_initial);
-    physics::ThermalLBM thermal(nx, ny, nz, material, thermal_diffusivity, true);
+    physics::ThermalLBM thermal(nx, ny, nz, material, thermal_diffusivity, true, dt, dx);
     thermal.initialize(T_initial);
 
     float Lx = nx * dx;
@@ -363,7 +363,7 @@ TEST_F(VisualizationTimingTest, RecommendedStepsForVisualization) {
     std::cout << "Find minimum steps needed for fl_max >= 0.8\n\n";
 
     float thermal_diffusivity = material.getThermalDiffusivity(T_initial);
-    physics::ThermalLBM thermal(nx, ny, nz, material, thermal_diffusivity, true);
+    physics::ThermalLBM thermal(nx, ny, nz, material, thermal_diffusivity, true, dt, dx);
     thermal.initialize(T_initial);
 
     float Lx = nx * dx;

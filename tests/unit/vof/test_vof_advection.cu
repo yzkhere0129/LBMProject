@@ -110,32 +110,56 @@ protected:
      * @param fill Fill level field
      * @param nx, ny, nz Domain dimensions
      * @return Interface x-position [cells], or -1 if not found
+     *
+     * Strategy: Find the interface with the LARGEST gradient (steepest transition).
+     * This handles periodic domains where there may be multiple interfaces
+     * (e.g., when a blob of liquid wraps around the boundary).
      */
     float findInterfacePosition(const std::vector<float>& fill, int nx, int ny, int nz) {
         // Sample along center line (y=ny/2, z=nz/2)
         int mid_y = ny / 2;
         int mid_z = nz / 2;
 
-        // First try to find cells with 0.4 < f < 0.6 (diffused interface)
+        // Find interface with maximum gradient
+        float max_gradient = 0.0f;
+        int max_gradient_pos = -1;
+
         for (int i = 0; i < nx; ++i) {
+            int i_next = (i + 1) % nx;  // Wrap around for periodic boundaries
             int idx = i + nx * (mid_y + ny * mid_z);
-            if (fill[idx] > 0.4f && fill[idx] < 0.6f) {
-                return static_cast<float>(i);
+            int idx_next = i_next + nx * (mid_y + ny * mid_z);
+
+            // Compute gradient magnitude
+            float gradient = std::abs(fill[idx_next] - fill[idx]);
+
+            // Track maximum gradient position
+            if (gradient > max_gradient) {
+                max_gradient = gradient;
+                max_gradient_pos = i;
             }
         }
 
-        // If not found, look for transition from 1 to 0 (sharp interface)
-        for (int i = 0; i < nx - 1; ++i) {
-            int idx = i + nx * (mid_y + ny * mid_z);
-            int idx_next = (i + 1) + nx * (mid_y + ny * mid_z);
-
-            // Transition: current cell is liquid (f~1), next is gas (f~0)
-            if (fill[idx] > 0.9f && fill[idx_next] < 0.1f) {
-                return static_cast<float>(i) + 0.5f;  // Interface between i and i+1
-            }
+        // If no significant gradient found, return -1
+        if (max_gradient < 0.1f || max_gradient_pos == -1) {
+            return -1.0f;
         }
 
-        return -1.0f; // Not found
+        // Refine position: interpolate to find where f ≈ 0.5
+        int i = max_gradient_pos;
+        int i_next = (i + 1) % nx;
+        int idx = i + nx * (mid_y + ny * mid_z);
+        int idx_next = i_next + nx * (mid_y + ny * mid_z);
+
+        float f_i = fill[idx];
+        float f_next = fill[idx_next];
+
+        // Linear interpolation to find x where f = 0.5
+        if (std::abs(f_next - f_i) > 1e-6f) {
+            float frac = (0.5f - f_i) / (f_next - f_i);
+            return static_cast<float>(i) + frac;
+        }
+
+        return static_cast<float>(max_gradient_pos) + 0.5f;
     }
 
     /**

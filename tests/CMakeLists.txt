@@ -62,6 +62,7 @@ add_cuda_test(test_phase_properties unit/phase_change/test_phase_properties.cu)
 add_cuda_test(test_fluid_lbm unit/fluid/test_fluid_lbm.cu)
 add_cuda_test(test_fluid_debug unit/fluid/test_fluid_debug.cu)
 add_cuda_test(test_fluid_boundaries unit/fluid/test_fluid_boundaries.cu)
+add_cuda_test(test_guo_force unit/fluid/test_guo_force.cu)
 
 # Unit tests - Liquid Fraction Copy (verifies device-to-host transfer)
 add_cuda_test(test_liquid_fraction_copy unit/test_liquid_fraction_copy.cu)
@@ -365,6 +366,8 @@ target_link_libraries(test_multiphysics_temp_anomaly
 
 # Integration tests
 add_cuda_test(test_poiseuille integration/test_poiseuille_flow.cu)
+add_cuda_test(test_gravity_driven_flow integration/test_gravity_driven_flow.cu)
+add_cuda_test(test_marangoni_force_validation integration/test_marangoni_force_validation.cu)
 
 # STABILITY INTEGRATION TEST: High-Pe stability (500-step end-to-end test)
 add_cuda_test(test_high_pe_stability integration/stability/test_high_pe_stability.cu)

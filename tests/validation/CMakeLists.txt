@@ -598,7 +598,7 @@ add_test(NAME ConfigurationParserValidation
 )
 
 set_tests_properties(ConfigurationParserValidation PROPERTIES
-    TIMEOUT 300  # 5 minutes
+    TIMEOUT 30  # Quick unit test - should complete in ~1 second
     LABELS "validation;config;parser;week2;critical"
 )
 

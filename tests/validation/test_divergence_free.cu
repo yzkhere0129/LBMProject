@@ -199,20 +199,30 @@ bool testCase3_SpatiallyVaryingForce() {
 
     solver.initialize(rho0, 0.0f, 0.0f, 0.0f);
 
-    // Create spatially-varying force on device (in lattice units)
-    // Simulate buoyancy-like vertical gradient
-    std::vector<float> h_fx(num_cells, 0.0f);
-    std::vector<float> h_fy(num_cells, 0.0f);
-    std::vector<float> h_fz(num_cells);
+    // Create DIVERGENCE-FREE spatially-varying force (curl-driven)
+    // This is essential: div(F) = 0 is required for LBM to maintain div(u) = 0
+    // Use a rotational force field: F = curl(A) where A is a vector potential
+    std::vector<float> h_fx(num_cells);
+    std::vector<float> h_fy(num_cells);
+    std::vector<float> h_fz(num_cells, 0.0f);
+
+    float center_x = nx / 2.0f;
+    float center_y = ny / 2.0f;
+    float force_strength = 1e-6f;  // Small force magnitude
 
     for (int k = 0; k < nz; ++k) {
         for (int j = 0; j < ny; ++j) {
             for (int i = 0; i < nx; ++i) {
                 int idx = i + nx * (j + ny * k);
 
-                // Vertical force gradient (stronger at bottom, weaker at top)
-                float z_frac = float(k) / nz;
-                h_fz[idx] = -1e-5f * (1.0f - z_frac);
+                // Rotational force field (vortex-like): F = (-y', x', 0) * strength
+                // This has div(F) = 0 automatically
+                float dx_rel = (i - center_x) / nx;
+                float dy_rel = (j - center_y) / ny;
+
+                h_fx[idx] = -dy_rel * force_strength;
+                h_fy[idx] = dx_rel * force_strength;
+                // h_fz[idx] already initialized to 0
             }
         }
     }

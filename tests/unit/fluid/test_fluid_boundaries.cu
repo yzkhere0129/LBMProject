@@ -135,14 +135,16 @@ TEST_F(FluidBoundaryTest, PoiseuilleFlowProfile) {
     const int nx = 64;
     const int ny = 32;
     const int nz = 4;
-    const float nu = 0.1f;
+    const float nu = 0.16f;  // Increased for better stability (tau > 1.0)
     const float rho0 = 1.0f;
 
     // Create solver with walls in y-direction
+    // Use lattice units (dt = dx = 1.0) to avoid huge relaxation time
     FluidLBM solver(nx, ny, nz, nu, rho0,
                     BoundaryType::PERIODIC,
                     BoundaryType::WALL,
-                    BoundaryType::PERIODIC);
+                    BoundaryType::PERIODIC,
+                    1.0f, 1.0f);  // dt = dx = 1.0 (lattice units)
 
     // Initialize at rest
     solver.initialize(rho0, 0.0f, 0.0f, 0.0f);
@@ -151,7 +153,7 @@ TEST_F(FluidBoundaryTest, PoiseuilleFlowProfile) {
     const float force_x = 1e-5f;
 
     // Run to steady state
-    const int n_steps = 10000;
+    const int n_steps = 15000;  // More iterations for better convergence
     for (int step = 0; step < n_steps; ++step) {
         solver.computeMacroscopic();
         solver.collisionBGK(force_x, 0.0f, 0.0f);
@@ -207,14 +209,16 @@ TEST_F(FluidBoundaryTest, MomentumConservationWithWalls) {
     const int nx = 32;
     const int ny = 16;
     const int nz = 4;
-    const float nu = 0.1f;
+    const float nu = 0.16f;  // Use same viscosity as Poiseuille test
     const float rho0 = 1.0f;
 
     // Create solver with walls in y-direction
+    // Use lattice units (dt = dx = 1.0)
     FluidLBM solver(nx, ny, nz, nu, rho0,
                     BoundaryType::PERIODIC,
                     BoundaryType::WALL,
-                    BoundaryType::PERIODIC);
+                    BoundaryType::PERIODIC,
+                    1.0f, 1.0f);  // dt = dx = 1.0 (lattice units)
 
     // Initialize with uniform flow
     solver.initialize(rho0, 0.05f, 0.0f, 0.0f);

@@ -132,14 +132,18 @@ TEST_F(EnthalpyTest, EnthalpyLiquidPhase) {
     float H_expected = rho_ref * cp_ref * T_test + rho_ref * mat.L_fusion;
 
     // Check all cells
+    // Note: For large enthalpy values (~GJ/m³), use relative tolerance
+    // Absolute tolerance of 0.01% is reasonable for single-precision floats
+    float tolerance = H_expected * 1e-4f;  // 0.01% relative error
     for (int i = 0; i < num_cells; ++i) {
         EXPECT_FLOAT_EQ(h_liquid_fraction[i], 1.0f)
             << "Liquid fraction should be one in liquid phase";
 
-        EXPECT_NEAR(h_enthalpy[i], H_expected, 1.0f)
+        EXPECT_NEAR(h_enthalpy[i], H_expected, tolerance)
             << "Enthalpy calculation error at cell " << i
             << "\nExpected: " << H_expected << " J/m³"
-            << "\nGot: " << h_enthalpy[i] << " J/m³";
+            << "\nGot: " << h_enthalpy[i] << " J/m³"
+            << "\nRelative error: " << fabs(h_enthalpy[i] - H_expected) / H_expected * 100.0f << "%";
     }
 }
 

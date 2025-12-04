@@ -40,6 +40,7 @@ TEST(MultiphysicsForceDiagnostic, TemperatureGradientGeneratesForce) {
     config.enable_marangoni = true;
     config.enable_laser = false;
     config.enable_darcy = false;  // Disable Darcy to isolate Marangoni
+    config.enable_buoyancy = false;  // Disable buoyancy to isolate Marangoni
 
     config.material = MaterialDatabase::getTi6Al4V();
     config.kinematic_viscosity = 0.0333f;
@@ -170,6 +171,7 @@ TEST(MultiphysicsForceDiagnostic, UniformTemperatureGeneratesZeroForce) {
     config.enable_marangoni = true;
     config.enable_laser = false;
     config.enable_darcy = false;
+    config.enable_buoyancy = false;  // Disable buoyancy to isolate Marangoni
 
     config.material = MaterialDatabase::getTi6Al4V();
     config.kinematic_viscosity = 0.0333f;

@@ -30,7 +30,7 @@ protected:
     const int ny = 32;
     const int nz = 16;
     const float dx = 2e-6f;      // 2 micrometers
-    const float dt = 1e-9f;       // 1 nanosecond
+    const float dt = 1e-7f;      // Must match ThermalLBM default dt (100 ns)
     const float T_init = 300.0f;  // Room temperature
 
     float* d_heat_source = nullptr;

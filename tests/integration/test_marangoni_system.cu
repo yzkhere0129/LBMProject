@@ -319,6 +319,50 @@ TEST(MarangoniSystem, BoundaryConditionsApplied) {
     std::cout << "  (Informational only - boundary conditions may not be explicitly printed)" << std::endl;
 }
 
+/**
+ * @brief Global test environment to generate required output file
+ */
+class MarangoniSystemEnvironment : public ::testing::Environment {
+public:
+    void SetUp() override {
+        std::cout << "\n=== Setting up Marangoni System Test Environment ===" << std::endl;
+        std::cout << "Checking for required test output file..." << std::endl;
+
+        // Check if output file already exists
+        std::ifstream check_file("/home/yzk/LBMProject/build/marangoni_output.txt");
+        if (check_file.is_open()) {
+            std::cout << "  Output file already exists - using cached results" << std::endl;
+            check_file.close();
+            return;
+        }
+
+        // Output file doesn't exist - run test_marangoni_velocity to generate it
+        std::cout << "  Output file not found - running test_marangoni_velocity..." << std::endl;
+        std::cout << "  (This may take 1-2 minutes)" << std::endl;
+
+        // Run test_marangoni_velocity and redirect output to file
+        int result = system("cd /home/yzk/LBMProject/build && "
+                           "./tests/validation/test_marangoni_velocity > marangoni_output.txt 2>&1");
+
+        if (result != 0) {
+            std::cerr << "WARNING: test_marangoni_velocity returned non-zero exit code: " << result << std::endl;
+            std::cerr << "         Tests may fail if output file is incomplete" << std::endl;
+        }
+
+        // Verify file was created
+        std::ifstream verify_file("/home/yzk/LBMProject/build/marangoni_output.txt");
+        if (!verify_file.is_open()) {
+            std::cerr << "ERROR: Failed to generate marangoni_output.txt" << std::endl;
+            std::cerr << "       Please run: cd /home/yzk/LBMProject/build && ./tests/validation/test_marangoni_velocity" << std::endl;
+        } else {
+            std::cout << "  Output file generated successfully" << std::endl;
+            verify_file.close();
+        }
+
+        std::cout << "=== Environment setup complete ===" << std::endl;
+    }
+};
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
 
@@ -331,6 +375,9 @@ int main(int argc, char** argv) {
     std::cout << "validation test after applying geometry and" << std::endl;
     std::cout << "boundary condition fixes." << std::endl;
     std::cout << "\n";
+
+    // Register global test environment
+    ::testing::AddGlobalTestEnvironment(new MarangoniSystemEnvironment);
 
     int result = RUN_ALL_TESTS();
 

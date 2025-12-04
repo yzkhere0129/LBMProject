@@ -26,8 +26,9 @@ TEST_F(D3Q7Test, LatticeConstantsVerification) {
     // Test number of velocities
     EXPECT_EQ(D3Q7::Q, 7);
 
-    // Test speed of sound squared
-    EXPECT_FLOAT_EQ(D3Q7::CS2, 1.0f/3.0f);
+    // Test speed of sound squared for D3Q7 thermal lattice
+    // Note: D3Q7 uses CS2 = 1/4, different from D3Q19 fluid (CS2 = 1/3)
+    EXPECT_FLOAT_EQ(D3Q7::CS2, 1.0f/4.0f);
 
     // Verify weights sum to 1.0
     float weight_sum = 0.0f;
@@ -146,22 +147,23 @@ TEST_F(D3Q7Test, NeighborIndexCalculation) {
     expected = (x - 1) + y * nx + z * nx * ny;
     EXPECT_EQ(idx, expected);
 
-    // Test case 2: Boundary with periodic conditions
+    // Test case 2: Boundary with CLAMPED (adiabatic) conditions
+    // Note: D3Q7 thermal lattice uses clamped boundaries, not periodic
     x = 0; y = 0; z = 0;
 
-    // -x direction should wrap to nx-1
+    // -x direction should clamp to x=0 (not wrap)
     idx = D3Q7::getThermalNeighborIndex(x, y, z, 2, nx, ny, nz);
-    expected = (nx - 1) + 0 * nx + 0 * nx * ny;
+    expected = 0 + 0 * nx + 0 * nx * ny;  // Clamped at boundary
     EXPECT_EQ(idx, expected);
 
-    // -y direction should wrap to ny-1
+    // -y direction should clamp to y=0 (not wrap)
     idx = D3Q7::getThermalNeighborIndex(x, y, z, 4, nx, ny, nz);
-    expected = 0 + (ny - 1) * nx + 0 * nx * ny;
+    expected = 0 + 0 * nx + 0 * nx * ny;  // Clamped at boundary
     EXPECT_EQ(idx, expected);
 
-    // -z direction should wrap to nz-1
+    // -z direction should clamp to z=0 (not wrap)
     idx = D3Q7::getThermalNeighborIndex(x, y, z, 6, nx, ny, nz);
-    expected = 0 + 0 * nx + (nz - 1) * nx * ny;
+    expected = 0 + 0 * nx + 0 * nx * ny;  // Clamped at boundary
     EXPECT_EQ(idx, expected);
 }
 

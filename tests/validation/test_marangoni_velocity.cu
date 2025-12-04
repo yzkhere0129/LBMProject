@@ -467,9 +467,9 @@ TEST(MarangoniVelocityValidation, RealisticVelocityMagnitude) {
     std::cout << std::endl;
 
     // ===== Domain Setup =====
-    const int nx = 100;
-    const int ny = 100;
-    const int nz = 50;
+    const int nx = 64;
+    const int ny = 64;
+    const int nz = 32;
     const float dx = 2.0e-6f;  // 2 μm resolution
     const int num_cells = nx * ny * nz;
 
@@ -489,24 +489,8 @@ TEST(MarangoniVelocityValidation, RealisticVelocityMagnitude) {
     const float mu_liquid = 5.0e-3f;       // Pa·s (physical)
     const float dsigma_dT = -2.6e-4f;      // N/(m·K) (physical)
 
-    // Lattice units for LBM solver
-    // CORRECTED: Match physical viscosity of Ti6Al4V
-    // nu_real = 1.217e-6 m²/s → nu_lattice = nu_real * dt / dx² = 0.0304
-    // To stay stable (tau > 0.55), use tau = 0.6 → nu_lattice = 0.0333 (close enough)
-    // This gives viscosity ~1.36e-6 m²/s (12% higher, acceptable for validation)
-    const float tau_target = 0.6f;         // Relaxation time (lattice units)
-    const float cs2 = 1.0f / 3.0f;         // Speed of sound squared (lattice units)
-    const float nu_lattice = (tau_target - 0.5f) * cs2;  // Kinematic viscosity (lattice units)
-
-    // For reference: physical kinematic viscosity
-    const float nu_physical = mu_liquid / rho_liquid;  // m²/s
-
-    std::cout << "Lattice unit conversion:" << std::endl;
-    std::cout << "  tau = " << tau_target << " (matched to physical viscosity)" << std::endl;
-    std::cout << "  nu_lattice = " << nu_lattice << " (lattice units)" << std::endl;
-    std::cout << "  nu_physical_target = " << nu_physical * 1e6 << " mm²/s" << std::endl;
-    std::cout << "  Note: tau=0.6 gives nu~1.36e-6 m²/s (12% higher than target, acceptable)" << std::endl;
-    std::cout << std::endl;
+    // Physical kinematic viscosity (FluidLBM constructor will convert to lattice units)
+    const float nu_physical = mu_liquid / rho_liquid;  // m²/s = 1.217e-6 m²/s
 
     std::cout << "Material properties (Ti6Al4V liquid):" << std::endl;
     std::cout << "  ρ = " << rho_liquid << " kg/m³" << std::endl;
@@ -517,20 +501,30 @@ TEST(MarangoniVelocityValidation, RealisticVelocityMagnitude) {
 
     // ===== Time Parameters =====
     const float dt = 1.0e-7f;      // 0.1 μs timestep
-    const float simulation_time = 1.0e-3f;  // 1 ms (increased to observe interface deformation)
-    const int n_steps = static_cast<int>(simulation_time / dt);  // 10,000 steps
-    const int output_interval = 500;  // Output every 50 μs
-    const int vtk_output_interval = 200;  // VTK output every 20 μs (50 files total)
+    const float simulation_time = 5.0e-4f;  // 0.5 ms (reduced for faster testing)
+    const int n_steps = static_cast<int>(simulation_time / dt);  // 5,000 steps
+    const int output_interval = 250;  // Output every 25 μs
+    const int vtk_output_interval = 500;  // VTK output every 50 μs (10 files total)
 
     // CFL check
     const float v_expected = 1.5f;  // m/s (expected velocity)
     const float CFL = v_expected * dt / dx;
+
+    // Expected lattice parameters (for diagnostic output)
+    const float cs2 = 1.0f / 3.0f;
+    const float nu_lattice_expected = nu_physical * dt / (dx * dx);
+    const float tau_expected = nu_lattice_expected / cs2 + 0.5f;
 
     std::cout << "Time integration:" << std::endl;
     std::cout << "  dt = " << dt * 1e6 << " μs" << std::endl;
     std::cout << "  Total steps: " << n_steps << std::endl;
     std::cout << "  Total time: " << n_steps * dt * 1e6 << " μs" << std::endl;
     std::cout << "  CFL number: " << CFL << " (for v ~ " << v_expected << " m/s)" << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "Expected lattice unit conversion (FluidLBM will handle this):" << std::endl;
+    std::cout << "  nu_physical → nu_lattice: " << nu_physical << " * " << dt << " / " << (dx*dx) << " = " << nu_lattice_expected << std::endl;
+    std::cout << "  Expected tau: " << tau_expected << std::endl;
     std::cout << std::endl;
 
     ASSERT_LT(CFL, 0.5f) << "CFL condition violated - timestep too large";
@@ -540,17 +534,18 @@ TEST(MarangoniVelocityValidation, RealisticVelocityMagnitude) {
 
     VOFSolver vof(nx, ny, nz, dx);
     MarangoniEffect marangoni(nx, ny, nz, dsigma_dT, dx, 2.0f);  // h_interface = 2 cells
-    FluidLBM fluid(nx, ny, nz, nu_lattice, rho_liquid,
+    FluidLBM fluid(nx, ny, nz, nu_physical, rho_liquid,  // Pass PHYSICAL viscosity (not lattice!)
                    BoundaryType::PERIODIC,  // X direction (periodic for symmetry)
                    BoundaryType::PERIODIC,  // Y direction (periodic for symmetry)
-                   BoundaryType::WALL);      // Z direction (walls at top/bottom)
+                   BoundaryType::WALL,      // Z direction (walls at top/bottom)
+                   dt, dx);                 // Pass dt and dx for unit conversion
 
     // Initialize fluid to zero velocity
     fluid.initialize(rho_liquid, 0.0f, 0.0f, 0.0f);
 
     std::cout << "  VOF solver ready" << std::endl;
     std::cout << "  Marangoni effect ready" << std::endl;
-    std::cout << "  Fluid LBM ready (ν_lattice = " << nu_lattice << ", tau = " << tau_target << ")" << std::endl;
+    std::cout << "  Fluid LBM ready" << std::endl;
     std::cout << std::endl;
 
     // ===== Memory Cleanup Guard =====
@@ -825,7 +820,8 @@ TEST(MarangoniVelocityValidation, RealisticVelocityMagnitude) {
 
     float final_v_max = extractInterfaceVelocity(fluid, vof, dx, dt);
 
-    std::cout << "Maximum surface velocity achieved: " << final_v_max << " m/s" << std::endl;
+    std::cout << "Maximum surface velocity achieved: " << max_velocity_achieved << " m/s" << std::endl;
+    std::cout << "Final surface velocity: " << final_v_max << " m/s" << std::endl;
     std::cout << "Literature range (LPBF Ti6Al4V): 0.5 - 2.0 m/s" << std::endl;
     std::cout << "  Panwisawas 2017: 0.5-1.0 m/s (200W)" << std::endl;
     std::cout << "  Khairallah 2016: 1.0-2.0 m/s (400W)" << std::endl;

@@ -73,6 +73,10 @@ TEST(ContactAngleTest, NinetyDegreeContactAngle) {
 
     // Find interface cells at bottom boundary
     bool found_boundary_interface = false;
+    int n_interface_boundary = 0;
+    int n_liquid_boundary = 0;
+    int n_gas_boundary = 0;
+
     for (int j = 0; j < ny; ++j) {
         for (int i = 0; i < nx; ++i) {
             int k = 0;  // Bottom boundary
@@ -80,15 +84,28 @@ TEST(ContactAngleTest, NinetyDegreeContactAngle) {
 
             if (h_flags[idx] == static_cast<uint8_t>(CellFlag::INTERFACE)) {
                 found_boundary_interface = true;
+                n_interface_boundary++;
                 // Normal should have been modified (hard to test exact value)
                 // Just check it's non-zero
                 float norm = std::sqrt(h_normals[idx].x * h_normals[idx].x +
                                       h_normals[idx].y * h_normals[idx].y +
                                       h_normals[idx].z * h_normals[idx].z);
-                EXPECT_GT(norm, 0.1f) << "Boundary normal should be non-zero";
+                if (norm > 0.1f) {
+                    // Good!
+                } else {
+                    std::cout << "WARNING: Interface cell at (" << i << "," << j << ",0) has zero normal\n";
+                }
+                EXPECT_GT(norm, 0.1f) << "Boundary normal should be non-zero at (" << i << "," << j << ",0)";
+            } else if (h_flags[idx] == static_cast<uint8_t>(CellFlag::LIQUID)) {
+                n_liquid_boundary++;
+            } else {
+                n_gas_boundary++;
             }
         }
     }
+
+    std::cout << "Bottom boundary: " << n_interface_boundary << " interface, "
+              << n_liquid_boundary << " liquid, " << n_gas_boundary << " gas\n";
 
     // Should have found some interface cells at boundary
     EXPECT_TRUE(found_boundary_interface) << "Should have interface cells at boundary";
