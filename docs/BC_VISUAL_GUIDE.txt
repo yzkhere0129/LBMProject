@@ -1,0 +1,483 @@
+# Boundary Condition Visual Guide
+
+## Domain Configuration
+
+```
+                    z
+                    ↑
+                    |
+        +−−−−−−−−−−−−−−−−−−−−−−−+  z = z_max (FREE SURFACE)
+        |           ↓ p = 0      |  ← Zou-He Pressure BC
+        |                        |
+        |    ~~~~~  ← interface  |  ← Marangoni flow
+        |  ~~~~~~~~              |     (radial outward)
+        |  ~~~~~~~~~~            |
+        | ~~~~~~~~~~~~           |  ← Liquid (Ti6Al4V)
+        |  ~~~~~~~~~~            |
+        |   ~~~~~~~~             |
+        |     ~~~~               |
+        |                        |
+        +−−−−−−−−−−−−−−−−−−−−−−−+  z = 0 (SUBSTRATE)
+       /                        /   ← No-slip wall (bounce-back)
+      /                        /    ← Contact angle θ = 150°
+     +−−−−−−−−−−−−−−−−−−−−−−−+ → y
+     |
+     ↓ x
+
+Side view (x-z plane):
+  Sides at x=0, x_max, y=0, y_max: OUTFLOW (zero-gradient)
+```
+
+---
+
+## Detailed Boundary Conditions at Each Face
+
+### Bottom Boundary (z = 0): SUBSTRATE
+```
+Physics:  Solid Ti6Al4V powder bed / baseplate
+Fluid BC: No-slip wall (u = 0)
+          → Bounce-back: f_opposite = f_incoming
+
+VOF BC:   Contact angle θ = 150° (non-wetting)
+          → n_corrected = n_tan + cos(150°) * n_wall
+
+Status:   ✅ Already working (bounce-back implemented)
+Action:   Add VOF contact angle call (1 line)
+
+Schematic:
+   Liquid ~~~~~~~~~~~~~~~~
+         ~~~~~~~~~~~~~~~
+            ~~~~~~~~~~     ← Interface normal adjusted for θ
+               ~~~~~
+          _____|_____
+         /           \      ← Substrate
+        /             \
+```
+
+### Top Boundary (z = z_max): FREE SURFACE
+```
+Physics:  Open to atmosphere (gas phase)
+          Zero shear stress: ∂u_tangential/∂n = 0
+          Pressure BC: p = p_atm (≈ 0 gauge)
+
+Fluid BC: Zou-He pressure boundary
+          Known: p, u_x, u_y (from interior)
+          Unknown: u_z, f_i (pointing upward)
+          Solve: ρ = ρ₀ + p/c_s², set f_unknown = f_eq
+
+VOF BC:   Zero-gradient: f(z_max) = f(z_max-1)
+
+Status:   ❌ Currently WRONG (treated as wall)
+Action:   Implement applyFreeSurfaceTopKernel
+
+Schematic:
+                      ↑ ↑ ↑
+         p = 0   →   | | |  ← Gas (atmospheric pressure)
+         −−−−−−−−−−−−−−−−−−−−−
+         ~~~~~~~~~~~~~~~~~~~~  ← Liquid surface (free to deform)
+         ~~~~~~~~~~~~~~~~~~~~
+```
+
+### Side Boundaries (x = 0, x_max, y = 0, y_max): OUTFLOW
+```
+Physics:  Open boundaries (flow can exit)
+          Melt pool is finite (~100 μm diameter)
+          Domain is larger (200 μm) to avoid edge effects
+          No artificial reflections or pressure buildup
+
+Fluid BC: Zero-gradient (Neumann)
+          ∂u/∂n = 0, ∂ρ/∂n = 0
+          Implementation: f(boundary) = f(interior)
+
+VOF BC:   Zero-gradient: f(boundary) = f(interior)
+
+Status:   ❌ Currently PERIODIC (creates infinite domain)
+Action:   Implement applyOutflowKernel, change enum
+
+Schematic (top view x-y plane):
+
+         OUTFLOW ↑
+               | |
+               | |
+    OUTFLOW  ←     → OUTFLOW
+     ↓ ↓         ↑ ↑
+       |  LIQUID  |
+       |  ~~~~~~  |    ← Melt pool (finite)
+       |  ~~~~~~  |
+       |  ~~~~~~  |
+               ↓ OUTFLOW
+
+    Domain boundary (200×200 μm)
+    Melt pool diameter (~100 μm)
+```
+
+---
+
+## LBM Distribution Function Directions (D3Q19)
+
+```
+D3Q19 Lattice Velocities:
+
+       z
+       ↑
+       |
+    16 |  17
+    8  4  9        q=0:  ( 0, 0, 0) rest
+      \|/
+   −−−−●−−−− y    q=1:  ( 1, 0, 0) → x
+      /|\          q=2:  (-1, 0, 0) ← x
+   13 5 14         q=3:  ( 0, 1, 0) → y
+       |           q=4:  ( 0, 0, 1) → z
+     11|12         q=5:  ( 0, 0,-1) ← z
+       |
+       x           q=6-9:   (±1, ±1, 0) diagonals in x-y
+                   q=10-17: (±1, 0, ±1), (0, ±1, ±1) diagonals in x-z, y-z
+
+Boundary Directions:
+  Top (z_max):    Unknown: {4, 8, 9, 16, 17} (c_z > 0, pointing up)
+                  Known:   {5, 11, 12, 13, 14} (c_z < 0, pointing down)
+
+  Bottom (z=0):   Bounce-back reverses all incoming directions
+
+  Outflow (x=0):  All populations extrapolated from x=1
+```
+
+---
+
+## Physics Timeline During Simulation
+
+```
+t = 0 μs: Initial State
+   −−−−−−−−−−−−−−−
+   |            |  ← Free surface (p=0)
+   |            |
+   |            |
+   |~~~~~~~~~~~~|  ← Interface at z=5 (10% height)
+   |~~~~~~~~~~~~|
+   −−−−−−−−−−−−−−−  ← Substrate (no-slip)
+
+   u = 0 everywhere
+   T = T(r) (hot center, cold edge)
+
+t = 100 μs: Marangoni Effect Begins
+   −−−−−−−−−−−−−−−
+   |    →   →  |
+   |   →     → |
+   |~~~~~~~~~~~~|
+   |~~~~~~~~~~~~|  ← Flow from hot → cold (radial)
+   −−−−−−−−−−−−−−−
+
+   u_max ~ 0.5 m/s (building up)
+
+t = 500 μs: Steady Marangoni Flow
+   −−−−−−−−−−−−−−−
+   | →  →  →  →|
+   |→ →     → →|
+   |~~~\    /~~|  ← Interface deforms (thinning at center)
+   |~~~~\  /~~~|
+   |~~~~~\/~~~~|
+   −−−−−−−−−−−−−−−
+
+   u_max ~ 1.0 m/s (literature range)
+   Interface flattens under gravity
+
+t = 1000 μs: Final State (Expected)
+   −−−−−−−−−−−−−−−
+   |→  →  →  → |
+   |~~~~~~~~~~~~|  ← Interface flat (z<10)
+   |~~~~~~~~~~~~|     Gravity + Marangoni balance
+   |~~~~~~~~~~~~|
+   −−−−−−−−−−−−−−−
+
+   u_max ~ 0.7-1.5 m/s
+   Interface stable at bottom
+```
+
+---
+
+## Zou-He Algorithm Flowchart
+
+```
+         START: Top boundary (z = z_max)
+                |
+                ↓
+         [Known: p_atm, f_incoming]
+                |
+                ↓
+         Compute ρ = ρ₀ + p_atm/c_s²
+                |
+                ↓
+         Extrapolate u_x, u_y from z-1
+                |
+                ↓
+         Sum known populations: S_known
+                |
+                ↓
+         Compute momentum from known: M_known
+                |
+                ↓
+         Solve for u_z from continuity:
+         ρu_z = M_z,known + (ρ - S_known) * <c_z>_unknown
+                |
+                ↓
+         Set unknown populations:
+         f_q = f_q^eq(ρ, u_x, u_y, u_z)
+         for q ∈ {4, 8, 9, 16, 17}
+                |
+                ↓
+         Normalize (optional)
+                |
+                ↓
+              END
+```
+
+---
+
+## Contact Angle Geometry
+
+```
+Side view at substrate (z=0):
+
+Gas phase
+    ↑ ↑ ↑
+     \ | /
+      \|/       n_interface (modified by BC)
+     ^^θ^^      θ = contact angle
+    ~~~~~~~~
+   ~~~~~~~~~~   Liquid
+  ~~~~~~~~~~~~
+−−−−−−−−−−−−−−  Substrate (solid)
+
+θ = 90°:  Neutral wetting (n perpendicular to wall)
+       |
+       |
+    ~~~ ~~~
+   −−−−−−−−−
+
+θ = 150°: Non-wetting (liquid pulls away, convex)
+        \ /
+         v
+    ~~~     ~~~
+   −−−−−−−−−−−−
+
+θ = 30°:  Wetting (liquid spreads, concave)
+         / \
+        /   \
+    ~~~~~~~~~
+   −−−−−−−−−−−−
+
+For Ti6Al4V on metal: θ ≈ 140-180° (non-wetting)
+```
+
+---
+
+## Coordinate System and Indexing
+
+```
+3D Grid Indexing (flattened):
+   idx = i + nx * (j + ny * k)
+
+where:
+   i ∈ [0, nx)  → x-direction
+   j ∈ [0, ny)  → y-direction
+   k ∈ [0, nz)  → z-direction
+
+Boundary Node Indices:
+   Bottom (z=0):     k = 0       → idx = i + nx*j
+   Top (z=z_max):    k = nz-1    → idx = i + nx*(j + ny*(nz-1))
+
+   Left (x=0):       i = 0       → idx = 0 + nx*(j + ny*k)
+   Right (x=x_max):  i = nx-1    → idx = (nx-1) + nx*(j + ny*k)
+
+   Front (y=0):      j = 0       → idx = i + nx*(0 + ny*k)
+   Back (y=y_max):   j = ny-1    → idx = i + nx*((ny-1) + ny*k)
+
+Neighbor Access:
+   Below:      idx - nx*ny    (z-1)
+   Above:      idx + nx*ny    (z+1)
+   Left:       idx - 1        (x-1)
+   Right:      idx + 1        (x+1)
+   Front:      idx - nx       (y-1)
+   Back:       idx + nx       (y+1)
+```
+
+---
+
+## Kernel Launch Configuration
+
+```
+1. Free Surface Kernel (top boundary only)
+   Grid: 2D over x-y plane at z=z_max
+
+   dim3 blockSize(16, 16);
+   dim3 gridSize((nx + 15) / 16, (ny + 15) / 16);
+   applyFreeSurfaceTopKernel<<<gridSize, blockSize>>>(...);
+
+   Threads needed: nx × ny
+   Example: 100×100 = 10,000 threads
+
+2. Outflow Kernel (one face at a time)
+   Grid: 2D over perpendicular plane
+
+   For x-boundary (yz-plane):
+     dim3 blockSize(16, 16);
+     dim3 gridSize((ny + 15) / 16, (nz + 15) / 16);
+     applyOutflowKernel<<<gridSize, blockSize>>>(...);
+
+   Threads needed: ny × nz
+   Example: 100×50 = 5,000 threads
+
+3. Bounce-Back Kernel (pre-listed boundary nodes)
+   Grid: 1D over boundary node list
+
+   int blockSize = 256;
+   int gridSize = (n_boundary_nodes + 255) / 256;
+   applyBounceBackKernel<<<gridSize, blockSize>>>(...);
+
+   Threads needed: n_boundary_nodes
+   Example: 100×100 (bottom) = 10,000 nodes
+```
+
+---
+
+## Validation Visualization in ParaView
+
+```
+Steps to Visualize BC Correctness:
+
+1. Load VTK files:
+   File → Open → phase6_test2c_visualization/marangoni_flow_*.vtk
+
+2. Check Free Surface Pressure:
+   - Color by: Pressure
+   - Slice: z = z_max
+   - Expected: p ≈ 0 Pa (blue in colormap)
+   - WRONG if: p >> 0 (red/yellow → trapped gas)
+
+3. Check Interface Position:
+   - Color by: PhaseState
+   - Contour: fill_level = 0.5
+   - Expected: Interface at z < 10 (bottom 20% of domain)
+   - WRONG if: Interface at z > 10 (drifting upward)
+
+4. Check Marangoni Flow:
+   - Glyph: Velocity vectors
+   - Scale: Auto
+   - Expected: Radial outward from hot center
+   - Magnitude: 0.7-1.5 m/s (green arrows)
+
+5. Check Contact Angle:
+   - Slice: x = nx/2 (center plane)
+   - Color by: fill_level
+   - Zoom: Near z=0
+   - Expected: Meniscus angle ≈ 150° (convex)
+   - Measure: Fit circle to interface, compute angle
+
+6. Check Outflow:
+   - Slice: x = 0 (side boundary)
+   - Color by: VelocityMagnitude
+   - Expected: Smooth gradient near boundary, no oscillations
+   - WRONG if: Stripes or checkerboard pattern
+```
+
+---
+
+## Common Pitfalls and Fixes
+
+```
+Problem 1: "BC kernel not executing"
+   Symptom:   No effect after adding BC call
+   Check:     Add printf("BC applied\n") in kernel
+   Fix:       Verify cudaDeviceSynchronize() after launch
+
+Problem 2: "NaN in velocity field"
+   Symptom:   isnan(ux) returns true
+   Cause:     Division by zero in Zou-He (ρ = 0)
+   Fix:       Add check: if (rho < 1e-10f) rho = rho0;
+
+Problem 3: "Interface still drifts upward"
+   Symptom:   z_interface_max > 10 at end of simulation
+   Cause:     Free surface BC not actually applied
+   Check:     Verify boundary_z_ == WALL and boundary_type == 2
+   Fix:       Ensure condition in applyBoundaryConditions() is met
+
+Problem 4: "Mass loss at outflow"
+   Symptom:   Total mass decreases over time
+   Cause:     Zero-gradient not applied correctly
+   Check:     Verify f[idx] = f[idx_interior] for all q
+   Fix:       Add explicit loop over all 19 directions
+
+Problem 5: "Velocity discontinuity at boundary"
+   Symptom:   Sharp jump in velocity field near x=0
+   Cause:     Missing population extrapolation
+   Fix:       Ensure ALL populations copied, not just macroscopic u
+
+Problem 6: "Contact angle not visible"
+   Symptom:   Interface looks same as before BC call
+   Cause:     BC applied before interface reconstruction
+   Fix:       Ensure order: reconstructInterface() → applyBC()
+```
+
+---
+
+## Comparison: Before vs After BC Fix
+
+```
+BEFORE (Current - WRONG):
+   Domain:   Infinite (periodic X-Y)
+   Top:      Wall (traps gas, spurious pressure)
+   Interface: Drifts upward to z=12
+   Velocity:  Unrealistic (not contained)
+   Test:     ❌ FAILS
+
+                    Top Wall (WRONG)
+         −−−−−−−−−−−−−−−−−−−
+         |                |
+         |  ← Interface   |  z=12 (TOO HIGH)
+         |     drifts up  |
+         |~~~~~~~~~~~~~~~~|
+         |~~~~~~~~~~~~~~~~|
+         −−−−−−−−−−−−−−−−−−−
+            Substrate
+
+   Periodic X-Y → Infinite horizontal extent
+
+
+AFTER (Fixed - CORRECT):
+   Domain:   Finite (outflow X-Y)
+   Top:      Free surface (p=0)
+   Interface: Settles to z<10 (gravity)
+   Velocity:  0.7-1.5 m/s (literature)
+   Test:     ✅ PASSES
+
+         Free Surface p=0 (CORRECT)
+         −−−−−−−−−−−−−−−−−−−
+         |→  →  →  →   |
+         |            |
+         |~~~~~~~~~~~~|  z<10 (CORRECT)
+         |~~~~~~~~~~~~|
+         −−−−−−−−−−−−−−−−−−−
+            Substrate θ=150°
+
+   Outflow X-Y → Finite melt pool
+```
+
+---
+
+## Mathematical Summary Table
+
+| BC Type | Governing Equation | LBM Implementation | Complexity |
+|---------|-------------------|--------------------|------------|
+| No-slip wall | u = 0 | Bounce-back | Low ✅ |
+| Free surface | p = p_atm | Zou-He | Medium ⚠️ |
+| Outflow | ∂u/∂n = 0 | Extrapolation | Low ✅ |
+| Contact angle | n·n_wall = cos(θ) | Normal correction | Low ✅ |
+| Periodic | u(x) = u(x+L) | Modulo indexing | Low ✅ |
+
+---
+
+End of Visual Guide
+
+For detailed equations and implementation code, see:
+- BC_DESIGN_DOCUMENT.md (complete mathematical formulations)
+- BC_IMPLEMENTATION_SUMMARY.md (quick reference)

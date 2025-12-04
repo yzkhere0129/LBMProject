@@ -1,0 +1,170 @@
+================================================================================
+                    WEEK 3 GO/NO-GO TESTING FLOWCHART
+================================================================================
+
+                              START HERE
+                                  |
+                                  v
+                    ┌─────────────────────────────┐
+                    │  PRE-FLIGHT VERIFICATION    │
+                    │  (10 minutes)               │
+                    │                             │
+                    │  1. Energy diagnostics      │
+                    │     integrated in app?      │
+                    │  2. Executable up-to-date?  │
+                    │  3. Configs exist?          │
+                    └─────────────────────────────┘
+                                  |
+                                  v
+                            ┌──────────┐
+                            │  READY?  │
+                            └──────────┘
+                             /        \
+                        NO  /          \  YES
+                           v            v
+                    ┌─────────────┐   ┌─────────────────────────────┐
+                    │  FIX SETUP  │   │  TIER 1: SMOKE TEST         │
+                    │  See Action │   │  Runtime: 5 minutes         │
+                    │  Items doc  │   │                             │
+                    └─────────────┘   │  Config: tier1_smoke_test   │
+                                      │  Steps:  1,000 (100 μs)     │
+                                      │  Output: 10 VTK files       │
+                                      │                             │
+                                      │  What's checked:            │
+                                      │  - Laser heats material     │
+                                      │  - T_max > 1928 K           │
+                                      │  - No crash or NaN          │
+                                      └─────────────────────────────┘
+                                                  |
+                                                  v
+                                            ┌──────────┐
+                                            │  PASS?   │
+                                            │T_max>1928│
+                                            └──────────┘
+                                              /      \
+                                         NO  /        \  YES
+                                            v          v
+                                    ┌────────────┐   ┌─────────────────────────────┐
+                                    │  NO GO     │   │  TIER 2: ENERGY BALANCE     │
+                                    │            │   │  Runtime: 30 minutes        │
+                                    │  Fix:      │   │                             │
+                                    │  - Laser   │   │  Config: tier2_energy_bal   │
+                                    │    position│   │  Steps:  30,000 (3 ms)      │
+                                    │  - Laser   │   │  Output: 30 VTK + energy CSV│
+                                    │    power   │   │                             │
+                                    │  - Physics │   │  What's checked:            │
+                                    │    modules │   │  - Energy conserved < 10%   │
+                                    └────────────┘   │  - dE/dt converging         │
+                                                     │  - Steady-state trend       │
+                                                     └─────────────────────────────┘
+                                                                 |
+                                                                 v
+                                                    ┌────────────────────────┐
+                                                    │  ANALYZE RESULTS       │
+                                                    │                        │
+                                                    │  python3 analyze_      │
+                                                    │    energy_balance.py   │
+                                                    │                        │
+                                                    │  OR manually check:    │
+                                                    │  tail -20 energy.csv   │
+                                                    └────────────────────────┘
+                                                                 |
+                                                                 v
+                                                          ┌─────────────┐
+                                                          │   RESULT?   │
+                                                          └─────────────┘
+                                                          /      |      \
+                                                    FAIL /   COND |       \ PASS
+                                                        /         |        \
+                                                       v          v         v
+                                            ┌────────────┐ ┌───────────┐ ┌────────────┐
+                                            │  NO GO     │ │   TIME    │ │  FULL GO   │
+                                            │            │ │ CRITICAL? │ │            │
+                                            │  Error>15% │ └───────────┘ │  Error<5%  │
+                                            │  Fix energy│  /         \  │  Score≥85  │
+                                            │  balance   │ YES       NO  │            │
+                                            └────────────┘  |         |  │  PROCEED   │
+                                                            v         v  │  TO WEEK 3 │
+                                                    ┌───────────┐ ┌─────────────────┐
+                                                    │COND. GO   │ │ TIER 3: FULL    │
+                                                    │           │ │ Runtime: 2-3 hr │
+                                                    │Error 5-10%│ │                 │
+                                                    │Score 70-84│ │ Steps: 150,000  │
+                                                    │           │ │ (15 ms)         │
+                                                    │PROCEED    │ │                 │
+                                                    │WEEK 3     │ │ Full steady-    │
+                                                    │(CAUTION)  │ │ state check     │
+                                                    └───────────┘ └─────────────────┘
+                                                                          |
+                                                                          v
+                                                                    ┌──────────┐
+                                                                    │  PASS?   │
+                                                                    │ dE/dt<0.5│
+                                                                    │ Error<3% │
+                                                                    └──────────┘
+                                                                     /        \
+                                                                YES /          \ NO
+                                                                   v            v
+                                                            ┌──────────┐   ┌──────────┐
+                                                            │ FULL GO  │   │  NO GO   │
+                                                            │          │   │          │
+                                                            │ PROCEED  │   │ DEEPER   │
+                                                            │ TO WEEK3 │   │ DEBUG    │
+                                                            │          │   │ REQUIRED │
+                                                            └──────────┘   └──────────┘
+
+================================================================================
+                             DECISION SUMMARY
+================================================================================
+
+FULL GO         Score ≥ 85/100, Error < 5%
+                → Proceed to Week 3 with HIGH CONFIDENCE
+                → Platform validated for vapor phase
+
+CONDITIONAL GO  Score 70-84/100, Error 5-10%
+                → Proceed to Week 3 with CAUTION
+                → Monitor energy balance during development
+                → OR run Tier 3 for confirmation
+
+NO GO           Score < 70/100, Error > 15%
+                → FIX issues before Week 3
+                → Re-run testing after fixes
+                → Document root cause
+
+================================================================================
+                            TIME ESTIMATES
+================================================================================
+
+Fastest path to GO:        35 minutes  (Tier 1 + Tier 2)
+Recommended path:          45 minutes  (Tier 1 + Tier 2 + analysis)
+High-confidence path:      3.5 hours   (All tiers)
+
+Can run Tier 3 overnight if Tier 2 is borderline
+
+================================================================================
+                          QUICK COMMAND REFERENCE
+================================================================================
+
+cd /home/yzk/LBMProject/build
+
+# Tier 1 (5 min)
+./visualize_lpbf_scanning --config ../configs/calibration/tier1_smoke_test.conf
+
+# Tier 2 (30 min)
+./visualize_lpbf_scanning --config ../configs/calibration/tier2_energy_balance.conf
+
+# Analyze
+cd tier2_energy_balance
+python3 ../../scripts/analyze_energy_balance.py energy_balance.csv
+
+================================================================================
+                              FILES TO READ
+================================================================================
+
+Quick Start:        docs/TESTING_QUICK_START.md
+Full Strategy:      docs/STEADY_STATE_TESTING_STRATEGY.md
+Checklist:          docs/WEEK3_READINESS_CHECKLIST.md
+This Flowchart:     docs/TESTING_FLOWCHART.txt
+Summary:            TESTING_STRATEGY_SUMMARY.md
+
+================================================================================

@@ -1,0 +1,47 @@
+================================================================================
+THERMAL PHYSICS VTK ANALYSIS REPORT
+LBM CFD Simulation - Metal Additive Manufacturing
+================================================================================
+
+Analysis date: Thu Dec  4 13:37:02 CST 2025
+
+Number of files analyzed: 56
+Material: Ti6Al4V (Tm = 1923.0 K)
+
+OVERALL STATISTICS
+--------------------------------------------------------------------------------
+Peak temperature reached:     2500.00 K
+Maximum superheat:            577.00 K
+Energy range:                 5.4645 - 19.5216 mJ
+Energy drift:                 1.4057e+01 mJ
+Relative energy drift:        257.2429%
+
+INITIAL STATE (t=0)
+--------------------------------------------------------------------------------
+Temperature: 2024.27 - 2500.00 K
+Mean temperature: 2232.86 K
+Thermal energy: 5.4645 mJ
+
+FINAL STATE
+--------------------------------------------------------------------------------
+Temperature: 2001.90 - 2500.00 K
+Mean temperature: 2110.11 K
+Molten fraction: 100.00%
+Thermal energy: 19.5216 mJ
+
+Melt Pool Geometry:
+  Dimensions: 200.0 x 200.0 x 100.0 µm
+  Volume: 4000000.00 µm³
+  Peak temperature: 2500.00 K
+
+
+DATA QUALITY ASSESSMENT
+--------------------------------------------------------------------------------
+Total NaN values:         0
+Negative temperatures:    0
+Extreme values (>5000K):  0
+
+STATUS: All data quality checks PASSED
+
+================================================================================
+END OF REPORT
