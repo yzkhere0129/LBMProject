@@ -20,6 +20,7 @@
 #include "physics/material_properties.h"
 #include "io/vtk_writer.h"
 #include "core/lattice_d3q19.h"
+#include "diagnostics/energy_balance.h"
 
 using namespace lbm;
 
@@ -49,6 +50,67 @@ __global__ void scaleForceArrayKernel(
     fx[id] *= scale;
     fy[id] *= scale;
     fz[id] *= scale;
+}
+
+// Atomic max for float using atomicCAS
+__device__ __forceinline__ float atomicMaxFloat(float* address, float val) {
+    int* address_as_int = (int*)address;
+    int old = *address_as_int, assumed;
+
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_int, assumed,
+            __float_as_int(fmaxf(val, __int_as_float(assumed))));
+    } while (assumed != old);
+
+    return __int_as_float(old);
+}
+
+// Find maximum temperature on GPU
+__global__ void findMaxTemperatureKernel(const float* T, int num_cells, float* d_max) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    __shared__ float shared_max[256];
+
+    // Load data into shared memory
+    if (idx < num_cells) {
+        shared_max[threadIdx.x] = T[idx];
+    } else {
+        shared_max[threadIdx.x] = -1e30f;
+    }
+    __syncthreads();
+
+    // Reduction in shared memory
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            shared_max[threadIdx.x] = fmaxf(shared_max[threadIdx.x],
+                                            shared_max[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+
+    // Write result from first thread
+    if (threadIdx.x == 0) {
+        atomicMaxFloat(d_max, shared_max[0]);
+    }
+}
+
+float getMaxTemperature(const float* d_T, int num_cells) {
+    float* d_max;
+    cudaMalloc(&d_max, sizeof(float));
+    float init_val = -1e30f;
+    cudaMemcpy(d_max, &init_val, sizeof(float), cudaMemcpyHostToDevice);
+
+    int block_size = 256;
+    int grid_size = (num_cells + block_size - 1) / block_size;
+    findMaxTemperatureKernel<<<grid_size, block_size>>>(d_T, num_cells, d_max);
+    cudaDeviceSynchronize();
+
+    float h_max;
+    cudaMemcpy(&h_max, d_max, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaFree(d_max);
+
+    return h_max;
 }
 
 void printUsage(const char* prog_name) {
@@ -200,6 +262,13 @@ int main(int argc, char** argv) {
     dim3 grid((nx + block.x - 1) / block.x,
               (ny + block.y - 1) / block.y,
               (nz + block.z - 1) / block.z);
+
+    // Initialize energy balance tracker
+    diagnostics::EnergyBalanceTracker energy_tracker;
+    double *d_E_thermal = nullptr, *d_E_kinetic = nullptr, *d_E_latent = nullptr;
+    cudaMalloc(&d_E_thermal, sizeof(double));
+    cudaMalloc(&d_E_kinetic, sizeof(double));
+    cudaMalloc(&d_E_latent, sizeof(double));
 
     // 创建输出目录
     system(("mkdir -p " + cfg.output_dir).c_str());
@@ -374,18 +443,101 @@ int main(int argc, char** argv) {
                           << "  (输出: " << filename << ")\n";
             }
         }
+
+        // Compute energy diagnostics at regular intervals
+        if (step % cfg.time.output_interval == 0) {
+            if (thermal) {
+                // Compute energy components
+                diagnostics::EnergyBalance balance;
+                balance.reset();
+                balance.step = step;
+                balance.time = current_time;
+
+                // Thermal energy
+                diagnostics::computeThermalEnergy(
+                    thermal->getTemperature(),
+                    thermal->getLiquidFraction(),
+                    mat.rho_solid,
+                    mat.cp_solid,
+                    mat.cp_liquid,
+                    static_cast<float>(dx),
+                    cfg.initial.temperature,  // T_ref
+                    nx, ny, nz,
+                    d_E_thermal
+                );
+                cudaMemcpy(&balance.E_thermal, d_E_thermal, sizeof(double), cudaMemcpyDeviceToHost);
+
+                // Kinetic energy (if fluid enabled)
+                if (fluid) {
+                    diagnostics::computeKineticEnergy(
+                        fluid->getVelocityX(),
+                        fluid->getVelocityY(),
+                        fluid->getVelocityZ(),
+                        mat.rho_liquid,
+                        static_cast<float>(dx),
+                        nx, ny, nz,
+                        d_E_kinetic
+                    );
+                    cudaMemcpy(&balance.E_kinetic, d_E_kinetic, sizeof(double), cudaMemcpyDeviceToHost);
+                }
+
+                // Latent energy (if phase change enabled)
+                if (cfg.physics.phase_change_enabled) {
+                    diagnostics::computeLatentEnergy(
+                        thermal->getLiquidFraction(),
+                        mat.rho_solid,
+                        mat.L_fusion,
+                        static_cast<float>(dx),
+                        nx, ny, nz,
+                        d_E_latent
+                    );
+                    cudaMemcpy(&balance.E_latent, d_E_latent, sizeof(double), cudaMemcpyDeviceToHost);
+                }
+
+                // Total energy
+                balance.updateTotal();
+
+                // Power terms
+                if (laser) {
+                    balance.P_laser = cfg.laser.power * cfg.laser.absorption;
+                }
+
+                // Update tracker and compute errors
+                // Use the actual time interval between samples, not the timestep dt
+                double diagnostic_dt = cfg.time.output_interval * dt;
+                energy_tracker.update(balance, diagnostic_dt);
+            }
+        }
+
+        // At final step, output energy diagnostics for test parsing
+        if (step == cfg.time.n_steps && thermal) {
+            const auto& current_balance = energy_tracker.getCurrent();
+            float T_max = getMaxTemperature(thermal->getTemperature(), num_cells);
+
+            std::cout << "\n";
+            std::cout << "=== ENERGY DIAGNOSTIC OUTPUT ===\n";
+            std::cout << "T_max = " << T_max << " K\n";
+            std::cout << "Energy error = " << current_balance.error_percent << "%\n";
+            std::cout << "dE/dt = " << current_balance.dE_dt_computed << " W\n";
+            std::cout << "P_laser = " << current_balance.P_laser << " W\n";
+            std::cout << "=================================\n";
+        }
     }
 
     std::cout << "──────────────────────────────────────────────────\n";
     std::cout << "\n✓ 仿真完成！\n";
     std::cout << "  输出目录: " << cfg.output_dir << "/\n";
-    std::cout << "  文件数量: " << (cfg.time.n_steps / cfg.time.output_interval + 1) << "\n\n";
+    std::cout << "  文件数量: " << (cfg.time.n_steps / cfg.time.output_interval + 1) << "\n";
+    std::cout << "  Completed: Step " << cfg.time.n_steps << " / " << cfg.time.n_steps << "\n\n";
 
     // 清理
     if (d_fx) cudaFree(d_fx);
     if (d_fy) cudaFree(d_fy);
     if (d_fz) cudaFree(d_fz);
     if (d_heat_source) cudaFree(d_heat_source);
+    if (d_E_thermal) cudaFree(d_E_thermal);
+    if (d_E_kinetic) cudaFree(d_E_kinetic);
+    if (d_E_latent) cudaFree(d_E_latent);
 
     return 0;
 }

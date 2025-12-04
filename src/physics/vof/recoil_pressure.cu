@@ -37,13 +37,14 @@ namespace {
     constexpr float L_VAP = 8.878e6f;       // Latent heat of vaporization [J/kg]
     constexpr float M_MOLAR = 0.0479f;      // Molar mass [kg/mol]
     constexpr float R_GAS = 8.314f;         // Universal gas constant [J/(mol.K)]
-    constexpr float T_BOIL = 3533.0f;       // Boiling temperature [K]
+    constexpr float T_BOIL = 3560.0f;       // Boiling temperature [K] (ASM Handbook)
 
     // Precomputed Clausius-Clapeyron exponent factor: L_vap * M / R
     constexpr float CC_FACTOR = L_VAP * M_MOLAR / R_GAS;  // ~51096 K
 
     // Temperature threshold for recoil activation (T_boil - 500K)
-    constexpr float T_ACTIVATION = T_BOIL - 500.0f;  // 3033 K
+    // Pre-boiling evaporation occurs due to vapor pressure buildup
+    constexpr float T_ACTIVATION = T_BOIL - 500.0f;  // 3060 K
 }
 
 // ============================================================================

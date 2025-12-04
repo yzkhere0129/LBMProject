@@ -283,6 +283,7 @@ private:
  * @param cp_solid Solid specific heat [J/(kg·K)]
  * @param cp_liquid Liquid specific heat [J/(kg·K)]
  * @param dx Lattice spacing [m]
+ * @param T_ref Reference temperature for sensible energy [K]
  * @param nx, ny, nz Grid dimensions
  * @param d_result Output: thermal energy [J] (device memory, single double)
  */
@@ -293,6 +294,7 @@ void computeThermalEnergy(
     float cp_solid,
     float cp_liquid,
     float dx,
+    float T_ref,
     int nx, int ny, int nz,
     double* d_result);
 

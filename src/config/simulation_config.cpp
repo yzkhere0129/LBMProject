@@ -84,6 +84,7 @@ void SimulationConfig::loadFromKeyValue(const std::string& content) {
         }
 
         // 根据section和key设置值
+        // Support both flat format (no sections) and sectioned format
         if (current_section == "simulation") {
             if (key == "name") name = value;
             else if (key == "output_dir") output_dir = value;
@@ -135,6 +136,56 @@ void SimulationConfig::loadFromKeyValue(const std::string& content) {
         }
         else if (current_section == "initial") {
             if (key == "temperature") initial.temperature = std::stod(value);
+        }
+        else {
+            // FLAT FORMAT support (no section): Try to match key directly
+            // Domain keys
+            if (key == "nx") domain.nx = std::stoi(value);
+            else if (key == "ny") domain.ny = std::stoi(value);
+            else if (key == "nz") domain.nz = std::stoi(value);
+            else if (key == "Lx") domain.Lx = std::stod(value);
+            else if (key == "Ly") domain.Ly = std::stod(value);
+            else if (key == "Lz") domain.Lz = std::stod(value);
+            // Time keys
+            else if (key == "dt") time.dt = std::stod(value);
+            else if (key == "n_steps" || key == "total_steps") time.n_steps = std::stoi(value);  // Support both
+            else if (key == "output_interval") time.output_interval = std::stoi(value);
+            // Material keys
+            else if (key == "material_type") material.type = value;
+            // Simulation keys
+            else if (key == "simulation_name") name = value;
+            else if (key == "output_dir" || key == "output_directory") output_dir = value;
+            // Physics keys
+            else if (key == "thermal_enabled") physics.thermal_enabled = (value == "true" || value == "1");
+            else if (key == "phase_change_enabled") physics.phase_change_enabled = (value == "true" || value == "1");
+            else if (key == "fluid_enabled") physics.fluid_enabled = (value == "true" || value == "1");
+            else if (key == "buoyancy_enabled") physics.buoyancy_enabled = (value == "true" || value == "1");
+            else if (key == "darcy_enabled") physics.darcy_enabled = (value == "true" || value == "1");
+            else if (key == "marangoni_enabled") physics.marangoni_enabled = (value == "true" || value == "1");
+            // Laser keys
+            else if (key == "laser_enabled") laser.enabled = (value == "true" || value == "1");
+            else if (key == "laser_power") laser.power = std::stod(value);
+            else if (key == "laser_spot_radius") laser.spot_radius = std::stod(value);
+            else if (key == "laser_absorptivity" || key == "laser_absorption") laser.absorption = std::stod(value);
+            else if (key == "laser_penetration_depth") laser.penetration_depth = std::stod(value);
+            else if (key == "laser_start_x") laser.position[0] = std::stod(value);
+            else if (key == "laser_end_x") {  /* ignored for now - scan path */ }
+            else if (key == "laser_shutoff_time" || key == "laser_turn_off_time") {
+                double val = std::stod(value);
+                if (val > 0) laser.turn_off_time = val;
+            }
+            // Old material keys (ignored - we use MaterialDatabase)
+            else if (key == "darcy_coefficient") { /* Use default */ }
+            else if (key == "kinematic_viscosity") { /* Use default */ }
+            else if (key == "thermal_diffusivity") { /* Use default */ }
+            else if (key == "density") { /* Use default */ }
+            else if (key == "surface_tension_coeff") { /* Use default */ }
+            else if (key == "dsigma_dT") { /* Use default */ }
+            // Boundary keys
+            else if (key == "thermal_bc") boundary.thermal_type = value;
+            else if (key == "fluid_bc") boundary.fluid_type = value;
+            // Initial conditions
+            else if (key == "initial_temperature") initial.temperature = std::stod(value);
         }
     }
 }

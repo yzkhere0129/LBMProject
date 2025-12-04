@@ -516,11 +516,13 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
       current_time_(0.0f),
       interface_z_(static_cast<float>(config.nz - 1)),  // Default: surface at top
       initial_mass_(0.0f),
+      initial_temperature_(300.0f),  // Default: room temperature
       previous_thermal_energy_(0.0f),
       previous_time_(0.0f),
       current_step_(0),
       d_energy_temp_(nullptr),
-      energy_output_interval_(default_energy_interval_)
+      energy_output_interval_(default_energy_interval_),
+      time_last_computed_(-1.0f)  // Initialize to negative to force first computation
 {
     // Validate configuration
     if (config_.nx <= 0 || config_.ny <= 0 || config_.nz <= 0) {
@@ -667,6 +669,12 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
     force_accumulator_ = std::make_unique<ForceAccumulator>(
         config_.nx, config_.ny, config_.nz);
 
+    // Point legacy force arrays to ForceAccumulator's internal arrays
+    // This avoids unnecessary memory allocation and copying
+    d_force_x_ = force_accumulator_->getFx();
+    d_force_y_ = force_accumulator_->getFy();
+    d_force_z_ = force_accumulator_->getFz();
+
     std::cout << "MultiphysicsSolver initialized:" << std::endl;
     std::cout << "  Grid: " << config_.nx << " x " << config_.ny
               << " x " << config_.nz << std::endl;
@@ -762,11 +770,9 @@ void MultiphysicsSolver::allocateMemory() {
                                std::string(cudaGetErrorString(err)));
     }
 
-    // CRITICAL FIX: Initialize force arrays to zero to prevent garbage values
-    // This ensures forces are clean even before first call to computeTotalForce()
-    cudaMemset(d_force_x_, 0, num_cells * sizeof(float));
-    cudaMemset(d_force_y_, 0, num_cells * sizeof(float));
-    cudaMemset(d_force_z_, 0, num_cells * sizeof(float));
+    // NOTE: Force arrays (d_force_x/y/z_) now point to ForceAccumulator's internal arrays
+    // ForceAccumulator handles initialization via reset() called before each step
+    // No need to cudaMemset them here
 
     // Initialize liquid fraction to 1.0 (fully liquid) by default
     std::vector<float> h_lf(num_cells, 1.0f);
@@ -794,6 +800,9 @@ void MultiphysicsSolver::initialize(float initial_temperature,
                                     float interface_height)
 {
     int num_cells = config_.nx * config_.ny * config_.nz;
+
+    // Store initial temperature for energy reference
+    initial_temperature_ = initial_temperature;
 
     // Initialize temperature
     if (config_.enable_thermal && thermal_) {
@@ -854,6 +863,13 @@ void MultiphysicsSolver::initialize(const float* temperature_field,
                                     const float* fill_level_field)
 {
     int num_cells = config_.nx * config_.ny * config_.nz;
+
+    // Compute average temperature as reference for energy calculations
+    float sum_T = 0.0f;
+    for (int i = 0; i < num_cells; ++i) {
+        sum_T += temperature_field[i];
+    }
+    initial_temperature_ = sum_T / num_cells;
 
     // Initialize temperature
     if (config_.enable_thermal && thermal_) {
@@ -921,6 +937,52 @@ void MultiphysicsSolver::step(float dt) {
         } else {
             // Only reconstruct interface (Step 1: no advection)
             vof_->reconstructInterface();
+        }
+    }
+
+    // ========================================================================
+    // EVAPORATION MASS LOSS: Remove material due to evaporation
+    // ========================================================================
+    // CRITICAL FIX: Moved out of vofStep() so it works even when fluid is disabled
+    // Physics: Evaporation removes material from the surface
+    //   dm/dt = -J_evap * A_interface    [kg/s]
+    //   df/dt = -J_evap / (rho * dx)     [1/s]
+    //
+    // This couples the thermal solver's evaporation calculation to VOF:
+    // - ThermalLBM computes J_evap using Hertz-Knudsen-Langmuir model
+    // - VOFSolver applies mass loss to fill_level field
+    //
+    // Requirements: enable_thermal && enable_evaporation_mass_loss && vof_
+    // ========================================================================
+    if (config_.enable_evaporation_mass_loss && config_.enable_thermal && thermal_ && vof_) {
+        // Compute evaporation mass flux from thermal solver
+        // Pass VOF fill_level to compute evaporation only at actual interface
+        thermal_->computeEvaporationMassFlux(d_evap_mass_flux_, vof_->getFillLevel());
+
+        // Apply mass loss to VOF fill_level
+        vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
+                                       config_.material.rho_liquid,
+                                       dt);
+
+        // Diagnostic: Print evaporation info every 100 steps
+        if (current_step_ % 100 == 0) {
+            int num_cells = config_.nx * config_.ny * config_.nz;
+            std::vector<float> h_J_evap(num_cells);
+            cudaMemcpy(h_J_evap.data(), d_evap_mass_flux_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+
+            float max_J = 0.0f;
+            int evap_cells = 0;
+            for (int i = 0; i < num_cells; ++i) {
+                if (h_J_evap[i] > 1e-10f) {
+                    evap_cells++;
+                    max_J = std::max(max_J, h_J_evap[i]);
+                }
+            }
+
+            if (evap_cells > 0) {
+                printf("[EVAPORATION] Step %d: active_cells=%d, max_J=%.4e kg/(m^2*s)\n",
+                       current_step_, evap_cells, max_J);
+            }
         }
     }
 
@@ -1152,76 +1214,8 @@ void MultiphysicsSolver::vofStep(float dt) {
                               dt_sub);
     }
 
-    // ========================================================================
-    // EVAPORATION MASS LOSS: Remove material due to evaporation
-    // ========================================================================
-    // Physics: Evaporation removes material from the surface
-    //   dm/dt = -J_evap * A_interface    [kg/s]
-    //   df/dt = -J_evap / (rho * dx)     [1/s]
-    //
-    // This couples the thermal solver's evaporation calculation to VOF:
-    // - ThermalLBM computes J_evap using Hertz-Knudsen-Langmuir model
-    // - VOFSolver applies mass loss to fill_level field
-    //
-    // Requirements: enable_thermal && enable_evaporation_mass_loss
-    // ========================================================================
-    if (config_.enable_evaporation_mass_loss && config_.enable_thermal && thermal_) {
-        // Compute evaporation mass flux from thermal solver
-        // FIX: Pass VOF fill_level to compute evaporation only at actual interface,
-        //      not at fixed z=nz-1. This prevents "cold region evaporation" bug.
-        thermal_->computeEvaporationMassFlux(d_evap_mass_flux_, vof_->getFillLevel());
-
-        // Apply mass loss to VOF fill_level
-        vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
-                                       config_.material.rho_liquid,
-                                       dt);
-
-        // ============================================================
-        // ENHANCED DIAGNOSTIC: Evaporation mass loss analysis
-        // ============================================================
-        // Print detailed info every 100 steps for debugging cavity issues
-        if (current_step_ % 100 == 0) {
-            std::vector<float> h_J_evap(num_cells);
-            cudaMemcpy(h_J_evap.data(), d_evap_mass_flux_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
-
-            float max_J = 0.0f;
-            int evap_cells = 0;
-            int max_J_idx = 0;
-            float sum_J = 0.0f;
-
-            for (int i = 0; i < num_cells; ++i) {
-                float J = h_J_evap[i];
-                if (J > 1e-10f) {
-                    evap_cells++;
-                    sum_J += J;
-                    if (J > max_J) {
-                        max_J = J;
-                        max_J_idx = i;
-                    }
-                }
-            }
-
-            // Compute position of max evaporation
-            int iz = max_J_idx / (config_.nx * config_.ny);
-            int iy = (max_J_idx - iz * config_.nx * config_.ny) / config_.nx;
-            int ix = max_J_idx % config_.nx;
-
-            // Compute expected df from evaporation
-            float expected_df_max = -max_J * dt / (config_.material.rho_liquid * config_.dx);
-
-            printf("[EVAPORATION DIAGNOSTIC] Step %d:\n", current_step_);
-            printf("  Active evaporation cells: %d\n", evap_cells);
-            printf("  Max J_evap: %.6e kg/(m^2*s) at (%d, %d, %d)\n", max_J, ix, iy, iz);
-            printf("  Sum J_evap: %.6e kg/(m^2*s)\n", sum_J);
-            printf("  Expected max df: %.6e (per timestep)\n", expected_df_max);
-            printf("  rho_liquid = %.1f kg/m^3, dx = %.2e m\n",
-                   config_.material.rho_liquid, config_.dx);
-
-            if (evap_cells > 0 && std::abs(expected_df_max) > 0.01f) {
-                printf("  WARNING: Large evaporation rate detected! This may cause excessive mass loss.\n");
-            }
-        }
-    }
+    // REMOVED: Evaporation logic moved to main step() function (line ~957)
+    // so it works even when fluid is disabled
 
     // ========================================================================
     // SOLIDIFICATION SHRINKAGE: Apply volume change due to solidification
@@ -1474,134 +1468,63 @@ void MultiphysicsSolver::fluidStep(float dt) {
     }
 
     // ========================================================================
-    // CFL-based force limiter for numerical stability
+    // CRITICAL FIX: CFL limiting is ALREADY applied in computeTotalForce()
     // ========================================================================
-    // Three modes available:
+    // The ForceAccumulator already applies CFL limiting in computeTotalForce()
+    // via force_accumulator_->applyCFLLimiting() or applyCFLLimitingAdaptive().
     //
-    // 1. Adaptive region-based (config_.cfl_use_adaptive = true):
-    //    - Different velocity limits for interface/bulk/solid/gas regions
-    //    - Best for keyhole simulations with strong recoil pressure
-    //    - Allows high velocity at interface, moderate in bulk, zero in solid
-    //    - Special boost for z-dominant (recoil) forces at interface
+    // Since d_force_x/y/z_ point DIRECTLY to ForceAccumulator's internal arrays
+    // (see line 674-676 in constructor), applying CFL limiting here would be
+    // DOUBLE LIMITING, which severely over-limits forces and breaks buoyancy.
     //
-    // 2. Gradual scaling (config_.cfl_use_gradual_scaling = true):
-    //    - Smoothly ramps down forces as velocity approaches target
-    //    - Better for deformation studies (allows stronger initial forces)
-    //    - Uses config_.cfl_velocity_target and config_.cfl_force_ramp_factor
-    //
-    // 3. Hard CFL limit (config_.cfl_use_gradual_scaling = false):
-    //    - Traditional CFL-based cutoff
-    //    - Better for stability-critical simulations
-    //    - Uses config_.cfl_limit
+    // BUG FIX: Remove duplicate CFL limiting here
     // ========================================================================
-
-    if (config_.cfl_use_adaptive && vof_ != nullptr) {
-        // Adaptive region-based mode: best for keyhole simulations
-        // Requires VOF (for fill level) and thermal (for liquid fraction)
-        const float* liquid_fraction_ptr = nullptr;
-        if (thermal_ != nullptr) {
-            liquid_fraction_ptr = thermal_->getLiquidFraction();
-        } else if (d_liquid_fraction_static_ != nullptr) {
-            liquid_fraction_ptr = d_liquid_fraction_static_;
-        }
-
-        if (liquid_fraction_ptr != nullptr) {
-            limitForcesByCFL_AdaptiveKernel<<<blocks, threads>>>(
-                d_force_x_, d_force_y_, d_force_z_,
-                fluid_->getVelocityX(),
-                fluid_->getVelocityY(),
-                fluid_->getVelocityZ(),
-                vof_->getFillLevel(),
-                liquid_fraction_ptr,
-                config_.cfl_v_target_interface,
-                config_.cfl_v_target_bulk,
-                config_.cfl_interface_threshold_lo,
-                config_.cfl_interface_threshold_hi,
-                config_.cfl_recoil_boost_factor,
-                config_.cfl_force_ramp_factor,
-                num_cells
-            );
-        } else {
-            // Fallback: no liquid fraction available, use gradual scaling
-            limitForcesGradual_kernel<<<blocks, threads>>>(
-                d_force_x_, d_force_y_, d_force_z_,
-                fluid_->getVelocityX(),
-                fluid_->getVelocityY(),
-                fluid_->getVelocityZ(),
-                config_.cfl_velocity_target,
-                config_.cfl_force_ramp_factor,
-                num_cells
-            );
-        }
-    } else if (config_.cfl_use_gradual_scaling) {
-        // Gradual scaling mode: better for observing surface deformation
-        limitForcesGradual_kernel<<<blocks, threads>>>(
-            d_force_x_, d_force_y_, d_force_z_,
-            fluid_->getVelocityX(),
-            fluid_->getVelocityY(),
-            fluid_->getVelocityZ(),
-            config_.cfl_velocity_target,
-            config_.cfl_force_ramp_factor,
-            num_cells
-        );
-    } else {
-        // Traditional CFL limit mode
-        limitForcesByCFL_kernel<<<blocks, threads>>>(
-            d_force_x_, d_force_y_, d_force_z_,
-            fluid_->getVelocityX(),
-            fluid_->getVelocityY(),
-            fluid_->getVelocityZ(),
-            dt, config_.dx, config_.cfl_limit,
-            num_cells
-        );
-    }
-    cudaDeviceSynchronize();
 
     if (enable_cfl_diag) {
-        // Sample force from FULL domain (to capture hot zone near top)
-        std::vector<float> h_fx_after(num_cells);
-        std::vector<float> h_fy_after(num_cells);
-        std::vector<float> h_fz_after(num_cells);
-        cudaMemcpy(h_fx_after.data(), d_force_x_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_fy_after.data(), d_force_y_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_fz_after.data(), d_force_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+        // CFL limiting was already applied in computeTotalForce()
+        // Report final force magnitudes (after CFL limiting in ForceAccumulator)
+        std::vector<float> h_fx_final(num_cells);
+        std::vector<float> h_fy_final(num_cells);
+        std::vector<float> h_fz_final(num_cells);
+        cudaMemcpy(h_fx_final.data(), d_force_x_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_fy_final.data(), d_force_y_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_fz_final.data(), d_force_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
 
-        float max_f_after = 0.0f;
-        float max_f_z_after = 0.0f;
-        int max_f_after_idx = 0;
+        float max_f_final = 0.0f;
+        float max_f_z_final = 0.0f;
+        int max_f_final_idx = 0;
         for (int i = 0; i < num_cells; ++i) {
-            float f_mag = std::sqrt(h_fx_after[i]*h_fx_after[i] + h_fy_after[i]*h_fy_after[i] + h_fz_after[i]*h_fz_after[i]);
-            if (f_mag > max_f_after) {
-                max_f_after = f_mag;
-                max_f_after_idx = i;
+            float f_mag = std::sqrt(h_fx_final[i]*h_fx_final[i] + h_fy_final[i]*h_fy_final[i] + h_fz_final[i]*h_fz_final[i]);
+            if (f_mag > max_f_final) {
+                max_f_final = f_mag;
+                max_f_final_idx = i;
             }
-            max_f_z_after = std::max(max_f_z_after, std::abs(h_fz_after[i]));
+            max_f_z_final = std::max(max_f_z_final, std::abs(h_fz_final[i]));
         }
 
         float reduction = (max_f_before_cfl > 0) ?
-            ((max_f_before_cfl - max_f_after) / max_f_before_cfl * 100.0f) : 0.0f;
+            ((max_f_before_cfl - max_f_final) / max_f_before_cfl * 100.0f) : 0.0f;
 
-        std::cout << "  Force AFTER CFL:  " << std::scientific << std::setprecision(3)
-                  << max_f_after << " (lattice units)\n";
-        std::cout << "  Max F_z after:    " << max_f_z_after << " (lattice units)\n";
+        std::cout << "  Force FINAL (after CFL in ForceAccumulator): " << std::scientific << std::setprecision(3)
+                  << max_f_final << " (lattice units)\n";
+        std::cout << "  Max F_z final:    " << max_f_z_final << " (lattice units)\n";
         std::cout << std::fixed << std::setprecision(3);
         std::cout << "  CFL reduction: " << reduction << " %\n";
 
         if (config_.cfl_use_adaptive) {
-            std::cout << "  Mode: ADAPTIVE REGION-BASED\n";
+            std::cout << "  Mode: ADAPTIVE REGION-BASED (applied in ForceAccumulator)\n";
             std::cout << "    v_target_interface = " << config_.cfl_v_target_interface << " (lattice)\n";
             std::cout << "    v_target_interface = " << (config_.cfl_v_target_interface * config_.dx / config_.dt) << " m/s (physical)\n";
             std::cout << "    v_target_bulk      = " << config_.cfl_v_target_bulk << " (lattice)\n";
             std::cout << "    v_target_bulk      = " << (config_.cfl_v_target_bulk * config_.dx / config_.dt) << " m/s (physical)\n";
             std::cout << "    recoil_boost       = " << config_.cfl_recoil_boost_factor << "x\n";
         } else if (config_.cfl_use_gradual_scaling) {
-            std::cout << "  Mode: GRADUAL SCALING\n";
+            std::cout << "  Mode: GRADUAL SCALING (applied in ForceAccumulator)\n";
             std::cout << "    v_target = " << config_.cfl_velocity_target << " (lattice)\n";
             std::cout << "    v_target = " << (config_.cfl_velocity_target * config_.dx / config_.dt) << " m/s (physical)\n";
             std::cout << "    ramp_factor = " << config_.cfl_force_ramp_factor << "\n";
         } else {
-            std::cout << "  Mode: HARD CFL LIMIT\n";
-            std::cout << "    CFL_max = " << config_.cfl_limit << "\n";
+            std::cout << "  Mode: NO CFL LIMITING (both adaptive and gradual disabled)\n";
         }
 
         if (reduction > 90.0f) {
@@ -1725,7 +1648,8 @@ void MultiphysicsSolver::computeTotalForce() {
                 config_.recoil_coefficient,
                 config_.recoil_smoothing_width,
                 config_.recoil_max_pressure,
-                config_.nx, config_.ny, config_.nz);
+                config_.nx, config_.ny, config_.nz,
+                config_.dx);
         }
     }
 
@@ -1809,12 +1733,9 @@ void MultiphysicsSolver::computeTotalForce() {
         diagnostic_call_count++;
     }
 
-    // Copy forces from ForceAccumulator to legacy d_force_x/y/z_ arrays
-    // This maintains backward compatibility with the existing fluidStep() code
-    int num_cells = config_.nx * config_.ny * config_.nz;
-    cudaMemcpy(d_force_x_, force_accumulator_->getFx(), num_cells * sizeof(float), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(d_force_y_, force_accumulator_->getFy(), num_cells * sizeof(float), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(d_force_z_, force_accumulator_->getFz(), num_cells * sizeof(float), cudaMemcpyDeviceToDevice);
+    // NOTE: d_force_x/y/z_ now directly point to ForceAccumulator's internal arrays
+    // No need to copy - they're already the same memory!
+    // Old code: cudaMemcpy(d_force_x_, force_accumulator_->getFx(), ...) is now redundant
 }
 
 
@@ -1941,16 +1862,84 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
         return 0.0f;  // Laser is off
     }
 
-    // Absorbed power = Total power × absorptivity
-    return config_.laser_power * config_.laser_absorptivity;
+    // ============================================================================
+    // ENERGY BALANCE FIX: Compute actual deposited power by integrating Q
+    // ============================================================================
+    // Problem: Nominal power (P × A) != actual deposited power due to:
+    //   1. Discretization error (Gaussian beam on finite grid)
+    //   2. Domain truncation (beam extends beyond domain)
+    //   3. Surface geometry (VOF interface position)
+    //
+    // Solution: Integrate actual volumetric heat source Q(x,y,z) over domain
+    //   P_actual = ∫∫∫ Q(x,y,z) dV = Σ Q_i * dx³
+    //
+    // This matches the actual energy entering the thermal solver.
+    // ============================================================================
+
+    // Allocate temporary device memory for heat source
+    int num_cells = config_.nx * config_.ny * config_.nz;
+    float* d_heat_source = nullptr;
+    cudaMalloc(&d_heat_source, num_cells * sizeof(float));
+
+    // Compute volumetric heat source from laser (same as applyLaserSource)
+    dim3 threads(8, 8, 8);
+    dim3 blocks(
+        (config_.nx + threads.x - 1) / threads.x,
+        (config_.ny + threads.y - 1) / threads.y,
+        (config_.nz + threads.z - 1) / threads.z
+    );
+
+    // Use current interface position for laser absorption
+    float z_surface = interface_z_;
+
+    computeLaserHeatSourceKernel<<<blocks, threads>>>(
+        d_heat_source,
+        *laser_,
+        config_.nx, config_.ny, config_.nz,
+        config_.dx,
+        z_surface
+    );
+    cudaDeviceSynchronize();
+
+    // Integrate heat source over domain using CUB reduction
+    float total_power = computeTotalLaserEnergy(
+        d_heat_source,
+        config_.dx, config_.dx, config_.dx,
+        config_.nx, config_.ny, config_.nz
+    );
+
+    // Free temporary memory
+    cudaFree(d_heat_source);
+
+    return total_power;
 }
 
 float MultiphysicsSolver::getEvaporationPower() const {
+    if (!config_.enable_evaporation_mass_loss) return 0.0f;
     if (!config_.enable_thermal || !thermal_) return 0.0f;
-    if (!vof_) return 0.0f;
+    if (!vof_ || !d_evap_mass_flux_) return 0.0f;
 
-    const float* fill_level = vof_->getFillLevel();
-    return thermal_->computeEvaporationPower(fill_level, config_.dx);
+    // CRITICAL FIX: Compute power directly from d_evap_mass_flux_ array
+    // Power = Σ (J_evap * A * L_vap) where:
+    //   J_evap [kg/(m^2*s)] = evaporation mass flux
+    //   A [m^2] = cell surface area = dx^2
+    //   L_vap [J/kg] = latent heat of vaporization
+    // Total: P_evap = Σ J_i * dx^2 * L_vap  [W]
+
+    int num_cells = config_.nx * config_.ny * config_.nz;
+    std::vector<float> h_J_evap(num_cells);
+    cudaMemcpy(h_J_evap.data(), d_evap_mass_flux_,
+               num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+
+    float L_vap = config_.material.L_vaporization;  // [J/kg]
+    float A = config_.dx * config_.dx;  // [m^2]
+
+    float total_power = 0.0f;
+    for (int i = 0; i < num_cells; ++i) {
+        total_power += h_J_evap[i] * A * L_vap;  // [kg/(m^2*s)] * [m^2] * [J/kg] = [W]
+    }
+
+    return total_power;
 }
 
 float MultiphysicsSolver::getRadiationPower() const {
@@ -2077,12 +2066,33 @@ void MultiphysicsSolver::printEnergyBalance() {
         return;
     }
 
-    // Compute all power terms [W]
-    float P_laser = getLaserAbsorbedPower();
-    float P_evap = getEvaporationPower();
-    float P_rad = getRadiationPower();
-    float P_substrate = getSubstratePower();
-    float dE_dt = getThermalEnergyChangeRate();
+    // ============================================================================
+    // BUG FIX (Dec 2, 2025): Use EnergyBalanceTracker's dE/dt computation
+    // ============================================================================
+    // PROBLEM: getThermalEnergyChangeRate() uses moving average with history,
+    //          but returns 0 if called infrequently (< 2 points in history).
+    //
+    // SOLUTION: Use the energy balance tracker which is updated regularly.
+    //           If computeEnergyBalance() hasn't been called this timestep,
+    //           call it now. Otherwise, use the cached values.
+    //
+    // Note: We check if tracker is fresh by comparing time_last_computed_
+    //       with current_time_.
+    // ============================================================================
+
+    // Compute energy balance if not already done this timestep
+    if (time_last_computed_ < current_time_) {
+        computeEnergyBalance();
+    }
+
+    const auto& balance = energy_tracker_.getCurrent();
+
+    // Get power terms from balance (they're always fresh)
+    float P_laser = balance.P_laser;
+    float P_evap = balance.P_evaporation;
+    float P_rad = balance.P_radiation;
+    float P_substrate = balance.P_substrate;
+    float dE_dt = balance.dE_dt_computed;
 
     // Energy balance equation: P_laser = P_evap + P_rad + P_substrate + dE/dt
     float P_in = P_laser;
@@ -2221,17 +2231,19 @@ void MultiphysicsSolver::computeEnergyBalance() {
     const float* uy = fluid_ ? fluid_->getVelocityY() : nullptr;
     const float* uz = fluid_ ? fluid_->getVelocityZ() : nullptr;
 
-    // Thermal energy: ∫ ρ c_p T dV
-    computeThermalEnergy(
-        T, f_liquid,
-        config_.material.rho_liquid,
-        config_.material.cp_solid,
-        config_.material.cp_liquid,
-        config_.dx,
-        config_.nx, config_.ny, config_.nz,
-        d_energy_temp_
-    );
-    cudaMemcpy(&balance.E_thermal, d_energy_temp_, sizeof(double), cudaMemcpyDeviceToHost);
+    // ============================================================================
+    // BUG FIX (Dec 2, 2025): Use ThermalLBM's own energy computation
+    // ============================================================================
+    // PROBLEM: diagnostics::computeThermalEnergy() uses constant density,
+    //          but addHeatSourceKernel() uses temperature-dependent density.
+    //          This creates mismatch: energy computed with rho_liquid (4110)
+    //          but heat deposited using rho_solid (4420) → 7% error.
+    //
+    // SOLUTION: Use ThermalLBM::computeTotalThermalEnergy() which properly
+    //           accounts for temperature-dependent rho(T) and cp(T), matching
+    //           the actual physics in addHeatSourceKernel().
+    // ============================================================================
+    balance.E_thermal = thermal_->computeTotalThermalEnergy(config_.dx);
 
     // Kinetic energy: ∫ 0.5 ρ |u|² dV
     if (config_.enable_fluid && fluid_) {
@@ -2278,8 +2290,22 @@ void MultiphysicsSolver::computeEnergyBalance() {
     // ========================================================================
     // Update tracker and compute error
     // ========================================================================
+    // BUG FIX (Dec 2, 2025): Use actual time elapsed since last computation
+    //
+    // PROBLEM: Tracker expects dt = time between calls, but we were passing
+    //          config_.dt (single timestep). When computeEnergyBalance() is
+    //          called infrequently (e.g., every 100 steps), dE/dt calculation
+    //          is wrong by factor of 100!
+    //
+    // SOLUTION: Track time of last call and compute actual dt_elapsed.
+    // ========================================================================
 
-    energy_tracker_.update(balance, config_.dt);
+    double dt_elapsed = (time_last_computed_ < 0.0f) ? config_.dt : (current_time_ - time_last_computed_);
+
+    energy_tracker_.update(balance, dt_elapsed);
+
+    // Mark that energy balance was computed at this time
+    time_last_computed_ = current_time_;
 }
 
 void MultiphysicsSolver::writeEnergyBalanceHistory(const std::string& filename) const {

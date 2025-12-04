@@ -216,6 +216,20 @@ public:
      */
     PhaseChangeSolver* getPhaseChangeSolver() { return phase_solver_; }
 
+    /**
+     * @brief Apply latent heat correction for phase change
+     * @param dt Time step [s]
+     *
+     * This method implements the source term approach for phase change:
+     * 1. Store current liquid fraction
+     * 2. Update liquid fraction based on new temperature
+     * 3. Compute ΔT = -L/(ρ·cp) · Δfl (latent heat sink/source)
+     * 4. Apply correction to temperature field
+     *
+     * Must be called after computeTemperature() in each time step.
+     */
+    void applyPhaseChangeCorrection(float dt);
+
     // ========================================================================
     // Energy Diagnostics (for energy conservation verification)
     // ========================================================================
@@ -295,6 +309,7 @@ private:
     float rho_;             ///< Material density [kg/m³]
     float cp_;              ///< Specific heat capacity [J/(kg·K)]
     float emissivity_;      ///< Surface emissivity (0-1)
+    float T_initial_;       ///< Initial temperature for energy reference [K]
 
     // Phase change support (optional)
     PhaseChangeSolver* phase_solver_;  ///< Phase change solver (nullptr if disabled)

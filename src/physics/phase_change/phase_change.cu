@@ -326,6 +326,10 @@ void PhaseChangeSolver::initializeFromTemperature(const float* temperature) {
         temperature, d_enthalpy, d_liquid_fraction, num_cells_);
 
     cudaDeviceSynchronize();
+
+    // Store initial liquid fraction as "previous" for first time step
+    cudaMemcpy(d_liquid_fraction_prev_, d_liquid_fraction,
+               num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
 }
 
 void PhaseChangeSolver::updateEnthalpyFromTemperature(const float* temperature) {

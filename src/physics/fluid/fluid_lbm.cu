@@ -15,6 +15,12 @@ namespace physics {
 
 using namespace lbm::core;
 
+// Forward declarations of CUDA kernels
+__global__ void setWallVelocityZeroKernel(
+    float* ux, float* uy, float* uz,
+    const BoundaryNode* boundary_nodes,
+    int n_boundary, int nx, int ny, int nz);
+
 // Constructor
 FluidLBM::FluidLBM(int nx, int ny, int nz,
                    float kinematic_viscosity,
@@ -382,6 +388,17 @@ void FluidLBM::computeMacroscopic() {
     // Compute pressure
     computePressureKernel<<<grid_size, block_size>>>(
         d_rho, d_pressure, rho0_, D3Q19::CS2, num_cells_);
+
+    // Enforce zero velocity at wall nodes (no-slip condition)
+    if (n_boundary_nodes_ > 0) {
+        int wall_grid_size = (n_boundary_nodes_ + block_size - 1) / block_size;
+        setWallVelocityZeroKernel<<<wall_grid_size, block_size>>>(
+            d_ux, d_uy, d_uz,
+            d_boundary_nodes_,
+            n_boundary_nodes_,
+            nx_, ny_, nz_
+        );
+    }
 
     cudaDeviceSynchronize();
 }
@@ -804,8 +821,42 @@ __global__ void fluidStreamingKernelWithWalls(
     int id = idx + idy * nx + idz * nx * ny;
     int n_cells = nx * ny * nz;
 
+    // Check if current cell is a wall boundary node and determine which walls
+    unsigned int wall_directions = 0;
+    if (!periodic_x) {
+        if (idx == 0) wall_directions |= Streaming::BOUNDARY_X_MIN;
+        if (idx == nx - 1) wall_directions |= Streaming::BOUNDARY_X_MAX;
+    }
+    if (!periodic_y) {
+        if (idy == 0) wall_directions |= Streaming::BOUNDARY_Y_MIN;
+        if (idy == ny - 1) wall_directions |= Streaming::BOUNDARY_Y_MAX;
+    }
+    if (!periodic_z) {
+        if (idz == 0) wall_directions |= Streaming::BOUNDARY_Z_MIN;
+        if (idz == nz - 1) wall_directions |= Streaming::BOUNDARY_Z_MAX;
+    }
+
+    bool is_wall_node = (wall_directions != 0);
+
     // Stream each distribution function
     for (int q = 0; q < D3Q19::Q; ++q) {
+        // Check if this is an outgoing direction at a wall (should not stream)
+        bool is_outgoing_at_wall = false;
+        if (is_wall_node) {
+            if ((wall_directions & Streaming::BOUNDARY_X_MIN) && ex[q] < 0) is_outgoing_at_wall = true;
+            if ((wall_directions & Streaming::BOUNDARY_X_MAX) && ex[q] > 0) is_outgoing_at_wall = true;
+            if ((wall_directions & Streaming::BOUNDARY_Y_MIN) && ey[q] < 0) is_outgoing_at_wall = true;
+            if ((wall_directions & Streaming::BOUNDARY_Y_MAX) && ey[q] > 0) is_outgoing_at_wall = true;
+            if ((wall_directions & Streaming::BOUNDARY_Z_MIN) && ez[q] < 0) is_outgoing_at_wall = true;
+            if ((wall_directions & Streaming::BOUNDARY_Z_MAX) && ez[q] > 0) is_outgoing_at_wall = true;
+        }
+
+        if (is_outgoing_at_wall) {
+            // This distribution points out of the domain at a wall - don't stream it
+            // It will be set by bounce-back kernel after streaming
+            continue;
+        }
+
         // Compute destination coordinates
         int dst_x = idx + ex[q];
         int dst_y = idy + ey[q];
@@ -827,11 +878,11 @@ __global__ void fluidStreamingKernelWithWalls(
             dst_y >= 0 && dst_y < ny &&
             dst_z >= 0 && dst_z < nz) {
 
+            // Stream normally
             int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
             f_dst[dst_id + q * n_cells] = f_src[id + q * n_cells];
         }
-        // If destination is out of bounds (wall), don't stream
-        // The bounce-back will handle it
+        // If destination is out of bounds, don't stream (non-periodic boundary)
     }
 }
 
@@ -958,6 +1009,29 @@ __global__ void applyDarcyDampingKernel(
     force_x[id] += damping_factor * ux[id];
     force_y[id] += damping_factor * uy[id];
     force_z[id] += damping_factor * uz[id];
+}
+
+// Set wall velocity to zero (enforce no-slip condition on velocity field)
+__global__ void setWallVelocityZeroKernel(
+    float* ux,
+    float* uy,
+    float* uz,
+    const core::BoundaryNode* boundary_nodes,
+    int n_boundary,
+    int nx, int ny, int nz)
+{
+    int bid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (bid >= n_boundary) return;
+
+    core::BoundaryNode node = boundary_nodes[bid];
+    if (node.type != core::BoundaryType::BOUNCE_BACK) return;
+
+    int id = node.x + node.y * nx + node.z * nx * ny;
+
+    // Explicitly enforce zero velocity at wall nodes
+    ux[id] = 0.0f;
+    uy[id] = 0.0f;
+    uz[id] = 0.0f;
 }
 
 } // namespace physics

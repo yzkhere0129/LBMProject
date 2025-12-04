@@ -142,6 +142,18 @@ public:
     const float* getLiquidFractionRate() const { return d_dfl_dt_; }
 
     /**
+     * @brief Get pointer to previous liquid fraction field (device memory)
+     * @return Device pointer to previous fl array
+     */
+    float* getPreviousLiquidFraction() { return d_liquid_fraction_prev_; }
+
+    /**
+     * @brief Get pointer to previous liquid fraction field (const device memory)
+     * @return Const device pointer to previous fl array
+     */
+    const float* getPreviousLiquidFraction() const { return d_liquid_fraction_prev_; }
+
+    /**
      * @brief Copy enthalpy to host
      * @param host_enthalpy Host array (must be pre-allocated)
      */

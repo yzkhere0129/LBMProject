@@ -112,11 +112,12 @@ public:
      * @param dsigma_dT Temperature coefficient of surface tension [N/(m·K)]
      * @param nx, ny, nz Grid dimensions
      * @param dx Lattice spacing [m]
+     * @param h_interface Interface thickness [cells] (typically 2.0)
      * @note Adds F_m = (dσ/dT · ∇T) × n [N/m³]
      */
     void addMarangoniForce(const float* temperature, const float* fill_level,
                            const float3* normals, float dsigma_dT,
-                           int nx, int ny, int nz, float dx);
+                           int nx, int ny, int nz, float dx, float h_interface = 2.0f);
 
     /**
      * @brief Add recoil pressure force (evaporation-driven)
@@ -131,6 +132,7 @@ public:
      * @param smoothing_width Interface smoothing width [cells]
      * @param max_pressure Maximum allowed pressure [Pa]
      * @param nx, ny, nz Grid dimensions
+     * @param dx Lattice spacing [m] (required for volumetric force conversion)
      * @note Adds F_recoil = P_recoil · n [N/m³]
      * @note P_recoil = C_r · P_sat(T) where P_sat uses Clausius-Clapeyron
      */
@@ -138,7 +140,7 @@ public:
                                 const float3* normals, float T_boil, float L_v,
                                 float M, float P_atm, float C_r,
                                 float smoothing_width, float max_pressure,
-                                int nx, int ny, int nz);
+                                int nx, int ny, int nz, float dx);
 
     /**
      * @brief Convert accumulated forces from physical units to lattice units

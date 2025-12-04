@@ -38,7 +38,7 @@ extern __constant__ float tw[7];
 class D3Q7 {
 public:
     static constexpr int Q = 7;  ///< Number of discrete velocities
-    static constexpr float CS2 = 1.0f / 3.0f;  ///< Speed of sound squared (lattice units)
+    static constexpr float CS2 = 1.0f / 4.0f;  ///< Speed of sound squared (lattice units) - FIXED: was 1/3, should be 1/4 for D3Q7 thermal
 
     /**
      * @brief Initialize D3Q7 lattice constants on device

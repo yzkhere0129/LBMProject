@@ -548,6 +548,7 @@ private:
     float initial_mass_;
 
     // Energy tracking for diagnostics
+    float initial_temperature_;              ///< Initial temperature for energy reference [K]
     mutable float previous_thermal_energy_;  ///< Previous timestep's thermal energy [J]
     mutable float previous_time_;            ///< Previous timestep's time [s]
 
@@ -565,6 +566,7 @@ private:
     double* d_energy_temp_;                              ///< Device memory for energy reduction
     int energy_output_interval_;                         ///< Output energy balance every N steps
     static constexpr int default_energy_interval_ = 10;  ///< Default: every 10 steps
+    mutable float time_last_computed_;                   ///< Time when energy balance was last computed [s]
 
     /**
      * @brief Compute total heat flux through domain boundaries (lateral conduction)

@@ -50,8 +50,16 @@ __global__ void initializeReductionKernel(double* d_result) {
 /**
  * @brief Compute thermal energy per cell and accumulate
  *
- * Thermal energy: E_thermal = ∫ ρ c_p(T) T dV
+ * Thermal energy: E_thermal = ∫ ρ c_p(T) (T - T_ref) dV
  * where c_p(T) depends on liquid fraction for mushy zone
+ *
+ * BUG FIX (Dec 2, 2025): Use (T - T_ref) for sensible energy
+ *
+ * The sensible energy must be computed relative to a reference temperature,
+ * not absolute temperature. Using absolute T causes energy conservation
+ * violations when computing dE/dt.
+ *
+ * Reference temperature: Typically T_initial or T_solidus
  */
 __global__ void computeThermalEnergyKernel(
     const float* T,
@@ -60,6 +68,7 @@ __global__ void computeThermalEnergyKernel(
     float cp_solid,
     float cp_liquid,
     float dx,
+    float T_ref,
     int nx, int ny, int nz,
     double* d_result)
 {
@@ -83,9 +92,11 @@ __global__ void computeThermalEnergyKernel(
     // Volume element [m³]
     float dV = dx * dx * dx;
 
-    // Thermal energy in this cell: E = ρ c_p T dV [J]
+    // Thermal energy in this cell: E = ρ c_p (T - T_ref) dV [J]
+    // FIXED: Use (T - T_ref) instead of absolute T
+    // This prevents artificial energy from constant baseline temperature
     // Note: This is sensible heat only (latent heat computed separately)
-    double E_cell = rho * cp * temperature * dV;
+    double E_cell = rho * cp * (temperature - T_ref) * dV;
 
     // Atomic accumulation (global memory)
     atomicAdd(d_result, E_cell);
@@ -180,6 +191,7 @@ void computeThermalEnergy(
     float cp_solid,
     float cp_liquid,
     float dx,
+    float T_ref,
     int nx, int ny, int nz,
     double* d_result)
 {
@@ -195,7 +207,7 @@ void computeThermalEnergy(
     );
 
     computeThermalEnergyKernel<<<grid, block>>>(
-        T, f_liquid, rho, cp_solid, cp_liquid, dx,
+        T, f_liquid, rho, cp_solid, cp_liquid, dx, T_ref,
         nx, ny, nz, d_result
     );
 

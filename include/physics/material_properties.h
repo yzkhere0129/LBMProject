@@ -97,6 +97,32 @@ struct MaterialProperties {
     }
 
     /**
+     * @brief Get apparent heat capacity including latent heat effect
+     * @param T Temperature [K]
+     * @return Apparent heat capacity [J/(kg·K)]
+     *
+     * In the mushy zone, the apparent heat capacity includes latent heat:
+     * C_app = cp + L · (dfl/dT)
+     * where dfl/dT = 1/(T_liquidus - T_solidus) in mushy zone
+     *
+     * This represents the total energy required to raise temperature by 1K,
+     * including both sensible heat (cp) and latent heat absorption (L·dfl/dT).
+     */
+    __host__ __device__ float getApparentHeatCapacity(float T) const {
+        float cp = getSpecificHeat(T);
+
+        if (T >= T_solidus && T <= T_liquidus) {
+            // In mushy zone: add latent heat contribution
+            // dfl/dT = 1/(T_liquidus - T_solidus)
+            float dfl_dT = 1.0f / (T_liquidus - T_solidus);
+            return cp + L_fusion * dfl_dT;
+        } else {
+            // Outside mushy zone: only sensible heat
+            return cp;
+        }
+    }
+
+    /**
      * @brief Get thermal conductivity at given temperature
      * @param T Temperature [K]
      * @return Thermal conductivity [W/(m·K)]
@@ -116,13 +142,18 @@ struct MaterialProperties {
     /**
      * @brief Calculate thermal diffusivity at given temperature
      * @param T Temperature [K]
+     * @param include_latent_heat If true, use apparent heat capacity (default: false)
      * @return Thermal diffusivity [m²/s]
+     *
+     * Note: For phase change problems, set include_latent_heat=true to get
+     * effective diffusivity α_eff = k / (ρ · C_app) where C_app includes latent heat.
+     * This automatically slows down heat propagation in the mushy zone.
      */
-    __host__ __device__ float getThermalDiffusivity(float T) const {
+    __host__ __device__ float getThermalDiffusivity(float T, bool include_latent_heat = false) const {
         float k = getThermalConductivity(T);
         float rho = getDensity(T);
-        float cp = getSpecificHeat(T);
-        return k / (rho * cp);
+        float cp_eff = include_latent_heat ? getApparentHeatCapacity(T) : getSpecificHeat(T);
+        return k / (rho * cp_eff);
     }
 
     /**

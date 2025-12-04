@@ -379,13 +379,16 @@ void VTKWriter::writeStructuredGridWithVectors(
     }
 
     // Write VOF fill level scalar field (for free surface visualization)
-    file << "\nSCALARS FillLevel float 1\n";
-    file << "LOOKUP_TABLE default\n";
-    for (int k = 0; k < nz; ++k) {
-        for (int j = 0; j < ny; ++j) {
-            for (int i = 0; i < nx; ++i) {
-                int idx = i + j * nx + k * nx * ny;
-                file << fill_level[idx] << "\n";
+    // Only write if fill_level data is provided
+    if (fill_level != nullptr) {
+        file << "\nSCALARS FillLevel float 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = 0; k < nz; ++k) {
+            for (int j = 0; j < ny; ++j) {
+                for (int i = 0; i < nx; ++i) {
+                    int idx = i + j * nx + k * nx * ny;
+                    file << fill_level[idx] << "\n";
+                }
             }
         }
     }

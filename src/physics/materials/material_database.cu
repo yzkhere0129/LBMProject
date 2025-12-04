@@ -34,7 +34,7 @@ MaterialProperties MaterialDatabase::getTi6Al4V() {
     // Phase change parameters
     mat.T_solidus = 1878.0f;           // K
     mat.T_liquidus = 1923.0f;          // K (melting point)
-    mat.T_vaporization = 3533.0f;      // K (boiling point)
+    mat.T_vaporization = 3560.0f;      // K (boiling point, ASM Handbook)
     mat.L_fusion = 286000.0f;          // J/kg
     mat.L_vaporization = 9830000.0f;   // J/kg
 
