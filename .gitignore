@@ -66,3 +66,48 @@ docs/_build/
 !CLAUDE.md
 !ARCHITECTURE.md
 !docs/*.md
+
+# Gemini/Claude specific files
+.claude/
+
+# Python virtual environment
+venv/
+
+# Backup files
+*.backup*
+*.bak
+
+# Generated Documentation & Reports
+# Ignore all markdown and text files by default
+*.md
+*.txt
+*.pdf
+
+# Then, un-ignore the ones that are explicitly tracked or should be.
+# This is a more maintainable approach than listing all reports.
+!README.md
+!README_DOCS.md
+!CLAUDE.md
+!ARCHITECTURE.md
+!CMakeLists.txt
+!LBM_Framework_Blueprint.json
+!MATERIAL_DATABASE.yaml
+!*.sh
+
+# Un-ignore documentation source files
+!docs/**/*.md
+
+# Test files in root
+test_*.cu
+
+# Output directories
+presentation_figures/
+test_reports/
+backups/
+
+# Config files (assuming they are for specific tests and not part of the core config)
+/configs/
+
+# Generated images and templates
+*.png
+*.template

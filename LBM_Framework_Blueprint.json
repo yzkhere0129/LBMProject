@@ -1,0 +1,563 @@
+{
+  "project_name": "LBM-CUDA-Framework-AM",
+  "version": "2.1.0-dev",
+  "description": "A modular, extensible, Walberla-inspired LBM-CUDA framework. Target: CFD simulation of Additive Manufacturing processes (DED, LPBF). Revised to strictly follow Walberla patterns, focusing on core LBM and PDE-based thermal solver first.",
+  "implementation_language": "CUDA/C++",
+  "grid": {
+    "type": "BlockStructured",
+    "description": "The computational domain is decomposed into a forest of structured blocks, inspired by the walberla::blockforest::BlockForest data structure. This enables efficient parallelization and Adaptive Mesh Refinement (AMR).",
+    "indexing": {
+      "local": "Cell-based, (i, j, k) within each block.",
+      "global": "Unique ID for each block in the forest."
+    },
+    "blocks": {
+      "description": "Each block is a uniform Cartesian grid of cells.",
+      "size": {
+        "value": [
+          16,
+          16,
+          16
+        ],
+        "notes": "Block size is fixed at compile time. Power-of-two sizes are generally optimal for GPU architectures."
+      },
+      "communication": {
+        "type": "Halo/Ghost Cells",
+        "depth": 2,
+        "notes": "Each block is surrounded by layers of ghost cells to exchange data with its neighbors. A depth of 2 is standard for LBM (one for streaming, one for finite difference stencils like gradients)."
+      }
+    },
+    "amr": {
+      "enabled": false,
+      "strategy": "Octree-based refinement/coarsening",
+      "description": "Blocks can be dynamically refined or coarsened based on physical criteria, forming an octree structure.",
+      "max_refinement_level": 8,
+      "min_refinement_level": 0,
+      "criteria": {
+        "types": [
+          "gradient_based",
+          "vorticity_based",
+          "region_based",
+          "user_defined"
+        ],
+        "default": "gradient_based",
+        "field": "velocity",
+        "frequency_check_steps": 50,
+        "notes": "Refinement criteria are evaluated periodically to adapt the grid to the evolving simulation."
+      },
+      "notes": "AMR is a planned feature for a future version (e.g., V2.0) to manage initial implementation complexity."
+    },
+    "parallel_partitioning": {
+      "description": "For V1.0, the framework targets a single GPU. The block-based structure is maintained for architectural consistency and future multi-GPU scalability, but inter-process communication is out of scope."
+    }
+  },
+  "data_structures": {
+    "description": "Core data structures for storing and managing simulation data on the grid.",
+    "memory_layout": {
+      "default": "SoA",
+      "options": [
+        "SoA",
+        "AoS"
+      ],
+      "notes": "Structure of Arrays (SoA) is the default for GPU performance, as it facilitates coalesced memory access and vectorization."
+    },
+    "fields": {
+      "description": "Fields represent physical quantities stored per cell on the grid. They are the primary data containers.",
+      "storage_location": [
+        "device",
+        "host"
+      ],
+      "notes": "Fields primarily live on the GPU (device) for computation, but can be mirrored or copied to the CPU (host) for I/O, complex logic, or communication.",
+      "types": [
+        {
+          "name": "PdfField",
+          "description": "Stores the LBM probability distribution functions (PDFs) for each cell.",
+          "precision": "float",
+          "stencil": "D3Q19",
+          "layout": "SoA",
+          "notes": "The core LBM data. Stencil (e.g., D3Q19, D3Q27) determines the number of distributions per cell. Defaulting to single precision for LBM distributions significantly improves performance on GPUs by reducing memory bandwidth and increasing computational throughput. Double precision can be used selectively for other fields where necessary."
+        },
+        {
+          "name": "ScalarField",
+          "description": "Stores a single scalar value per cell.",
+          "precision": "double",
+          "examples": [
+            "density",
+            "pressure",
+            "temperature",
+            "enthalpy",
+            "phase_fraction",
+            "level_set_phi"
+          ]
+        },
+        {
+          "name": "VectorField",
+          "description": "Stores a 3D vector per cell.",
+          "precision": "double",
+          "examples": [
+            "velocity",
+            "force",
+            "momentum"
+          ]
+        },
+        {
+          "name": "FlagField",
+          "description": "Stores integer flags per cell to identify its type (e.g., fluid, solid boundary, interface). Inspired by walberla::field::FlagField. Essential for handling multi-phase/solid regions.",
+          "precision": "uint32_t",
+          "flags": [
+            {
+              "name": "GAS",
+              "value": "1 << 0",
+              "description": "Ambient gas phase."
+            },
+            {
+              "name": "LIQUID",
+              "value": "1 << 1",
+              "description": "Molten metal phase."
+            },
+            {
+              "name": "SOLID",
+              "value": "1 << 2",
+              "description": "Solid metal phase (substrate or solidified)."
+            },
+            {
+              "name": "INTERFACE",
+              "value": "1 << 3",
+              "description": "Marks LIQUID cells adjacent to GAS cells (free surface)."
+            },
+            {
+              "name": "NO_SLIP_BOUNDARY",
+              "value": "1 << 4",
+              "description": "Generic no-slip wall boundary."
+            }
+          ]
+        }
+        // Removed ColorFunctionField, will likely be replaced by LevelSetField later
+      ]
+    },
+    "gpu_specifics": {
+      "description": "Details related to GPU data management and performance.",
+      "device_data_structures": "Fields are mapped to pitched, 3D CUDA arrays or linearized memory regions for optimal performance.",
+      "memory_management": {
+        "allocator": "Custom pooling allocator",
+        "host_transfer": "Use pinned (page-locked) memory for asynchronous Host-to-Device and Device-to-Host transfers via CUDA Streams."
+      },
+      "kernel_launch": {
+        "grid_dim": "One MPI rank per GPU, one CUDA grid per simulation.",
+        "block_dim": "One CUDA block per grid block (from the BlockForest).",
+        "thread_dim": "Threads within a CUDA block map to cells within a grid block."
+      }
+    }
+  },
+  "lbm_models": {
+    "description": "Defines the library of available Lattice Boltzmann models, components, and coupled physics.",
+    "lattice_stencils": {
+      "default": "D3Q19",
+      "options": [
+        {
+          "name": "D3Q19",
+          "description": "19 discrete velocities in 3 dimensions. A standard, robust choice for general-purpose fluid dynamics."
+        },
+        {
+          "name": "D3Q27",
+          "description": "27 discrete velocities in 3 dimensions. Recommended for thermal-hydrodynamic coupling (more accurate temperature gradient) and higher-order models."
+        }
+      ]
+    },
+    "collision_operators": {
+      "default": "MRT",
+      "options": [
+        {
+          "name": "SRT_BGK",
+          "description": "Single-Relaxation-Time Bhatnagar-Gross-Krook. The simplest operator. Recommended starting point for validation before enabling MRT."
+        },
+        {
+          "name": "MRT",
+          "description": "Multi-Relaxation-Time. Offers superior stability and accuracy, especially for low-viscosity flows, by relaxing different fluid moments at different rates. Target model, but more complex to implement and debug correctly."
+        },
+        {
+          "name": "Cumulant",
+          "description": "An advanced, very stable collision model for high Reynolds number flows, based on a statistical cumulant expansion."
+        }
+      ]
+    },
+    "forcing_schemes": {
+      "description": "Methods to incorporate body forces (e.g., gravity, buoyancy, interface forces) into the LBM equation.",
+      "default": "Guo",
+      "options": [
+        {
+          "name": "Guo",
+          "description": "A well-established and accurate forcing scheme that correctly recovers the Navier-Stokes equations."
+        },
+        {
+          "name": "Shan-Chen",
+          "description": "A popular scheme for simulating multiphase and multicomponent flows by introducing a pseudo-potential-based inter-particle interaction force."
+        }
+      ]
+    },
+    "thermal_models": { // Kept for reference, main logic moves to ThermalSweepPDE
+      "description": "Models for handling heat transport and its coupling with the fluid flow. Actual implementation within ThermalSweepPDE.",
+      "default": "CoupledEnthalpy",
+      "options": [
+        {
+          "name": "PassiveScalar",
+          "description": "Simple advection-diffusion model for temperature."
+        },
+        {
+          "name": "CoupledEnthalpy",
+          "description": "Enthalpy formulation for phase change (melting/solidification)."
+        }
+      ]
+    }
+  },
+  "numerics": {
+    "description": "Defines the numerical execution flow, inspired by Walberla's sweep-based architecture.",
+    "timeloop": {
+      "type": "SweepBased",
+      "description": "The main loop iterates through a sequence of 'sweeps' at each time step.",
+      "execution_order": [
+        "Streaming",
+        "ComputeMacroscopicQuantities",
+        "UpdateBoundaries",
+        // "LevelSetAdvection", // Placeholder for future Level Set Sweep
+        "ThermalSweepPDE", // Handles heat transfer and phase change
+        // "InterfaceForce", // Placeholder for future Level Set based forces
+        "ApplyForcing", // Applies buoyancy, solidification drag, and potentially interface forces
+        "Collision",
+        "PostStepDiagnostics"
+      ]
+    },
+    "time_discretization": {
+      "time_step_control": "fixed",
+      "dt": {
+        "value": "autocompute",
+        "notes": "Time step 'dt' is typically linked to the grid spacing 'dx' in LBM (dt=dx in lattice units). Must satisfy stability requirements."
+      },
+      "thermal_solver_scheme": {
+        "default": "ExplicitEuler", // Start with explicit for simplicity in ThermalSweepPDE
+        "options": [
+          "ExplicitEuler",
+          "ImplicitEuler", // Backward-Euler
+          "Crank-Nicolson"
+        ],
+        "notes": "Time integration scheme used within ThermalSweepPDE. Explicit is simpler to start, implicit (Crank-Nicolson) preferred for stability later."
+      }
+    },
+    "sweeps": {
+      "description": "Self-contained computational kernels executed sequentially by the timeloop.",
+      "library": [
+        {
+          "name": "UpdateBoundaries",
+          "description": "Applies boundary conditions to LBM PDFs and thermal fields. Must read FlagField."
+        },
+        {
+          "name": "ComputeMacroscopicQuantities",
+          "description": "Calculates density and velocity from LBM PDFs. Required before collision."
+        },
+        {
+          "name": "ThermalSweepPDE",
+          "description": "Solves the enthalpy conservation equation using a Finite Difference/Volume approach, inspired by Walberla's PDE solver framework (`src/pde/`). Handles conduction in solid/liquid/gas, phase change (enthalpy method), and conjugate heat transfer. Must read FlagField for phase-dependent properties and velocity for advection. Updates Temperature and LiquidFraction fields.",
+          "required_flags": ["SOLID", "LIQUID", "GAS"]
+        },
+        {
+          "name": "ApplyForcing",
+          "description": "Applies body forces: buoyancy (Boussinesq), solidification drag (porous medium based on liquid fraction and FlagField). Future: Will incorporate interface forces. Uses the selected LBM forcing scheme (e.g., Guo). Must read FlagField to apply drag correctly.",
+          "required_flags": ["SOLID", "LIQUID", "GAS"]
+        },
+        {
+          "name": "Collision",
+          "description": "Performs the LBM collision step (e.g., MRT or BGK) on the PdfField. Must read FlagField to skip SOLID cells.",
+          "required_flags": ["LIQUID", "GAS"]
+        },
+        {
+          "name": "Streaming",
+          "description": "Performs LBM streaming (Pull scheme). Must read FlagField to apply BounceBack at SOLID boundaries.",
+          "required_flags": ["SOLID", "LIQUID", "GAS"]
+        },
+        {
+          "name": "PostStepDiagnostics",
+          "description": "Optional: computes global quantities, checks stability (NaN/inf), logs progress."
+        }
+        // Removed VofAdvection and SurfaceForce
+      ]
+    },
+    "boundary_conditions": {
+      "description": "Library of available boundary conditions.",
+      "lbm_options": [
+        {
+          "name": "BounceBack",
+          "description": "Simple no-slip wall. Applied during Streaming based on FlagField."
+        },
+        {
+          "name": "ZouHe",
+          "description": "Velocity or pressure boundary condition."
+        },
+        {
+          "name": "AntiBounceBack",
+          "description": "Simple free-slip wall."
+        },
+        {
+          "name": "Periodic",
+          "description": "Connects opposite sides of the domain."
+        }
+      ],
+      "thermal_options": [ // Applied within ThermalSweepPDE or UpdateBoundaries
+        {
+          "name": "Dirichlet",
+          "description": "Fixed temperature."
+        },
+        {
+          "name": "Neumann",
+          "description": "Fixed heat flux (adiabatic if zero)."
+        },
+        {
+          "name": "Robin",
+          "description": "Convective/radiative heat transfer."
+        }
+      ]
+    },
+    "nonlinear_solver": { // Used within ThermalSweepPDE if implicit scheme is chosen
+      "description": "Iterative algorithm for nonlinear physics (e.g., temperature-dependent properties) within ThermalSweepPDE.",
+      "default_strategy": "Picard",
+      "strategies": [
+        "Picard",
+        "Newton"
+      ],
+      "convergence_criteria": {
+        "max_iterations": 50,
+        "relative_tolerance": 1e-8,
+        "absolute_tolerance": 1e-10
+      },
+      "under_relaxation": {
+        "enabled": true,
+        "default_factors": {
+          "temperature": 0.7,
+          "properties": 0.5
+        }
+      }
+    }
+  },
+  "physics": {
+    "description": "Governing equations and physical models.",
+    "governing_equations": {
+      "fluid_dynamics": "LBM (e.g., D3Q19 MRT) solves weakly-compressible Navier-Stokes.",
+      "heat_transport": {
+        "description": "Enthalpy conservation equation solved by ThermalSweepPDE.",
+        "strong_form_latex": "\\frac{\\partial (\\rho H)}{\\partial t} + \\nabla \\cdot (\\rho \\mathbf{u} H) = \\nabla \\cdot (k \\nabla T) + Q_{laser}",
+        "notes": "Solved via FDM/FVM within ThermalSweepPDE, inspired by Walberla's PDE framework."
+      }
+    },
+    "coupling": {
+      "method": "Boussinesq_Approximation",
+      "description": "Couples thermal and fluid fields via buoyancy.",
+      "force_term_latex": "\\mathbf{F}_{buoyancy} = -\\rho_0 \\beta (T - T_0) \\mathbf{g}",
+      "notes": "Applied in 'ApplyForcing' sweep."
+    },
+    "phase_change_model": {
+      "description": "Enthalpy-based model for solid-liquid phase change.",
+      "method": "enthalpy",
+      "relation": "T = T(H), f_l = f_l(H)",
+      "notes": "Implemented within ThermalSweepPDE. Temperature T and liquid fraction f_l are derived from the solved enthalpy H.",
+      "latent_heat_L": {
+        "value": 2.7e5, // Placeholder
+        "units": "J/kg"
+      },
+      "melting_interval": {
+        "T_solidus": 1728.0, // Placeholder
+        "T_liquidus": 1811.0, // Placeholder
+        "units": "K"
+      },
+      "solidification_model": {
+        "method": "porous_medium_drag",
+        "formula_latex": "\\mathbf{F}_{drag} = -C \\frac{(1-f_l)^2}{f_l^3 + \\epsilon} \\mathbf{u}",
+        "notes": "Treats mushy zone as porous medium. Applied in 'ApplyForcing' sweep based on f_l from ThermalSweepPDE and FlagField (not applied in GAS)."
+      }
+    },
+    "laser_source_model": {
+      "description": "Volumetric heat source Q_laser.",
+      "type": "moving_gaussian",
+      "options": [
+        "moving_gaussian",
+        "double_ellipsoidal"
+      ],
+      "notes": "Implemented either as a dedicated LaserSourceSweep or integrated within ThermalSweepPDE.",
+      "parameters": { // Placeholders
+        "power": { "value": 2000, "units": "W" },
+        "absorptivity": 0.4,
+        "radius": 0.0005,
+        "scan_path": {
+          "type": "linear",
+          "start_point": [0.0, 0.0, 0.0],
+          "end_point": [0.01, 0.0, 0.0],
+          "velocity": 1.0
+        }
+      }
+    },
+    "material_properties": {
+      "description": "Phase-dependent and potentially temperature-dependent material properties.",
+      "notes": "Accessed by ThermalSweepPDE based on FlagField and Temperature.",
+      "phases": ["SOLID", "LIQUID", "GAS"], // Example structure
+      "density_rho": { "model": "constant_per_phase", "values": {"SOLID": 7850, "LIQUID": 7000, "GAS": 1.2} }, // Placeholders
+      "specific_heat_cp": { "model": "constant_per_phase", "values": {"SOLID": 490, "LIQUID": 800, "GAS": 1005} }, // Placeholders
+      "conductivity_k": { "model": "constant_per_phase", "values": {"SOLID": 60.5, "LIQUID": 100, "GAS": 0.025} }, // Placeholders
+      "thermal_expansion_beta": { "model": "constant", "value": 1.2e-5 }, // Placeholder (often only for liquid)
+      "surface_tension_sigma0": {"value": 1.8, "units": "N/m"}, // Placeholder
+      "surface_tension_dsigma_dT": {"value": -0.0005, "units": "N/m/K"} // Placeholder
+    },
+    "interface_physics": {
+        "description": "Handles free surface tracking and associated physics (surface tension, Marangoni). Target: Implement using Walberla's preferred approach (likely Level Set based or integrated within PDE framework). Details TBD after core LBM and Thermal solver validation.",
+        "required_flags": ["INTERFACE", "LIQUID", "GAS"]
+    }
+    // Removed free_surface_model and surface_tension_model specific implementations
+  },
+  "io_and_monitoring": {
+    "description": "Defines standards for configuration, I/O, and monitoring.",
+    "configuration": {
+      "format": "JSON",
+      "schema": "A single JSON file defines the simulation setup."
+    },
+    "output": {
+      "path": "./output/",
+      "format": {
+        "default": "VTK",
+        "options": [
+          "VTK",
+          "HDF5"
+        ]
+      },
+      "frequency_control": {
+        "type": "time_steps",
+        "value": 100
+      },
+      "fields_to_write": [
+        "velocity",
+        "temperature",
+        "phase_fraction", // f_l
+        "density"
+        // Add LevelSet Phi later
+      ]
+    },
+    "restart": {
+      "enabled": true,
+      "path": "./restart/",
+      "format": "HDF5",
+      "frequency_steps": 1000
+    },
+    "monitoring": {
+      "description": "Real-time logging of key metrics.",
+      "frequency_steps": 10,
+      "metrics": [
+        "max_temperature",
+        "melt_pool_volume",
+        "max_velocity",
+        "simulation_time",
+        "wall_time_per_step"
+      ],
+      "export_format": [
+        "stdout_table",
+        "CSV"
+      ]
+    }
+  },
+  "api_and_config": {
+    "description": "User-facing API and configuration structure.",
+    "configuration_file": {
+      "format": "JSON",
+      "description": "Single JSON instance of this blueprint drives simulation.",
+      "parameter_style": "Dot-separated paths."
+    },
+    "python_api": {
+      "enabled": true,
+      "binding_library": "pybind11",
+      "description": "High-level Python interface inspired by walberla::python_coupling.",
+      "core_classes_exposed": [
+        "SimulationContext",
+        "BlockForest",
+        "Field",
+        "SweepTimeloop" // Placeholder
+      ],
+      "example_usage": "sim = SimulationContext('config.json')\nsim.run_steps(100)\n..."
+    },
+    "user_hooks": {
+      "description": "Callbacks for custom logic.",
+      "available_hooks": [
+        "on_start",
+        "on_step_begin",
+        "on_step_end",
+        "on_finish"
+      ]
+    }
+  },
+  "extensibility": {
+    "description": "Interfaces for extending the framework.",
+    "plugin_interfaces": {
+      "description": "Inherit from base classes to add custom components.",
+      "components": [
+        {
+          "name": "CustomSweep",
+          "base_class": "ISweep", // Updated base class
+          "method_to_override": "execute(BlockData&)", // Updated signature
+          "notes": "Add to 'numerics.timeloop.execution_order'."
+        },
+        {
+          "name": "CustomBoundaryCondition",
+          "base_class": "BoundaryBase", // Placeholder
+          "notes": "Inspired by walberla::lbm::boundary::factories."
+        },
+        {
+          "name": "CustomMaterialProperty",
+          "description": "Provide C++ functor or Python callable for complex properties."
+        }
+      ]
+    },
+    "code_generation": {
+      "enabled": false, // Disabled for V1.0
+      "tool_suggestion": "pystencils or similar",
+      "description": "Code generation for optimized kernels (like Walberla's `src/lbm_generated`) is a planned future optimization, to be implemented after core physics are stable.",
+      "target_kernels": [
+        "CombinedCollisionStreamingSweep"
+      ]
+    }
+  },
+  "linear_system_solver": { // Used within ThermalSweepPDE if implicit scheme is chosen
+    "description": "Solvers for sparse linear systems from implicit thermal discretization.",
+    "assembly": {
+      "matrix_format": "CSR",
+      "precision": "double"
+    },
+    "solvers": {
+      "default": "BiCGSTAB",
+      "options": ["CG", "BiCGSTAB", "GMRES"]
+    },
+    "preconditioners": {
+      "default": "Jacobi",
+      "options": [
+        {"name": "Jacobi", "description": "Simple, parallel."},
+        {"name": "ILU", "description": "More powerful, less parallel."},
+        {"name": "AMG", "description": "Most powerful/scalable (via external libs like AmgX/hypre)."}
+      ]
+    },
+    "stopping_criteria": {
+      "max_iterations": 1000,
+      "relative_tolerance": 1e-8,
+      "absolute_tolerance": 1e-12
+    }
+  },
+  "numerical_safeguards": {
+    "description": "Runtime checks for stability.",
+    "nan_inf_checks": {
+      "enabled": true,
+      "frequency": "on_every_sweep_completion"
+    },
+    "value_clamping": {
+      "enabled": true,
+      "targets": {
+        "temperature": {"min": 0, "max": 5000},
+        "material_properties": {"min_conductivity": 1e-2, "min_specific_heat": 1e-2}
+        // Add Level Set clamping if implemented
+      }
+    },
+    "small_denominator_protection": {
+      "epsilon": 1e-12
+    }
+  }
+}
