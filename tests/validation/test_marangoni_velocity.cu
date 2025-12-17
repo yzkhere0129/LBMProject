@@ -226,18 +226,18 @@ void initializeTemperatureField(float* d_temperature, int nx, int ny, int nz, fl
     const float R_hot = 30e-6f;    // 30 μm hot zone radius
     const float R_decay = 50e-6f;  // 50 μm decay length
 
-    // Domain center
-    const float center_x = nx * dx / 2.0f;
-    const float center_y = ny * dx / 2.0f;
+    // Center indices (integer division gives the central cell)
+    const int center_i = nx / 2;
+    const int center_j = ny / 2;
 
     for (int k = 0; k < nz; ++k) {
         for (int j = 0; j < ny; ++j) {
             for (int i = 0; i < nx; ++i) {
                 int idx = i + nx * (j + ny * k);
 
-                // Position relative to center
-                float x = i * dx - center_x;
-                float y = j * dx - center_y;
+                // Position relative to center cell
+                float x = (i - center_i) * dx;
+                float y = (j - center_j) * dx;
                 float r = sqrtf(x*x + y*y);
 
                 // Radial temperature profile with smooth decay
