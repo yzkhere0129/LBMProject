@@ -62,22 +62,11 @@
 ### Issue #1: Marangoni Coupling Bug (BLOCKING)
 **Severity:** HIGH - Blocks Phase 2 completion
 **Symptom:**
-- Marangoni force is ZERO (temperature gradient is zero at interface)
+- Marangoni force computed correctly (non-zero values)
+- But velocity field remains ZERO
 - 2 integration tests failing
 
-**ROOT CAUSE IDENTIFIED (from debug output):**
-```
-DEBUG grad_T [150,199,50]: grad_T=(0.000e+00,0.000e+00,0.000e+00)
-DEBUG Marangoni: grad_T_s=(0.000e+00,0.000e+00,0.000e+00), F=(-0.000e+00,-0.000e+00,-0.000e+00)
-```
-**Temperature gradient is ZERO at the interface!**
-- Marangoni force = dσ/dT × ∇T_surface
-- If ∇T = 0, then F_Marangoni = 0
-
-**Likely Causes:**
-1. Temperature field not being passed to Marangoni kernel
-2. Temperature gradient computation using wrong field pointer
-3. Thermal-Marangoni coupling order issue in multiphysics step
+**Root Cause:** Force-to-velocity update pathway is broken
 
 **Failing Tests:**
 ```
@@ -86,9 +75,9 @@ MarangoniForceValidationTest.ForceDirectionWithPositiveDsigmaDT - FAIL
 ```
 
 **Files to Investigate:**
-- `/home/yzk/LBMProject/src/physics/vof/marangoni.cu` - Check temperature field access
-- `/home/yzk/LBMProject/src/physics/force_accumulator.cu` - Check field pointers
-- `/home/yzk/LBMProject/src/physics/multiphysics/multiphysics_solver.cu` - Check coupling order
+- `/home/yzk/LBMProject/src/physics/vof/marangoni.cu`
+- `/home/yzk/LBMProject/src/physics/force_accumulator.cu`
+- `/home/yzk/LBMProject/src/physics/multiphysics/multiphysics_solver.cu`
 
 ### Issue #2: Natural Convection Unit Conversion
 **Severity:** MEDIUM
@@ -102,21 +91,13 @@ MarangoniForceValidationTest.ForceDirectionWithPositiveDsigmaDT - FAIL
 ## 4. Git Repository Status
 
 **Branch:** master
-**Last Commit:** `f161006 feat: Complete Phase 1 fluid validation, begin Phase 2 multiphysics`
+**Last Commit:** `79ba9c8 fix: Center temperature hot spot and add Marangoni visualization tools`
 
-**Status:** Working tree CLEAN (all changes committed)
-
-**Recent Commits:**
+**Uncommitted Changes (28 files):**
 ```
-f161006 feat: Complete Phase 1 fluid validation, begin Phase 2 multiphysics
-79ba9c8 fix: Center temperature hot spot and add Marangoni visualization tools
-cb04460 feat: Establish clean repository baseline
-```
-
-**Commit Statistics (f161006):**
-- 135 files changed
-- +49,736 lines added
-- -1,716 lines removed
+Modified (staged):
+- src/physics/fluid/fluid_lbm.cu (+192 lines)
+- src/physics/vof/vof_solver.cu (+238 lines)
 - src/physics/thermal/thermal_lbm.cu (+220 lines)
 - src/physics/multiphysics/multiphysics_solver.cu (+137 lines)
 - src/physics/force_accumulator.cu (major refactor)

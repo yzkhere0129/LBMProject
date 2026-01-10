@@ -1675,7 +1675,8 @@ void MultiphysicsSolver::computeTotalForce() {
                 temperature, fill_level, normals,
                 config_.dsigma_dT,
                 config_.nx, config_.ny, config_.nz,
-                config_.dx);
+                config_.dx,
+                1.0f);  // Explicit h_interface = 1 cell for sharp VOF interface
         }
     }
 
