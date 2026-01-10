@@ -452,6 +452,73 @@ void analyzeFillLevelGradient(const VOFSolver& vof, float dx) {
     std::cout << std::endl;
 }
 
+/**
+ * @brief Compute analytical Marangoni velocity from Young et al. (1959)
+ *
+ * For thermocapillary flow in a thin layer with temperature gradient:
+ *   v_s = |dσ/dT| × |∇T| × h / (2μ)
+ *
+ * where:
+ *   h = layer thickness [m]
+ *   μ = dynamic viscosity [Pa·s]
+ *   dσ/dT = surface tension temperature coefficient [N/(m·K)]
+ *   ∇T = temperature gradient tangential to interface [K/m]
+ *
+ * @param grad_T Temperature gradient magnitude [K/m]
+ * @param h_layer Layer thickness [m]
+ * @param dsigma_dT Surface tension coefficient [N/(m·K)]
+ * @param mu_liquid Dynamic viscosity [Pa·s]
+ * @return Surface velocity [m/s]
+ */
+float computeAnalyticalMarangoniVelocity(float grad_T, float h_layer,
+                                         float dsigma_dT, float mu_liquid) {
+    // Young et al. (1959) solution for linear temperature gradient
+    // v_s = |dσ/dT| × |∇T| × h / (2μ)
+    float v_s = std::abs(dsigma_dT) * grad_T * h_layer / (2.0f * mu_liquid);
+    return v_s;
+}
+
+/**
+ * @brief Estimate temperature gradient from radial profile
+ *
+ * Computes average gradient magnitude in the transition region
+ * between hot center and cold edge.
+ *
+ * @param T_hot Maximum temperature [K]
+ * @param T_cold Minimum temperature [K]
+ * @param R_hot Hot zone radius [m]
+ * @param R_decay Decay length [m]
+ * @return Estimated gradient magnitude [K/m]
+ */
+float estimateTemperatureGradient(float T_hot, float T_cold,
+                                   float R_hot, float R_decay) {
+    // For exponential decay: T(r) = T_cold + ΔT × exp(-(r - R_hot)/(R_decay - R_hot))
+    // Maximum gradient occurs at r = R_hot:
+    //   dT/dr|_{r=R_hot} = -ΔT / (R_decay - R_hot)
+
+    float delta_T = T_hot - T_cold;
+    float characteristic_length = R_decay - R_hot;
+
+    // Gradient magnitude (averaged over transition region)
+    float grad_T_estimate = delta_T / characteristic_length;
+
+    return grad_T_estimate;
+}
+
+/**
+ * @brief Compare simulated velocity against analytical solution
+ *
+ * @param v_simulated Maximum simulated velocity at interface [m/s]
+ * @param v_analytical Analytical prediction [m/s]
+ * @param tolerance_percent Acceptable relative error [%]
+ * @return true if within tolerance
+ */
+bool validateAgainstAnalytical(float v_simulated, float v_analytical,
+                                float tolerance_percent = 20.0f) {
+    float rel_error = 100.0f * std::abs(v_simulated - v_analytical) / v_analytical;
+    return rel_error <= tolerance_percent;
+}
+
 } // anonymous namespace
 
 /**
@@ -820,52 +887,120 @@ TEST(MarangoniVelocityValidation, RealisticVelocityMagnitude) {
 
     float final_v_max = extractInterfaceVelocity(fluid, vof, dx, dt);
 
-    std::cout << "Maximum surface velocity achieved: " << max_velocity_achieved << " m/s" << std::endl;
-    std::cout << "Final surface velocity: " << final_v_max << " m/s" << std::endl;
-    std::cout << "Literature range (LPBF Ti6Al4V): 0.5 - 2.0 m/s" << std::endl;
-    std::cout << "  Panwisawas 2017: 0.5-1.0 m/s (200W)" << std::endl;
-    std::cout << "  Khairallah 2016: 1.0-2.0 m/s (400W)" << std::endl;
-    std::cout << "Viscosity: CORRECTED to match Ti6Al4V (nu~1.36e-6 m²/s)" << std::endl;
+    // ===== Analytical Solution Comparison =====
+    // Estimate temperature gradient from radial profile
+    const float T_hot = 2500.0f;
+    const float T_cold = 2000.0f;
+    const float R_hot = 30e-6f;
+    const float R_decay = 50e-6f;
+
+    float grad_T_estimate = estimateTemperatureGradient(T_hot, T_cold, R_hot, R_decay);
+
+    // Layer thickness (liquid region below interface)
+    float h_layer = nz * dx * interface_height_frac;  // Liquid layer thickness
+
+    // Compute analytical velocity (Young et al. 1959)
+    float v_analytical = computeAnalyticalMarangoniVelocity(
+        grad_T_estimate, h_layer, dsigma_dT, mu_liquid);
+
+    // Relative error
+    float rel_error = 100.0f * std::abs(max_velocity_achieved - v_analytical) / v_analytical;
+
+    std::cout << "Analytical Solution (Young et al. 1959):" << std::endl;
+    std::cout << "  Temperature gradient estimate: " << grad_T_estimate * 1e-6 << " K/μm" << std::endl;
+    std::cout << "  Layer thickness: " << h_layer * 1e6 << " μm" << std::endl;
+    std::cout << "  Surface tension coeff: " << dsigma_dT * 1e4 << " × 10⁻⁴ N/(m·K)" << std::endl;
+    std::cout << "  Dynamic viscosity: " << mu_liquid * 1e3 << " mPa·s" << std::endl;
+    std::cout << "  Predicted surface velocity: " << v_analytical << " m/s" << std::endl;
     std::cout << std::endl;
 
-    // Validation criteria (relaxed for simplified test geometry)
-    // NOTE: This test uses simplified boundary conditions and geometry compared to
-    // full LPBF simulations, so velocities may be lower than literature values.
-    // The key validation is that forces generate reasonable velocities (order of magnitude).
-    bool pass_critical = (max_velocity_achieved >= 0.7f && max_velocity_achieved <= 1.5f);
-    bool pass_acceptable = (max_velocity_achieved >= 0.05f && max_velocity_achieved <= 3.0f);
+    std::cout << "Simulated Results:" << std::endl;
+    std::cout << "  Maximum surface velocity achieved: " << max_velocity_achieved << " m/s" << std::endl;
+    std::cout << "  Final surface velocity: " << final_v_max << " m/s" << std::endl;
+    std::cout << "  Relative error vs analytical: " << rel_error << "%" << std::endl;
+    std::cout << std::endl;
 
-    if (pass_critical) {
-        std::cout << "✓ CRITICAL PASS" << std::endl;
-        std::cout << "  Marangoni velocity matches literature (0.7-1.5 m/s)" << std::endl;
-        std::cout << "  Viscosity correctly matched to Ti6Al4V" << std::endl;
-        std::cout << "  Ready for full MultiphysicsSolver implementation" << std::endl;
-    } else if (pass_acceptable) {
-        std::cout << "✓ ACCEPTABLE PASS" << std::endl;
-        std::cout << "  Velocity order of magnitude correct (0.05-3.0 m/s)" << std::endl;
-        std::cout << "  Physics pipeline working (force → velocity)" << std::endl;
-        std::cout << "  Note: Simplified geometry causes lower velocities than full LPBF" << std::endl;
+    std::cout << "Literature Reference (LPBF Ti6Al4V):" << std::endl;
+    std::cout << "  Panwisawas 2017: 0.5-1.0 m/s (200W)" << std::endl;
+    std::cout << "  Khairallah 2016: 1.0-2.0 m/s (400W)" << std::endl;
+    std::cout << "  Note: Full LPBF geometry, not simplified test case" << std::endl;
+    std::cout << std::endl;
+
+    // ===== Validation Criteria =====
+    std::cout << "Validation Criteria:" << std::endl;
+
+    // Criterion 1: Analytical comparison (primary validation)
+    bool pass_analytical = validateAgainstAnalytical(max_velocity_achieved, v_analytical, 20.0f);
+
+    std::cout << "  [1] Analytical Solution (Young et al. 1959):" << std::endl;
+    std::cout << "      Simulated: " << max_velocity_achieved << " m/s" << std::endl;
+    std::cout << "      Analytical: " << v_analytical << " m/s" << std::endl;
+    std::cout << "      Relative error: " << rel_error << "%" << std::endl;
+    if (pass_analytical) {
+        std::cout << "      ✓ PASS: Within 20% of analytical solution" << std::endl;
     } else {
-        std::cout << "✗ FAIL" << std::endl;
-        std::cout << "  Velocity outside acceptable range" << std::endl;
-        std::cout << "  Expected: 0.05-3.0 m/s, Got: " << max_velocity_achieved << " m/s" << std::endl;
+        std::cout << "      ✗ FAIL: Error " << rel_error << "% exceeds 20% tolerance" << std::endl;
     }
     std::cout << std::endl;
 
-    // GoogleTest assertions (relaxed to accept current performance)
+    // Criterion 2: Literature comparison (secondary validation)
+    bool pass_literature = (max_velocity_achieved >= 0.5f && max_velocity_achieved <= 2.0f);
+
+    std::cout << "  [2] Literature Range (LPBF Ti6Al4V):" << std::endl;
+    std::cout << "      Expected: 0.5 - 2.0 m/s" << std::endl;
+    std::cout << "      Achieved: " << max_velocity_achieved << " m/s" << std::endl;
+    if (pass_literature) {
+        std::cout << "      ✓ PASS: Within literature range" << std::endl;
+    } else if (max_velocity_achieved >= 0.1f && max_velocity_achieved <= 10.0f) {
+        std::cout << "      ⚠ ACCEPTABLE: Order of magnitude correct" << std::endl;
+        std::cout << "      Note: Simplified geometry differs from full LPBF" << std::endl;
+    } else {
+        std::cout << "      ✗ FAIL: Outside acceptable range (0.1 - 10.0 m/s)" << std::endl;
+    }
+    std::cout << std::endl;
+
+    // Overall validation result
+    std::cout << "========================================" << std::endl;
+    if (pass_analytical && pass_literature) {
+        std::cout << "VALIDATION RESULT: ✓ EXCELLENT" << std::endl;
+        std::cout << "  - Matches analytical solution (±20%)" << std::endl;
+        std::cout << "  - Within literature range for LPBF" << std::endl;
+    } else if (pass_analytical) {
+        std::cout << "VALIDATION RESULT: ✓ GOOD" << std::endl;
+        std::cout << "  - Matches analytical solution (±20%)" << std::endl;
+        std::cout << "  - Physics implementation validated" << std::endl;
+    } else if (max_velocity_achieved >= 0.1f && max_velocity_achieved <= 10.0f) {
+        std::cout << "VALIDATION RESULT: ⚠ ACCEPTABLE" << std::endl;
+        std::cout << "  - Order of magnitude correct" << std::endl;
+        std::cout << "  - Further tuning recommended" << std::endl;
+    } else {
+        std::cout << "VALIDATION RESULT: ✗ FAIL" << std::endl;
+        std::cout << "  - Velocity outside acceptable range" << std::endl;
+    }
+    std::cout << "========================================" << std::endl;
+    std::cout << std::endl;
+
+    // GoogleTest assertions
+    // Primary validation: Analytical comparison
+    EXPECT_TRUE(pass_analytical)
+        << "CRITICAL: Failed to match analytical solution\n"
+        << "       Simulated: " << max_velocity_achieved << " m/s\n"
+        << "       Analytical: " << v_analytical << " m/s\n"
+        << "       Relative error: " << rel_error << "% (tolerance: 20%)\n"
+        << "       This indicates a physics implementation issue";
+
+    // Secondary validation: Reasonable magnitude
     EXPECT_GT(max_velocity_achieved, 0.01f)
         << "Velocity too low (" << max_velocity_achieved << " m/s) - likely implementation error";
 
     EXPECT_LT(max_velocity_achieved, 10.0f)
         << "Velocity too high (" << max_velocity_achieved << " m/s) - likely numerical instability";
 
-    EXPECT_GE(max_velocity_achieved, 0.05f)
-        << "Minimum acceptable velocity: 0.05 m/s (achieved: " << max_velocity_achieved << " m/s)\n"
-        << "       Note: Simplified test geometry, not full LPBF conditions";
-
-    EXPECT_LE(max_velocity_achieved, 3.0f)
-        << "Maximum acceptable velocity: 3.0 m/s (achieved: " << max_velocity_achieved << " m/s)\n"
-        << "       Literature (full LPBF): 0.5-2.0 m/s";
+    // Advisory checks (warnings, not failures)
+    if (!pass_literature) {
+        std::cout << "NOTE: Velocity outside literature range (0.5-2.0 m/s)" << std::endl;
+        std::cout << "      This is acceptable for simplified test geometry" << std::endl;
+    }
 
     // ===== Cleanup =====
     // NOTE: RAII wrappers (CudaMemory) automatically free device memory

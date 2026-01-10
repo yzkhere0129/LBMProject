@@ -7,6 +7,7 @@
 
 #include "physics/material_properties.h"
 #include <cstring>
+#include "utils/cuda_check.h"
 
 // Define device constant memory for material properties globally
 __constant__ lbm::physics::MaterialProperties d_material;
@@ -20,14 +21,14 @@ MaterialProperties MaterialDatabase::getTi6Al4V() {
     // Material name
     strcpy(mat.name, "Ti6Al4V");
 
-    // Solid state properties (from MATERIAL_DATABASE.yaml)
-    mat.rho_solid = 4420.0f;           // kg/m³
-    mat.cp_solid = 610.0f;             // J/(kg·K)
-    mat.k_solid = 7.0f;                // W/(m·K)
+    // Solid state properties (from MATERIAL_DATABASE.yaml, updated to match walberla)
+    mat.rho_solid = 4430.0f;           // kg/m³ (walberla uses 4430)
+    mat.cp_solid = 526.0f;             // J/(kg·K) (walberla uses 526)
+    mat.k_solid = 6.7f;                // W/(m·K) (walberla uses 6.7)
 
     // Liquid state properties
     mat.rho_liquid = 4110.0f;          // kg/m³ (Mills 2002)
-    mat.cp_liquid = 831.0f;            // J/(kg·K)
+    mat.cp_liquid = 526.0f;            // J/(kg·K) - SET TO SOLID VALUE for walberla validation
     mat.k_liquid = 33.0f;              // W/(m·K)
     mat.mu_liquid = 5.0e-3f;           // Pa·s (Valencia & Quested 2008)
 
@@ -47,6 +48,9 @@ MaterialProperties MaterialDatabase::getTi6Al4V() {
     mat.absorptivity_liquid = 0.40f;
     mat.emissivity = 0.25f;
 
+    if (!mat.validate()) {
+        throw std::runtime_error("Invalid material properties for Ti6Al4V");
+    }
     return mat;
 }
 
@@ -83,6 +87,9 @@ MaterialProperties MaterialDatabase::get316L() {
     mat.absorptivity_liquid = 0.42f;
     mat.emissivity = 0.28f;
 
+    if (!mat.validate()) {
+        throw std::runtime_error("Invalid material properties for 316L");
+    }
     return mat;
 }
 
@@ -119,6 +126,9 @@ MaterialProperties MaterialDatabase::getInconel718() {
     mat.absorptivity_liquid = 0.41f;
     mat.emissivity = 0.27f;
 
+    if (!mat.validate()) {
+        throw std::runtime_error("Invalid material properties for Inconel718");
+    }
     return mat;
 }
 
@@ -156,6 +166,9 @@ MaterialProperties MaterialDatabase::getAlSi10Mg() {
     mat.absorptivity_liquid = 0.13f;
     mat.emissivity = 0.09f;
 
+    if (!mat.validate()) {
+        throw std::runtime_error("Invalid material properties for AlSi10Mg");
+    }
     return mat;
 }
 

@@ -6,6 +6,7 @@
 #include "physics/surface_tension.h"
 #include <cuda_runtime.h>
 #include <stdexcept>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace physics {
@@ -158,8 +159,9 @@ void SurfaceTension::computeCSFForce(const float* fill_level,
     computeCSFForceKernel<<<gridSize, blockSize>>>(
         fill_level, curvature, force_x, force_y, force_z,
         sigma_, dx_, nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -182,8 +184,9 @@ void SurfaceTension::addCSFForce(const float* fill_level,
     addCSFForceKernel<<<gridSize, blockSize>>>(
         fill_level, curvature, force_x, force_y, force_z,
         sigma_, dx_, nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {

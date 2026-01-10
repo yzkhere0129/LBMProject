@@ -4,6 +4,7 @@
  */
 
 #include "physics/thermal_lbm.h"
+#include "utils/cuda_check.h"
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
@@ -21,7 +22,8 @@ extern __constant__ int tez[7];
 __global__ void initializeEquilibriumKernel(float* g_src, const float* temperature, int num_cells);
 __global__ void applyPhaseChangeCorrectionKernel(float* g, float* temperature,
                                                    const float* fl_curr, const float* fl_prev,
-                                                   MaterialProperties material, int num_cells);
+                                                   MaterialProperties material, int num_cells,
+                                                   int nx, int ny, int nz);
 
 // Constructor (deprecated - for backward compatibility)
 ThermalLBM::ThermalLBM(int nx, int ny, int nz, float thermal_diffusivity,
@@ -250,9 +252,9 @@ void ThermalLBM::allocateMemory() {
     }
 
     // Initialize to zero
-    cudaMemset(d_g_src, 0, size_dist);
-    cudaMemset(d_g_dst, 0, size_dist);
-    cudaMemset(d_temperature, 0, size_scalar);
+    CUDA_CHECK(cudaMemset(d_g_src, 0, size_dist));
+    CUDA_CHECK(cudaMemset(d_g_dst, 0, size_dist));
+    CUDA_CHECK(cudaMemset(d_temperature, 0, size_scalar));
 }
 
 // Free device memory
@@ -275,7 +277,7 @@ void ThermalLBM::initialize(float initial_temp) {
     T_initial_ = initial_temp;
 
     // Set uniform temperature
-    cudaMemset(d_temperature, 0, num_cells_ * sizeof(float));
+    CUDA_CHECK(cudaMemset(d_temperature, 0, num_cells_ * sizeof(float)));
 
     // Create uniform temperature array
     float* h_temp = new float[num_cells_];
@@ -284,7 +286,7 @@ void ThermalLBM::initialize(float initial_temp) {
     }
 
     // Copy to device
-    cudaMemcpy(d_temperature, h_temp, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_temperature, h_temp, num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
     delete[] h_temp;
 
     // Initialize distribution functions to equilibrium
@@ -293,8 +295,9 @@ void ThermalLBM::initialize(float initial_temp) {
 
     // Simple kernel launch without lambda
     initializeEquilibriumKernel<<<gridSize, blockSize>>>(d_g_src, d_temperature, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Initialize phase change solver if enabled
     if (phase_solver_) {
@@ -312,7 +315,7 @@ void ThermalLBM::initialize(const float* temp_field) {
     T_initial_ = avg_temp / num_cells_;
 
     // Copy temperature field to device
-    cudaMemcpy(d_temperature, temp_field, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_temperature, temp_field, num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
 
     // Initialize distribution functions to equilibrium
     int blockSize = 256;
@@ -320,8 +323,9 @@ void ThermalLBM::initialize(const float* temp_field) {
 
     // Simple kernel launch without lambda
     initializeEquilibriumKernel<<<gridSize, blockSize>>>(d_g_src, d_temperature, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Initialize phase change solver if enabled
     if (phase_solver_) {
@@ -338,8 +342,9 @@ void ThermalLBM::collisionBGK(const float* ux, const float* uy, const float* uz)
 
     thermalBGKCollisionKernel<<<gridSize, blockSize>>>(
         d_g_src, d_temperature, ux, uy, uz, omega_T_, nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // Perform streaming
@@ -351,13 +356,14 @@ void ThermalLBM::streaming() {
 
     // ADIABATIC BOUNDARIES: Initialize g_dst to zero
     // Bounce-back will write reflected distributions
-    cudaMemset(d_g_dst, 0, num_cells_ * D3Q7::Q * sizeof(float));
+    CUDA_CHECK(cudaMemset(d_g_dst, 0, num_cells_ * D3Q7::Q * sizeof(float)));
 
     // Stream all distributions with adiabatic bounce-back at boundaries
     thermalStreamingKernel<<<gridSize, blockSize>>>(
         d_g_src, d_g_dst, nx_, ny_, nz_, emissivity_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
     swapDistributions();
 }
 
@@ -381,8 +387,9 @@ void ThermalLBM::applyBoundaryConditions(int boundary_type, float boundary_value
 
             applyConstantTemperatureBoundary<<<gridSize, blockSize>>>(
                 d_g_src, d_temperature, boundary_value, nx_, ny_, nz_, face);
+            CUDA_CHECK_KERNEL();
         }
-        cudaDeviceSynchronize();
+        CUDA_CHECK(cudaDeviceSynchronize());
 
     } else if (boundary_type == 2) {
         // Adiabatic boundaries
@@ -399,8 +406,9 @@ void ThermalLBM::applyBoundaryConditions(int boundary_type, float boundary_value
 
             applyAdiabaticBoundary<<<gridSize, blockSize>>>(
                 d_g_src, nx_, ny_, nz_, face);
+            CUDA_CHECK_KERNEL();
         }
-        cudaDeviceSynchronize();
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
 }
 
@@ -413,6 +421,7 @@ void ThermalLBM::addHeatSource(const float* heat_source, float dt) {
     if (has_material_) {
         addHeatSourceKernel<<<gridSize, blockSize>>>(
             d_g_src, heat_source, d_temperature, dt, omega_T_, material_, num_cells_);
+        CUDA_CHECK_KERNEL();
     } else {
         // Backward compatibility: create temporary material with fixed properties
         MaterialProperties temp_mat;
@@ -424,9 +433,10 @@ void ThermalLBM::addHeatSource(const float* heat_source, float dt) {
         temp_mat.T_liquidus = 0.0f;
         addHeatSourceKernel<<<gridSize, blockSize>>>(
             d_g_src, heat_source, d_temperature, dt, omega_T_, temp_mat, num_cells_);
+        CUDA_CHECK_KERNEL();
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // CRITICAL: Update temperature field after adding heat
     // The collision step uses d_temperature, so we must recompute it
@@ -445,6 +455,7 @@ void ThermalLBM::applyRadiationBC(float dt, float dx, float epsilon, float T_amb
         applyRadiationBoundaryCondition<<<gridSize, blockSize>>>(
             d_g_src, d_temperature, nx_, ny_, nz_,
             dx, dt, epsilon, material_, T_ambient);
+        CUDA_CHECK_KERNEL();
     } else {
         // Backward compatibility: create temporary material with fixed properties
         MaterialProperties temp_mat;
@@ -457,9 +468,10 @@ void ThermalLBM::applyRadiationBC(float dt, float dx, float epsilon, float T_amb
         applyRadiationBoundaryCondition<<<gridSize, blockSize>>>(
             d_g_src, d_temperature, nx_, ny_, nz_,
             dx, dt, epsilon, temp_mat, T_ambient);
+        CUDA_CHECK_KERNEL();
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update temperature field after radiation cooling
     computeTemperature();
@@ -483,6 +495,7 @@ void ThermalLBM::applySubstrateCoolingBC(float dt, float dx, float h_conv, float
         dx, dt, h_conv, T_substrate,
         rho, cp
     );
+    CUDA_CHECK_KERNEL();
 
     // Check for kernel errors
     cudaError_t err = cudaGetLastError();
@@ -490,7 +503,7 @@ void ThermalLBM::applySubstrateCoolingBC(float dt, float dx, float h_conv, float
         std::cerr << "[ERROR] Substrate BC kernel failed: " << cudaGetErrorString(err) << std::endl;
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update temperature field after substrate cooling
     computeTemperature();
@@ -503,8 +516,9 @@ void ThermalLBM::computeTemperature() {
 
     computeTemperatureKernel<<<gridSize, blockSize>>>(
         d_g_src, d_temperature, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update liquid fraction if phase change is enabled
     // NOTE: Full latent heat correction via post-step temperature adjustment
@@ -521,7 +535,7 @@ void ThermalLBM::computeTemperature() {
 
 // Copy temperature to host
 void ThermalLBM::copyTemperatureToHost(float* host_temp) const {
-    cudaMemcpy(host_temp, d_temperature, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(host_temp, d_temperature, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
 // Compute thermal relaxation time
@@ -901,7 +915,20 @@ __global__ void addHeatSourceKernel(
     //   rho: density [kg/m³] - temperature-dependent
     //   cp: specific heat [J/(kg·K)] - temperature-dependent
     float Q = heat_source[idx];
-    float dT = (Q * dt) / (rho * cp);
+
+    // ============================================================================
+    // CRITICAL: Zero-division protection (BUG FIX 2026-01-04)
+    // ============================================================================
+    // Protect against division by zero when rho*cp = 0 (corrupted properties)
+    // ============================================================================
+    float rho_cp_product = rho * cp;
+    float dT;
+    if (rho_cp_product < 1e-6f) {
+        // Invalid material properties - skip heat source to prevent NaN/Inf
+        dT = 0.0f;
+    } else {
+        dT = (Q * dt) / rho_cp_product;
+    }
 
     // ============================================================================
     // LBM SOURCE TERM CORRECTION - REMOVED (Bug Fix)
@@ -1031,8 +1058,10 @@ __global__ void applyRadiationBoundaryCondition(
     if (T_surf > T_evap_threshold) {
         // Clausius-Clapeyron equation for vapor pressure
         // P_sat(T) = P_ref * exp[(L_vap * M / R) * (1/T_boil - 1/T)]
-        // OVERFLOW PROTECTION: Cap temperature and exponent
+        // OVERFLOW PROTECTION: Cap temperature and ensure minimum value
+        // BUG FIX 2026-01-04: Ensure T_capped >= 1K to prevent division by zero
         float T_capped = fminf(T_surf, 2.0f * T_boil);
+        T_capped = fmaxf(T_capped, 1.0f);  // Minimum 1K to prevent division by zero
         float exponent = (L_vap * M_molar / R_gas) * (1.0f / T_boil - 1.0f / T_capped);
         exponent = fminf(exponent, 20.0f);  // Prevent exp overflow
         float P_sat = P_ref * expf(exponent);
@@ -1041,11 +1070,24 @@ __global__ void applyRadiationBoundaryCondition(
         // Hertz-Knudsen-Langmuir evaporation mass flux
         // J_evap = α_evap * P_sat / sqrt(2π * R * T / M)  [kg/(m²·s)]
         float denominator = sqrtf(2.0f * PI * R_gas * T_capped / M_molar);  // [m/s]
-        float J_evap = alpha_evap * P_sat / denominator;  // [kg/(m²·s)]
 
-        // Evaporative cooling heat flux
-        // q_evap = J_evap * L_vap  [W/m²]
-        q_evap = J_evap * L_vap;
+        // ============================================================================
+        // CRITICAL: Zero-division protection (BUG FIX 2026-01-04)
+        // ============================================================================
+        // If T_capped = 0 (corrupted temperature), denominator = 0 → J_evap = Inf
+        // This prevents NaN/Inf propagation through the simulation
+        // Minimum threshold: 1e-10 m/s (physically impossible, indicates bad data)
+        // ============================================================================
+        if (denominator < 1e-10f) {
+            // No evaporation at zero temperature (physically correct)
+            q_evap = 0.0f;
+        } else {
+            float J_evap = alpha_evap * P_sat / denominator;  // [kg/(m²·s)]
+
+            // Evaporative cooling heat flux
+            // q_evap = J_evap * L_vap  [W/m²]
+            q_evap = J_evap * L_vap;
+        }
     }
 
     // ============================================================================
@@ -1057,7 +1099,22 @@ __global__ void applyRadiationBoundaryCondition(
     // q_total [W/m²] → energy loss per unit volume [W/m³] = q_total / dx
     // Temperature change: ΔT = -(q_total/dx) · dt / (ρ·c_p)
     // Using temperature-dependent ρ and cp for accurate energy conservation
-    float dT = -(q_total / dx) * dt / (rho * cp);
+
+    // ============================================================================
+    // CRITICAL: Zero-division protection (BUG FIX 2026-01-04)
+    // ============================================================================
+    // Protect against division by zero when rho*cp = 0 (corrupted properties)
+    // This can occur if material properties are uninitialized or if temperature
+    // is invalid, leading to getDensity()/getSpecificHeat() returning zero
+    // ============================================================================
+    float rho_cp_product = rho * cp;
+    float dT;
+    if (rho_cp_product < 1e-6f) {
+        // Invalid material properties - skip cooling to prevent NaN/Inf
+        dT = 0.0f;
+    } else {
+        dT = -(q_total / dx) * dt / rho_cp_product;
+    }
 
     // Adaptive stability limiter based on temperature regime
     // Reduced from original values to prevent excessive cooling
@@ -1141,7 +1198,19 @@ __global__ void applySubstrateCoolingKernel(
     float heat_rate = q_conv / dx;
 
     // Temperature change from substrate cooling
-    float dT = -heat_rate * dt / (rho * cp);
+    // ============================================================================
+    // CRITICAL: Zero-division protection (BUG FIX 2026-01-04)
+    // ============================================================================
+    // Protect against division by zero when rho*cp = 0 (corrupted properties)
+    // ============================================================================
+    float rho_cp_product = rho * cp;
+    float dT;
+    if (rho_cp_product < 1e-6f) {
+        // Invalid material properties - skip cooling to prevent NaN/Inf
+        dT = 0.0f;
+    } else {
+        dT = -heat_rate * dt / rho_cp_product;
+    }
 
     // CFL-type stability limiter (prevent unphysical cooling)
     // Never cool more than 10% of temperature difference per timestep
@@ -1215,8 +1284,10 @@ __global__ void computeEvaporationPowerKernel(
     // Clausius-Clapeyron: P_sat = P_ref * exp[(L_v*M/R) * (1/T_boil - 1/T)]
     float T_boil = material.T_vaporization;
     float L_vap = material.L_vaporization;
-    // OVERFLOW PROTECTION: Cap temperature and exponent
+    // OVERFLOW PROTECTION: Cap temperature and ensure minimum value
+    // BUG FIX 2026-01-04: Ensure T_capped >= 1K to prevent division by zero
     float T_capped = fminf(T, 2.0f * T_boil);
+    T_capped = fmaxf(T_capped, 1.0f);  // Minimum 1K to prevent division by zero
     float exponent = (L_vap * M / R) * (1.0f / T_boil - 1.0f / T_capped);
     exponent = fminf(exponent, 20.0f);  // Prevent exp overflow
     float P_sat = P_ref * expf(exponent);
@@ -1387,7 +1458,7 @@ float ThermalLBM::computeEvaporationPower(const float* fill_level, float dx) con
     // Allocate device memory for per-cell power and initialize to zero
     // CRITICAL: Kernel only writes to top surface cells, but we sum all cells
     float* d_power;
-    cudaMalloc(&d_power, num_cells_ * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_power, num_cells_ * sizeof(float)));
     cudaMemset(d_power, 0, num_cells_ * sizeof(float));  // Initialize to 0!
 
     // Compute power for each surface cell
@@ -1398,11 +1469,12 @@ float ThermalLBM::computeEvaporationPower(const float* fill_level, float dx) con
         d_temperature, fill_level, d_power,
         material_, dx, nx, ny, nz
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Sum all powers
     std::vector<float> h_power(num_cells_);
-    cudaMemcpy(h_power.data(), d_power, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_power.data(), d_power, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
 
     float total_power = 0.0f;
     for (int i = 0; i < num_cells_; ++i) {
@@ -1423,7 +1495,7 @@ float ThermalLBM::computeRadiationPower(const float* fill_level, float dx,
     // Allocate device memory for per-cell power and initialize to zero
     // CRITICAL: Kernel only writes to top surface cells, but we sum all cells
     float* d_power;
-    cudaMalloc(&d_power, num_cells_ * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_power, num_cells_ * sizeof(float)));
     cudaMemset(d_power, 0, num_cells_ * sizeof(float));  // Initialize to 0!
 
     // Compute power for each surface cell
@@ -1434,11 +1506,12 @@ float ThermalLBM::computeRadiationPower(const float* fill_level, float dx,
         d_temperature, fill_level, d_power,
         epsilon, T_ambient, dx, nx, ny, nz
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Sum all powers
     std::vector<float> h_power(num_cells_);
-    cudaMemcpy(h_power.data(), d_power, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_power.data(), d_power, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
 
     float total_power = 0.0f;
     for (int i = 0; i < num_cells_; ++i) {
@@ -1461,7 +1534,7 @@ float ThermalLBM::computeTotalThermalEnergy(float dx) const {
 
     // Allocate device memory for per-cell energy
     float* d_energy;
-    cudaMalloc(&d_energy, num_cells_ * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_energy, num_cells_ * sizeof(float)));
 
     // Compute energy for each cell
     int threads = 256;
@@ -1491,11 +1564,12 @@ float ThermalLBM::computeTotalThermalEnergy(float dx) const {
         d_temperature, d_liquid_fraction, d_energy,
         material_, dx, T_ref, num_cells_
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Sum all energies
     std::vector<float> h_energy(num_cells_);
-    cudaMemcpy(h_energy.data(), d_energy, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_energy.data(), d_energy, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
 
     float total_energy = 0.0f;
     for (int i = 0; i < num_cells_; ++i) {
@@ -1520,8 +1594,8 @@ float ThermalLBM::computeSubstratePower(float dx, float h_conv, float T_substrat
     // Allocate device memory for per-column power (nx * ny entries)
     int num_columns = nx * ny;
     float* d_power;
-    cudaMalloc(&d_power, num_columns * sizeof(float));
-    cudaMemset(d_power, 0, num_columns * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_power, num_columns * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_power, 0, num_columns * sizeof(float)));
 
     // Compute power for each (i,j) column
     dim3 threads(16, 16);
@@ -1532,11 +1606,12 @@ float ThermalLBM::computeSubstratePower(float dx, float h_conv, float T_substrat
         h_conv, T_substrate, dx,
         nx, ny, nz
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Sum all column powers
     std::vector<float> h_power(num_columns);
-    cudaMemcpy(h_power.data(), d_power, num_columns * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_power.data(), d_power, num_columns * sizeof(float), cudaMemcpyDeviceToHost));
 
     float total_power = 0.0f;
     for (int i = 0; i < num_columns; ++i) {
@@ -1609,8 +1684,10 @@ __global__ void computeEvaporationMassFluxKernel(
     }
 
     // Clausius-Clapeyron equation for vapor pressure
-    // OVERFLOW PROTECTION: Cap temperature and exponent to prevent inf
+    // OVERFLOW PROTECTION: Cap temperature and ensure minimum value
+    // BUG FIX 2026-01-04: Ensure T_capped >= 1K to prevent division by zero
     float T_capped = fminf(T, 2.0f * T_boil);  // Cap at 2x boiling point
+    T_capped = fmaxf(T_capped, 1.0f);  // Minimum 1K to prevent division by zero
     float exponent = (L_vap * M_molar / R_gas) * (1.0f / T_boil - 1.0f / T_capped);
     exponent = fminf(exponent, 20.0f);  // Cap exponent to prevent exp overflow (exp(20) ~ 5e8)
     float P_sat = P_ref * expf(exponent);
@@ -1620,18 +1697,30 @@ __global__ void computeEvaporationMassFluxKernel(
 
     // Hertz-Knudsen-Langmuir evaporation mass flux [kg/(m^2·s)]
     float denominator = sqrtf(2.0f * PI * R_gas * T_capped / M_molar);
-    J_evap[idx] = alpha_evap * P_sat / denominator;
+
+    // ============================================================================
+    // CRITICAL: Zero-division protection (BUG FIX 2026-01-04)
+    // ============================================================================
+    // If T_capped = 0 (corrupted temperature), denominator = 0 → J_evap = Inf
+    // This prevents NaN/Inf propagation through the simulation
+    // ============================================================================
+    if (denominator < 1e-10f) {
+        // No evaporation at zero temperature (physically correct)
+        J_evap[idx] = 0.0f;
+    } else {
+        J_evap[idx] = alpha_evap * P_sat / denominator;
+    }
 }
 
 void ThermalLBM::computeEvaporationMassFlux(float* d_J_evap, const float* fill_level) const {
     if (!has_material_) {
         std::cerr << "WARNING: computeEvaporationMassFlux called without material properties\n";
-        cudaMemset(d_J_evap, 0, num_cells_ * sizeof(float));
+        CUDA_CHECK(cudaMemset(d_J_evap, 0, num_cells_ * sizeof(float)));
         return;
     }
 
     // Initialize to zero
-    cudaMemset(d_J_evap, 0, num_cells_ * sizeof(float));
+    CUDA_CHECK(cudaMemset(d_J_evap, 0, num_cells_ * sizeof(float)));
 
     // Launch kernel for ALL cells (not just top surface)
     // FIX: Use 3D grid to cover entire domain, kernel will filter to interface cells
@@ -1641,7 +1730,8 @@ void ThermalLBM::computeEvaporationMassFlux(float* d_J_evap, const float* fill_l
     computeEvaporationMassFluxKernel<<<blocks, threads>>>(
         d_temperature, fill_level, d_J_evap, material_, nx_, ny_, nz_
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 /**
@@ -1673,15 +1763,21 @@ __global__ void applyPhaseChangeCorrectionKernel(
     const float* fl_curr,
     const float* fl_prev,
     MaterialProperties material,
-    int num_cells)
+    int num_cells,
+    int nx,
+    int ny,
+    int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
 
-    // CRITICAL: Skip first cell (boundary condition cell)
-    // The boundary condition enforces T=T_boundary, and we should not
-    // modify it with phase change correction
-    if (idx == 0) return;
+    // CRITICAL: Skip ALL boundary cells
+    // The boundary conditions enforce T=T_boundary, and we should not
+    // modify them with phase change correction
+    int i = idx % nx;
+    int j = (idx / nx) % ny;
+    int k = idx / (nx * ny);
+    if (i == 0 || i == nx-1 || j == 0 || j == ny-1 || k == 0 || k == nz-1) return;
 
     // Compute change in liquid fraction
     float dfl = fl_curr[idx] - fl_prev[idx];
@@ -1703,7 +1799,19 @@ __global__ void applyPhaseChangeCorrectionKernel(
     // for the fact that the temperature change already occurred in the LBM step.
     // The correction represents the additional temperature drop needed to account
     // for latent heat absorption that wasn't in the LBM diffusion equation.
-    float dT = -(material.L_fusion / cp) * dfl;
+
+    // ============================================================================
+    // CRITICAL: Zero-division protection (BUG FIX 2026-01-04)
+    // ============================================================================
+    // Protect against division by zero when cp = 0 (corrupted properties)
+    // ============================================================================
+    float dT;
+    if (cp < 1e-6f) {
+        // Invalid specific heat - skip phase change correction to prevent NaN/Inf
+        dT = 0.0f;
+    } else {
+        dT = -(material.L_fusion / cp) * dfl;
+    }
 
     // Apply correction to temperature
     temperature[idx] += dT;
@@ -1742,11 +1850,15 @@ void ThermalLBM::applyPhaseChangeCorrection(float dt) {
             phase_solver_->getLiquidFraction(),
             phase_solver_->getPreviousLiquidFraction(),
             material_,
-            num_cells_
+            num_cells_,
+            nx_,
+            ny_,
+            nz_
         );
+        CUDA_CHECK_KERNEL();
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Recompute liquid fraction with corrected temperature
     phase_solver_->updateLiquidFraction(d_temperature);

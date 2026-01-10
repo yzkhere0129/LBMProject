@@ -9,6 +9,7 @@
 #include <device_launch_parameters.h>
 #include <cmath>
 #include <stdexcept>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace physics {
@@ -295,16 +296,16 @@ PhaseChangeSolver::~PhaseChangeSolver() {
 void PhaseChangeSolver::allocateMemory() {
     size_t size = num_cells_ * sizeof(float);
 
-    cudaMalloc(&d_enthalpy, size);
-    cudaMalloc(&d_liquid_fraction, size);
-    cudaMalloc(&d_liquid_fraction_prev_, size);
-    cudaMalloc(&d_dfl_dt_, size);
+    CUDA_CHECK(cudaMalloc(&d_enthalpy, size));
+    CUDA_CHECK(cudaMalloc(&d_liquid_fraction, size));
+    CUDA_CHECK(cudaMalloc(&d_liquid_fraction_prev_, size));
+    CUDA_CHECK(cudaMalloc(&d_dfl_dt_, size));
 
     // Initialize to zero
-    cudaMemset(d_enthalpy, 0, size);
-    cudaMemset(d_liquid_fraction, 0, size);
-    cudaMemset(d_liquid_fraction_prev_, 0, size);
-    cudaMemset(d_dfl_dt_, 0, size);
+    CUDA_CHECK(cudaMemset(d_enthalpy, 0, size));
+    CUDA_CHECK(cudaMemset(d_liquid_fraction, 0, size));
+    CUDA_CHECK(cudaMemset(d_liquid_fraction_prev_, 0, size));
+    CUDA_CHECK(cudaMemset(d_dfl_dt_, 0, size));
 }
 
 void PhaseChangeSolver::freeMemory() {
@@ -324,8 +325,9 @@ void PhaseChangeSolver::initializeFromTemperature(const float* temperature) {
 
     computeEnthalpyFromTemperatureKernel<<<blocks, threads>>>(
         temperature, d_enthalpy, d_liquid_fraction, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Store initial liquid fraction as "previous" for first time step
     cudaMemcpy(d_liquid_fraction_prev_, d_liquid_fraction,
@@ -341,6 +343,7 @@ void PhaseChangeSolver::updateEnthalpyFromTemperature(const float* temperature) 
 
     computeEnthalpyFromTemperatureKernel<<<blocks, threads>>>(
         temperature, d_enthalpy, d_liquid_fraction, num_cells_);
+    CUDA_CHECK_KERNEL();
 }
 
 int PhaseChangeSolver::updateTemperatureFromEnthalpy(float* temperature,
@@ -354,13 +357,14 @@ int PhaseChangeSolver::updateTemperatureFromEnthalpy(float* temperature,
 
     // Allocate convergence flag array
     int* d_converged;
-    cudaMalloc(&d_converged, num_cells_ * sizeof(int));
+    CUDA_CHECK(cudaMalloc(&d_converged, num_cells_ * sizeof(int)));
 
     solveTemperatureFromEnthalpyKernel<<<blocks, threads>>>(
         d_enthalpy, temperature, d_liquid_fraction, d_converged,
         tolerance, max_iterations, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Count how many cells actually converged
     int* h_converged = new int[num_cells_];
@@ -373,7 +377,7 @@ int PhaseChangeSolver::updateTemperatureFromEnthalpy(float* temperature,
     }
 
     delete[] h_converged;
-    cudaFree(d_converged);
+    CUDA_CHECK(cudaFree(d_converged));
 
     return total_converged;
 }
@@ -389,6 +393,7 @@ void PhaseChangeSolver::updateLiquidFraction(const float* temperature) {
 
     updateLiquidFractionKernel<<<blocks, threads>>>(
         temperature, d_liquid_fraction, num_cells_);
+    CUDA_CHECK_KERNEL();
 }
 
 void PhaseChangeSolver::addEnthalpyChange(const float* dH) {
@@ -397,6 +402,7 @@ void PhaseChangeSolver::addEnthalpyChange(const float* dH) {
 
     addEnthalpyChangeKernel<<<blocks, threads>>>(
         d_enthalpy, dH, num_cells_);
+    CUDA_CHECK_KERNEL();
 }
 
 void PhaseChangeSolver::copyEnthalpyToHost(float* host_enthalpy) const {
@@ -415,13 +421,14 @@ float PhaseChangeSolver::computeTotalEnergy() const {
 
     // Allocate partial sums
     float* d_partial_sums;
-    cudaMalloc(&d_partial_sums, blocks * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_partial_sums, blocks * sizeof(float)));
 
     // Assume unit cell volume for now (dx = dy = dz = 1)
     float cell_volume = 1.0f;
 
     computeTotalEnergyKernel<<<blocks, threads, threads * sizeof(float)>>>(
         d_enthalpy, d_partial_sums, num_cells_, cell_volume);
+    CUDA_CHECK_KERNEL();
 
     // Copy partial sums to host and reduce
     float* h_partial_sums = new float[blocks];
@@ -434,7 +441,7 @@ float PhaseChangeSolver::computeTotalEnergy() const {
     }
 
     delete[] h_partial_sums;
-    cudaFree(d_partial_sums);
+    CUDA_CHECK(cudaFree(d_partial_sums));
 
     return total_energy;
 }
@@ -445,6 +452,7 @@ void PhaseChangeSolver::computeLiquidFractionRate(float dt) {
 
     computeLiquidFractionRateKernel<<<blocks, threads>>>(
         d_liquid_fraction, d_liquid_fraction_prev_, d_dfl_dt_, dt, num_cells_);
+    CUDA_CHECK_KERNEL();
 }
 
 void PhaseChangeSolver::storePreviousLiquidFraction() {
@@ -453,6 +461,7 @@ void PhaseChangeSolver::storePreviousLiquidFraction() {
 
     storeLiquidFractionKernel<<<blocks, threads>>>(
         d_liquid_fraction, d_liquid_fraction_prev_, num_cells_);
+    CUDA_CHECK_KERNEL();
 }
 
 } // namespace physics

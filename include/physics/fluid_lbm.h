@@ -244,6 +244,33 @@ public:
     float computeReynoldsNumber(float characteristic_velocity,
                                float characteristic_length) const;
 
+    /**
+     * @brief Set moving wall boundary condition
+     *
+     * Replaces existing wall boundaries with moving wall (velocity) boundaries.
+     * Uses Zou-He velocity boundary condition to enforce wall velocity.
+     *
+     * Implementation note: This modifies the boundary node list to change
+     * wall boundaries (BOUNCE_BACK) to velocity boundaries (VELOCITY) with
+     * prescribed wall motion.
+     *
+     * Reference: Zou, Q., & He, X. (1997). On pressure and velocity boundary
+     * conditions for the lattice Boltzmann BGK model. Physics of Fluids, 9(6), 1591-1598.
+     *
+     * @param wall_direction Direction of the wall (use Streaming::BOUNDARY_* flags)
+     *                      Example: Streaming::BOUNDARY_Y_MAX for top wall (y=ny-1)
+     * @param ux_wall Wall velocity x-component [m/s]
+     * @param uy_wall Wall velocity y-component [m/s]
+     * @param uz_wall Wall velocity z-component [m/s]
+     *
+     * Example usage for lid-driven cavity (moving top wall):
+     *   fluid.setMovingWall(Streaming::BOUNDARY_Y_MAX, 0.1, 0.0, 0.0);
+     */
+    void setMovingWall(unsigned int wall_direction,
+                      float ux_wall,
+                      float uy_wall,
+                      float uz_wall);
+
 private:
     // Domain dimensions
     int nx_, ny_, nz_;

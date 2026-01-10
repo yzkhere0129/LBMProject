@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <cmath>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace physics {
@@ -194,7 +195,8 @@ __global__ void addSurfaceTensionForceKernel(
 
 /**
  * @brief Add Marangoni force (thermocapillary)
- * F_m = (dσ/dT) · ∇_s T · |∇f| / h [N/m³]
+ * F_m = (dσ/dT) · ∇_s T · |∇f| [N/m³]
+ * where |∇f| acts as interface delta function
  */
 __global__ void addMarangoniForceKernel(
     const float* temperature,
@@ -214,12 +216,23 @@ __global__ void addMarangoniForceKernel(
 
     // Only apply at interface
     float f = fill_level[idx];
+
+    // Debug output (remove after verification)
+    if (i == nx/2 && j == ny-1 && k == nz/2) {
+        printf("DEBUG Marangoni ENTRY [%d,%d,%d]: f=%.3f, cutoff=(0.01, 0.99)\n", i, j, k, f);
+    }
+
     if (f <= 0.01f || f >= 0.99f) {
         return;  // Not at interface
     }
 
     // Get interface normal
     float3 n = normals[idx];
+
+    // Debug output (remove after verification)
+    if (i == nx/2 && j == ny-1 && k == nz/2) {
+        printf("DEBUG normal [%d,%d,%d]: n=(%.3f,%.3f,%.3f)\n", i, j, k, n.x, n.y, n.z);
+    }
 
     // Compute temperature gradient (central differences)
     float grad_T_x = 0.0f, grad_T_y = 0.0f, grad_T_z = 0.0f;
@@ -248,31 +261,92 @@ __global__ void addMarangoniForceKernel(
     float grad_T_s_y = grad_T_y - grad_T_dot_n * n.y;
     float grad_T_s_z = grad_T_z - grad_T_dot_n * n.z;
 
+    // Debug output (remove after verification)
+    if (i == nx/2 && j == ny-1 && k == nz/2) {
+        printf("DEBUG grad_T [%d,%d,%d]: grad_T=(%.3e,%.3e,%.3e), grad_Ts=(%.3e,%.3e,%.3e)\n",
+               i, j, k, grad_T_x, grad_T_y, grad_T_z, grad_T_s_x, grad_T_s_y, grad_T_s_z);
+    }
+
     // Compute fill level gradient magnitude (interface delta function)
+    // Use one-sided differences at boundaries to avoid zero gradients
     float grad_f_x = 0.0f, grad_f_y = 0.0f, grad_f_z = 0.0f;
-    if (i > 0 && i < nx - 1) {
+
+    if (i == 0) {
+        // Forward difference at left boundary
+        int idx_xp = (i + 1) + nx * (j + ny * k);
+        grad_f_x = (fill_level[idx_xp] - f) / dx;
+    } else if (i == nx - 1) {
+        // Backward difference at right boundary
+        int idx_xm = (i - 1) + nx * (j + ny * k);
+        grad_f_x = (f - fill_level[idx_xm]) / dx;
+    } else {
+        // Central difference in interior
         int idx_xp = (i + 1) + nx * (j + ny * k);
         int idx_xm = (i - 1) + nx * (j + ny * k);
         grad_f_x = (fill_level[idx_xp] - fill_level[idx_xm]) / (2.0f * dx);
     }
-    if (j > 0 && j < ny - 1) {
+
+    if (j == 0) {
+        // Forward difference at bottom boundary
+        int idx_yp = i + nx * ((j + 1) + ny * k);
+        grad_f_y = (fill_level[idx_yp] - f) / dx;
+    } else if (j == ny - 1) {
+        // Backward difference at top boundary
+        int idx_ym = i + nx * ((j - 1) + ny * k);
+        grad_f_y = (f - fill_level[idx_ym]) / dx;
+    } else {
+        // Central difference in interior
         int idx_yp = i + nx * ((j + 1) + ny * k);
         int idx_ym = i + nx * ((j - 1) + ny * k);
         grad_f_y = (fill_level[idx_yp] - fill_level[idx_ym]) / (2.0f * dx);
     }
-    if (k > 0 && k < nz - 1) {
+
+    if (k == 0) {
+        // Forward difference at front boundary
+        int idx_zp = i + nx * (j + ny * (k + 1));
+        grad_f_z = (fill_level[idx_zp] - f) / dx;
+    } else if (k == nz - 1) {
+        // Backward difference at back boundary
+        int idx_zm = i + nx * (j + ny * (k - 1));
+        grad_f_z = (f - fill_level[idx_zm]) / dx;
+    } else {
+        // Central difference in interior
         int idx_zp = i + nx * (j + ny * (k + 1));
         int idx_zm = i + nx * (j + ny * (k - 1));
         grad_f_z = (fill_level[idx_zp] - fill_level[idx_zm]) / (2.0f * dx);
     }
+
     float grad_f_mag = sqrtf(grad_f_x*grad_f_x + grad_f_y*grad_f_y + grad_f_z*grad_f_z);
+
+    // Debug output (remove after verification)
+    if (i == nx/2 && j == ny-1 && k == nz/2) {
+        printf("DEBUG grad_f [%d,%d,%d]: grad_f_mag=%.6e, grad_f=(%.3e,%.3e,%.3e)\n",
+               i, j, k, grad_f_mag, grad_f_x, grad_f_y, grad_f_z);
+    }
 
     if (grad_f_mag < 1e-12f) {
         return;  // No interface
     }
 
-    // Marangoni force: F = (dσ/dT) · ∇_s T · |∇f| / h
-    float coeff = dsigma_dT * grad_f_mag / (h_interface * dx);
+    // Marangoni force (CSF formulation): F = (dσ/dT) · ∇_s T · |∇f| / h
+    //
+    // Physical derivation:
+    //   Surface stress: τ_s = (dσ/dT) · ∇_s T  [N/m²]
+    //   CSF converts surface force to volumetric: F = τ_s · δ_interface  [N/m³]
+    //   where δ_interface ≈ |∇f| / h (interface delta function)
+    //   and h is the interface thickness [lattice units, dimensionless]
+    //
+    // Units: [N/(m·K)] · [K/m] · [1/m] / [dimensionless] = [N/m³]  ✓
+    //
+    // CRITICAL: Division by h_interface normalizes the delta function
+    float coeff = dsigma_dT * grad_f_mag / h_interface;
+
+    // Debug output (remove after verification)
+    if (i == nx/2 && j == ny-1 && k == nz/2) {
+        printf("DEBUG Marangoni [%d,%d,%d]: f=%.3f, grad_f_mag=%.6e, grad_T_s=(%.3e,%.3e,%.3e), coeff=%.3e, F=(%.3e,%.3e,%.3e)\n",
+               i, j, k, f, grad_f_mag, grad_T_s_x, grad_T_s_y, grad_T_s_z, coeff,
+               coeff * grad_T_s_x, coeff * grad_T_s_y, coeff * grad_T_s_z);
+    }
 
     fx[idx] += coeff * grad_T_s_x;
     fy[idx] += coeff * grad_T_s_y;
@@ -335,22 +409,54 @@ __global__ void addRecoilPressureForceKernel(
     float3 n = normals[idx];
 
     // Compute fill level gradient magnitude (interface delta function)
+    // Use one-sided differences at boundaries to avoid zero gradients
     float grad_f_x = 0.0f, grad_f_y = 0.0f, grad_f_z = 0.0f;
-    if (i > 0 && i < nx - 1) {
+
+    if (i == 0) {
+        // Forward difference at left boundary
+        int idx_xp = (i + 1) + nx * (j + ny * k);
+        grad_f_x = (fill_level[idx_xp] - f) / dx;
+    } else if (i == nx - 1) {
+        // Backward difference at right boundary
+        int idx_xm = (i - 1) + nx * (j + ny * k);
+        grad_f_x = (f - fill_level[idx_xm]) / dx;
+    } else {
+        // Central difference in interior
         int idx_xp = (i + 1) + nx * (j + ny * k);
         int idx_xm = (i - 1) + nx * (j + ny * k);
         grad_f_x = (fill_level[idx_xp] - fill_level[idx_xm]) / (2.0f * dx);
     }
-    if (j > 0 && j < ny - 1) {
+
+    if (j == 0) {
+        // Forward difference at bottom boundary
+        int idx_yp = i + nx * ((j + 1) + ny * k);
+        grad_f_y = (fill_level[idx_yp] - f) / dx;
+    } else if (j == ny - 1) {
+        // Backward difference at top boundary
+        int idx_ym = i + nx * ((j - 1) + ny * k);
+        grad_f_y = (f - fill_level[idx_ym]) / dx;
+    } else {
+        // Central difference in interior
         int idx_yp = i + nx * ((j + 1) + ny * k);
         int idx_ym = i + nx * ((j - 1) + ny * k);
         grad_f_y = (fill_level[idx_yp] - fill_level[idx_ym]) / (2.0f * dx);
     }
-    if (k > 0 && k < nz - 1) {
+
+    if (k == 0) {
+        // Forward difference at front boundary
+        int idx_zp = i + nx * (j + ny * (k + 1));
+        grad_f_z = (fill_level[idx_zp] - f) / dx;
+    } else if (k == nz - 1) {
+        // Backward difference at back boundary
+        int idx_zm = i + nx * (j + ny * (k - 1));
+        grad_f_z = (f - fill_level[idx_zm]) / dx;
+    } else {
+        // Central difference in interior
         int idx_zp = i + nx * (j + ny * (k + 1));
         int idx_zm = i + nx * (j + ny * (k - 1));
         grad_f_z = (fill_level[idx_zp] - fill_level[idx_zm]) / (2.0f * dx);
     }
+
     float grad_f_mag = sqrtf(grad_f_x*grad_f_x + grad_f_y*grad_f_y + grad_f_z*grad_f_z);
 
     if (grad_f_mag < 1e-12f) {
@@ -609,7 +715,8 @@ void ForceAccumulator::reset() {
     int blocks = (num_cells_ + threads - 1) / threads;
 
     zeroForceKernel<<<blocks, threads>>>(d_fx_, d_fy_, d_fz_, num_cells_);
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Reset diagnostics
     buoyancy_mag_ = 0.0f;
@@ -634,6 +741,7 @@ void ForceAccumulator::addBuoyancyForce(
         d_fx_, d_fy_, d_fz_,
         T_ref, beta, rho, gx, gy, gz,
         use_lf, num_cells_);
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -641,7 +749,7 @@ void ForceAccumulator::addBuoyancyForce(
                                 std::string(cudaGetErrorString(err)));
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update diagnostic
     buoyancy_mag_ = getMaxForceMagnitude();
@@ -659,6 +767,7 @@ void ForceAccumulator::addDarcyDamping(
         d_fx_, d_fy_, d_fz_,
         darcy_coeff, rho, dx, dt,
         num_cells_);
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -666,7 +775,7 @@ void ForceAccumulator::addDarcyDamping(
                                 std::string(cudaGetErrorString(err)));
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update diagnostic
     darcy_mag_ = getMaxForceMagnitude();
@@ -685,6 +794,7 @@ void ForceAccumulator::addSurfaceTensionForce(
         curvature, fill_level,
         d_fx_, d_fy_, d_fz_,
         sigma, dx, nx, ny, nz);
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -692,7 +802,7 @@ void ForceAccumulator::addSurfaceTensionForce(
                                 std::string(cudaGetErrorString(err)));
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update diagnostic
     surface_tension_mag_ = getMaxForceMagnitude();
@@ -713,6 +823,7 @@ void ForceAccumulator::addMarangoniForce(
         d_fx_, d_fy_, d_fz_,
         dsigma_dT, dx, h_interface,
         nx, ny, nz);
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -720,7 +831,7 @@ void ForceAccumulator::addMarangoniForce(
                                 std::string(cudaGetErrorString(err)));
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update diagnostic
     marangoni_mag_ = getMaxForceMagnitude();
@@ -744,6 +855,7 @@ void ForceAccumulator::addRecoilPressureForce(
         T_boil, L_v, M, P_atm, C_r,
         smoothing_width, max_pressure, dx,
         nx, ny, nz);
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -751,7 +863,7 @@ void ForceAccumulator::addRecoilPressureForce(
                                 std::string(cudaGetErrorString(err)));
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update diagnostic
     recoil_mag_ = getMaxForceMagnitude();
@@ -787,8 +899,9 @@ void ForceAccumulator::convertToLatticeUnits(float dx, float dt, float rho) {
 
     convertToLatticeUnitsKernel<<<blocks, threads>>>(
         d_fx_, d_fy_, d_fz_, conversion_factor, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void ForceAccumulator::applyCFLLimiting(
@@ -802,8 +915,9 @@ void ForceAccumulator::applyCFLLimiting(
         d_fx_, d_fy_, d_fz_,
         vx, vy, vz,
         v_target, ramp_factor, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void ForceAccumulator::applyCFLLimitingAdaptive(
@@ -825,8 +939,9 @@ void ForceAccumulator::applyCFLLimitingAdaptive(
         interface_lo, interface_hi,
         recoil_boost_factor, ramp_factor,
         num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 float ForceAccumulator::getMaxForceMagnitude() const {
@@ -843,15 +958,16 @@ float ForceAccumulator::getMaxForceMagnitude() const {
 
     computeForceMagnitudeKernel<<<blocks, threads>>>(
         d_fx_, d_fy_, d_fz_, d_f_mag, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Copy to host and find max
     std::vector<float> h_f_mag(num_cells_);
     cudaMemcpy(h_f_mag.data(), d_f_mag, num_cells_ * sizeof(float),
                cudaMemcpyDeviceToHost);
 
-    cudaFree(d_f_mag);
+    CUDA_CHECK(cudaFree(d_f_mag));
 
     return *std::max_element(h_f_mag.begin(), h_f_mag.end());
 }

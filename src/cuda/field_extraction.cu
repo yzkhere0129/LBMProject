@@ -6,6 +6,7 @@
 #include "cuda/field_extraction.h"
 #include <cuda_runtime.h>
 #include <cstdio>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace cuda {
@@ -87,6 +88,7 @@ void extractFieldsForVTK(
         d_out_ux, d_out_uy, d_out_uz,
         num_cells, velocity_conversion
     );
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -124,6 +126,7 @@ void extractScalarField(
     extractScalarFieldKernel<<<num_blocks, threads_per_block>>>(
         d_input, d_output, num_cells, scale, offset
     );
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -165,6 +168,7 @@ void extractVelocityMagnitude(
     extractVelocityMagnitudeKernel<<<num_blocks, threads_per_block>>>(
         d_ux, d_uy, d_uz, d_vmag, num_cells
     );
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -236,6 +240,7 @@ void extract2DSlice(
     extract2DSliceKernel<<<gridSize, blockSize>>>(
         d_input, d_output, nx, ny, nz, slice_axis, slice_index
     );
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {

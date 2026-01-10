@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace physics {
@@ -574,7 +575,7 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
     } else {
         // Allocate static temperature field
         int num_cells = config_.nx * config_.ny * config_.nz;
-        cudaMalloc(&d_temperature_static_, num_cells * sizeof(float));
+        CUDA_CHECK(cudaMalloc(&d_temperature_static_, num_cells * sizeof(float)));
     }
 
     // Fluid solver (required)
@@ -659,8 +660,8 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
 
         // Allocate saturation pressure buffer
         int num_cells = config_.nx * config_.ny * config_.nz;
-        cudaMalloc(&d_saturation_pressure_, num_cells * sizeof(float));
-        cudaMemset(d_saturation_pressure_, 0, num_cells * sizeof(float));
+        CUDA_CHECK(cudaMalloc(&d_saturation_pressure_, num_cells * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_saturation_pressure_, 0, num_cells * sizeof(float)));
     }
 
     // ============================================================
@@ -750,19 +751,20 @@ void MultiphysicsSolver::allocateMemory() {
     // No need to allocate d_force_x_, d_force_y_, d_force_z_ here
 
     // Allocate static liquid fraction field
-    cudaMalloc(&d_liquid_fraction_static_, num_cells * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_liquid_fraction_static_, num_cells * sizeof(float)));
 
     // Allocate physical velocity buffers for VOF advection
     // VOF expects velocity in [m/s], but LBM outputs lattice units
-    cudaMalloc(&d_velocity_physical_x_, num_cells * sizeof(float));
-    cudaMalloc(&d_velocity_physical_y_, num_cells * sizeof(float));
-    cudaMalloc(&d_velocity_physical_z_, num_cells * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_velocity_physical_x_, num_cells * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_velocity_physical_y_, num_cells * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_velocity_physical_z_, num_cells * sizeof(float)));
 
     // Allocate energy reduction temporary (single double for global reduction)
-    cudaMalloc(&d_energy_temp_, sizeof(double));
+    CUDA_CHECK(cudaMalloc(&d_energy_temp_, sizeof(double)));
 
     // Allocate evaporation mass flux buffer (for VOF-thermal coupling)
-    cudaMalloc(&d_evap_mass_flux_, num_cells * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_evap_mass_flux_, num_cells * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_evap_mass_flux_, 0, num_cells * sizeof(float)));
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -968,7 +970,7 @@ void MultiphysicsSolver::step(float dt) {
         if (current_step_ % 100 == 0) {
             int num_cells = config_.nx * config_.ny * config_.nz;
             std::vector<float> h_J_evap(num_cells);
-            cudaMemcpy(h_J_evap.data(), d_evap_mass_flux_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpy(h_J_evap.data(), d_evap_mass_flux_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
 
             float max_J = 0.0f;
             int evap_cells = 0;
@@ -1030,7 +1032,7 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
     // Allocate temporary device memory for heat source
     int num_cells = config_.nx * config_.ny * config_.nz;
     float* d_heat_source = nullptr;
-    cudaMalloc(&d_heat_source, num_cells * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_heat_source, num_cells * sizeof(float)));
 
     // Compute volumetric heat source from laser
     dim3 threads(8, 8, 8);
@@ -1053,13 +1055,14 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
         config_.dx,
         z_surface
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Add heat source to thermal solver
     thermal_->addHeatSource(d_heat_source, dt);
 
     // Free temporary memory
-    cudaFree(d_heat_source);
+    CUDA_CHECK(cudaFree(d_heat_source));
 }
 
 void MultiphysicsSolver::thermalStep(float dt) {
@@ -1108,10 +1111,34 @@ void MultiphysicsSolver::thermalStep(float dt) {
     }
 
     // ============================================================
+    // DIRICHLET BOUNDARY CONDITIONS: Apply fixed temperature BCs
+    // ============================================================
+    // This implements Dirichlet (fixed temperature) BCs on domain faces
+    // to match walberla's T=300K boundary conditions.
+    //
+    // Boundary types:
+    //   0 = Periodic (handled automatically in streaming)
+    //   1 = Dirichlet (constant T) - set g_i = g_i^eq(T_boundary)
+    //   2 = Adiabatic (zero flux) - copy from interior cell
+    //
+    // CRITICAL: This must be called BEFORE collision to ensure BC values
+    // are incorporated into the LBM step.
+    // ============================================================
+    if (config_.boundary_type == 1 || config_.boundary_type == 2) {
+        thermal_->applyBoundaryConditions(
+            config_.boundary_type,
+            config_.substrate_temperature  // Use this as the Dirichlet BC value
+        );
+    }
+
+    // ============================================================
     // v4 FIX: Apply radiation boundary condition to prevent thermal runaway
     // Stefan-Boltzmann radiation: q_rad = ε·σ·(T⁴ - T_amb⁴)
     // This is CRITICAL to balance laser input and prevent T → ∞
     // NOW APPLIED BEFORE STREAMING TO PRESERVE BC EFFECTS
+    //
+    // NOTE: This is applied AFTER Dirichlet BCs so radiation can modify
+    // the top surface while other faces remain at fixed temperature.
     // ============================================================
     if (config_.enable_radiation_bc) {
         thermal_->applyRadiationBC(
@@ -1128,6 +1155,9 @@ void MultiphysicsSolver::thermalStep(float dt) {
     // This addresses the 33% energy imbalance by allowing heat to
     // exit through the water-cooled substrate (bottom boundary)
     // NOW APPLIED BEFORE STREAMING TO PRESERVE BC EFFECTS
+    //
+    // NOTE: This is applied AFTER Dirichlet BCs. If both are enabled,
+    // substrate cooling will override the Dirichlet BC on the bottom face.
     // ============================================================
     if (config_.enable_substrate_cooling) {
         thermal_->applySubstrateCoolingBC(
@@ -1146,6 +1176,25 @@ void MultiphysicsSolver::thermalStep(float dt) {
 
     // Compute temperature (note: applyRadiationBC and applySubstrateCoolingBC already call this)
     thermal_->computeTemperature();
+
+    // ============================================================
+    // RE-APPLY DIRICHLET BOUNDARY CONDITIONS AFTER STREAMING
+    // ============================================================
+    // The streaming kernel applies bounce-back on all boundaries,
+    // which can slightly perturb the Dirichlet BC values.
+    // Re-applying ensures exact enforcement of T_boundary.
+    //
+    // This is the standard LBM pattern for Dirichlet BC:
+    // 1. Set BC before collision
+    // 2. Stream (may perturb BC via bounce-back)
+    // 3. Re-set BC to enforce exact value
+    // ============================================================
+    if (config_.boundary_type == 1 || config_.boundary_type == 2) {
+        thermal_->applyBoundaryConditions(
+            config_.boundary_type,
+            config_.substrate_temperature
+        );
+    }
 }
 
 void MultiphysicsSolver::vofStep(float dt) {
@@ -1176,7 +1225,8 @@ void MultiphysicsSolver::vofStep(float dt) {
         velocity_conversion,
         num_cells
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Diagnostic: print velocity conversion info on first call
     static bool first_call = true;
@@ -1253,7 +1303,7 @@ void MultiphysicsSolver::vofStep(float dt) {
             if (current_step_ % 100 == 0) {
                 // Sample dfl_dt field to find max solidification rate
                 std::vector<float> h_dfl_dt(num_cells);
-                cudaMemcpy(h_dfl_dt.data(), dfl_dt, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+                CUDA_CHECK(cudaMemcpy(h_dfl_dt.data(), dfl_dt, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
 
                 float max_solidification_rate = 0.0f;  // Most negative value
                 float max_melting_rate = 0.0f;         // Most positive value
@@ -1290,7 +1340,7 @@ void MultiphysicsSolver::vofStep(float dt) {
 
                 // Count interface cells that are also solidifying
                 std::vector<float> h_fill(num_cells);
-                cudaMemcpy(h_fill.data(), vof_->getFillLevel(), num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+                CUDA_CHECK(cudaMemcpy(h_fill.data(), vof_->getFillLevel(), num_cells * sizeof(float), cudaMemcpyDeviceToHost));
 
                 int interface_solidifying = 0;
                 float max_interface_rate = 0.0f;
@@ -1366,7 +1416,7 @@ void MultiphysicsSolver::vofStep(float dt) {
 
         // Check velocity magnitude at interface
         std::vector<float> h_vz(num_cells);
-        cudaMemcpy(h_vz.data(), d_velocity_physical_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(h_vz.data(), d_velocity_physical_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
         float v_max_interface = 0.0f;
         for (int i = 0; i < num_cells; ++i) {
             if (h_fill_after[i] > 0.01f && h_fill_after[i] < 0.99f) {
@@ -1429,9 +1479,9 @@ void MultiphysicsSolver::fluidStep(float dt) {
         std::vector<float> h_fx_temp(num_cells);
         std::vector<float> h_fy_temp(num_cells);
         std::vector<float> h_fz_temp(num_cells);
-        cudaMemcpy(h_fx_temp.data(), d_force_x_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_fy_temp.data(), d_force_y_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_fz_temp.data(), d_force_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(h_fx_temp.data(), d_force_x_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_fy_temp.data(), d_force_y_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_fz_temp.data(), d_force_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
 
         float max_f_z = 0.0f;  // Track z-component separately for recoil
         int max_f_idx = 0;
@@ -1448,9 +1498,9 @@ void MultiphysicsSolver::fluidStep(float dt) {
         std::vector<float> h_vx(num_cells);
         std::vector<float> h_vy(num_cells);
         std::vector<float> h_vz(num_cells);
-        cudaMemcpy(h_vx.data(), fluid_->getVelocityX(), num_cells * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_vy.data(), fluid_->getVelocityY(), num_cells * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_vz.data(), fluid_->getVelocityZ(), num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(h_vx.data(), fluid_->getVelocityX(), num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_vy.data(), fluid_->getVelocityY(), num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_vz.data(), fluid_->getVelocityZ(), num_cells * sizeof(float), cudaMemcpyDeviceToHost));
         for (int i = 0; i < num_cells; ++i) {
             float v_mag = std::sqrt(h_vx[i]*h_vx[i] + h_vy[i]*h_vy[i] + h_vz[i]*h_vz[i]);
             max_v_before = std::max(max_v_before, v_mag);
@@ -1486,9 +1536,9 @@ void MultiphysicsSolver::fluidStep(float dt) {
         std::vector<float> h_fx_final(num_cells);
         std::vector<float> h_fy_final(num_cells);
         std::vector<float> h_fz_final(num_cells);
-        cudaMemcpy(h_fx_final.data(), d_force_x_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_fy_final.data(), d_force_y_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_fz_final.data(), d_force_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(h_fx_final.data(), d_force_x_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_fy_final.data(), d_force_y_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_fz_final.data(), d_force_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
 
         float max_f_final = 0.0f;
         float max_f_z_final = 0.0f;
@@ -1750,7 +1800,7 @@ float MultiphysicsSolver::getMaxVelocity() const {
 
     // Compute velocity magnitude
     float* d_vmag;
-    cudaMalloc(&d_vmag, num_cells * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_vmag, num_cells * sizeof(float)));
 
     int threads = 256;
     int blocks = (num_cells + threads - 1) / threads;
@@ -1761,7 +1811,8 @@ float MultiphysicsSolver::getMaxVelocity() const {
         fluid_->getVelocityZ(),
         d_vmag, num_cells
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Find maximum
     std::vector<float> h_vmag(num_cells);
@@ -1770,7 +1821,7 @@ float MultiphysicsSolver::getMaxVelocity() const {
 
     float max_vel_lattice = *std::max_element(h_vmag.begin(), h_vmag.end());
 
-    cudaFree(d_vmag);
+    CUDA_CHECK(cudaFree(d_vmag));
 
     // Convert from lattice units to physical units
     // v_phys = v_lattice * (dx / dt)
@@ -1809,8 +1860,8 @@ float MultiphysicsSolver::getTotalMass() const {
 bool MultiphysicsSolver::checkNaN() const {
     int num_cells = config_.nx * config_.ny * config_.nz;
     int* d_has_nan;
-    cudaMalloc(&d_has_nan, sizeof(int));
-    cudaMemset(d_has_nan, 0, sizeof(int));
+    CUDA_CHECK(cudaMalloc(&d_has_nan, sizeof(int)));
+    CUDA_CHECK(cudaMemset(d_has_nan, 0, sizeof(int)));
 
     int threads = 256;
     int blocks = (num_cells + threads - 1) / threads;
@@ -1818,8 +1869,11 @@ bool MultiphysicsSolver::checkNaN() const {
     // Check velocity
     if (fluid_) {
         checkNaNKernel<<<blocks, threads>>>(fluid_->getVelocityX(), d_has_nan, num_cells);
+        CUDA_CHECK_KERNEL();
         checkNaNKernel<<<blocks, threads>>>(fluid_->getVelocityY(), d_has_nan, num_cells);
+        CUDA_CHECK_KERNEL();
         checkNaNKernel<<<blocks, threads>>>(fluid_->getVelocityZ(), d_has_nan, num_cells);
+        CUDA_CHECK_KERNEL();
     }
 
     // Check temperature
@@ -1827,18 +1881,20 @@ bool MultiphysicsSolver::checkNaN() const {
         thermal_->getTemperature() : d_temperature_static_;
     if (d_temp) {
         checkNaNKernel<<<blocks, threads>>>(d_temp, d_has_nan, num_cells);
+        CUDA_CHECK_KERNEL();
     }
 
     // Check fill level
     if (vof_) {
         checkNaNKernel<<<blocks, threads>>>(vof_->getFillLevel(), d_has_nan, num_cells);
+        CUDA_CHECK_KERNEL();
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     int has_nan;
-    cudaMemcpy(&has_nan, d_has_nan, sizeof(int), cudaMemcpyDeviceToHost);
-    cudaFree(d_has_nan);
+    CUDA_CHECK(cudaMemcpy(&has_nan, d_has_nan, sizeof(int), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(d_has_nan));
 
     return has_nan > 0;
 }
@@ -1879,7 +1935,7 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
     // Allocate temporary device memory for heat source
     int num_cells = config_.nx * config_.ny * config_.nz;
     float* d_heat_source = nullptr;
-    cudaMalloc(&d_heat_source, num_cells * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_heat_source, num_cells * sizeof(float)));
 
     // Compute volumetric heat source from laser (same as applyLaserSource)
     dim3 threads(8, 8, 8);
@@ -1899,7 +1955,8 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
         config_.dx,
         z_surface
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Integrate heat source over domain using CUB reduction
     float total_power = computeTotalLaserEnergy(
@@ -1909,7 +1966,7 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
     );
 
     // Free temporary memory
-    cudaFree(d_heat_source);
+    CUDA_CHECK(cudaFree(d_heat_source));
 
     return total_power;
 }
@@ -2167,7 +2224,7 @@ void MultiphysicsSolver::setFillLevel(const float* h_fill_level) {
     if (vof_ && h_fill_level) {
         int num_cells = config_.nx * config_.ny * config_.nz;
         float* d_fill = vof_->getFillLevel();
-        cudaMemcpy(d_fill, h_fill_level, num_cells * sizeof(float), cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(d_fill, h_fill_level, num_cells * sizeof(float), cudaMemcpyHostToDevice));
         // Update cell flags and interface normals after changing fill level
         vof_->convertCells();
         vof_->reconstructInterface();
@@ -2254,7 +2311,7 @@ void MultiphysicsSolver::computeEnergyBalance() {
             config_.nx, config_.ny, config_.nz,
             d_energy_temp_
         );
-        cudaMemcpy(&balance.E_kinetic, d_energy_temp_, sizeof(double), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(&balance.E_kinetic, d_energy_temp_, sizeof(double), cudaMemcpyDeviceToHost));
     } else {
         balance.E_kinetic = 0.0;
     }
@@ -2269,7 +2326,7 @@ void MultiphysicsSolver::computeEnergyBalance() {
             config_.nx, config_.ny, config_.nz,
             d_energy_temp_
         );
-        cudaMemcpy(&balance.E_latent, d_energy_temp_, sizeof(double), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(&balance.E_latent, d_energy_temp_, sizeof(double), cudaMemcpyDeviceToHost));
     } else {
         balance.E_latent = 0.0;
     }

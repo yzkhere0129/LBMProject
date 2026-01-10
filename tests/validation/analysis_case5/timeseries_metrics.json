@@ -1,0 +1,5088 @@
+[
+  {
+    "peak_temperature": {
+      "value": 375.343994140625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00015000000000000001
+      ],
+      "index": 129620
+    },
+    "melt_pool": {
+      "solid_fraction": 1.0,
+      "liquid_fraction": 0.0,
+      "mushy_fraction": 0.0,
+      "liquid_points": 0,
+      "liquid_bounds": null,
+      "width": 0.0,
+      "height": 0.0,
+      "depth": 0.0,
+      "aspect_ratio_wh": 0.0,
+      "aspect_ratio_wd": 0.0
+    },
+    "gradients": {
+      "mean_magnitude": 18770.82421875,
+      "max_magnitude": 10045866.0,
+      "std_magnitude": 228643.453125,
+      "mean_x": -0.0008630652446299791,
+      "mean_y": -9.570312249707058e-05,
+      "mean_z": -0.0010000000474974513
+    },
+    "spatial_stats": {
+      "min": 300.0,
+      "max": 375.343994140625,
+      "mean": 300.1153259277344,
+      "median": 300.0,
+      "std": 1.6310153007507324,
+      "q25": 300.0,
+      "q75": 300.0
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000000.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000000.vtk",
+    "timestep": 0
+  },
+  {
+    "peak_temperature": {
+      "value": 1603.72998046875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 1.0,
+      "liquid_fraction": 0.0,
+      "mushy_fraction": 0.0,
+      "liquid_points": 0,
+      "liquid_bounds": null,
+      "width": 0.0,
+      "height": 0.0,
+      "depth": 0.0,
+      "aspect_ratio_wh": 0.0,
+      "aspect_ratio_wd": 0.0
+    },
+    "gradients": {
+      "mean_magnitude": 367097.28125,
+      "max_magnitude": 156470928.0,
+      "std_magnitude": 3984125.5,
+      "mean_x": 29.59640121459961,
+      "mean_y": -2.0924980640411377,
+      "mean_z": 0.01600000075995922
+    },
+    "spatial_stats": {
+      "min": 290.6319885253906,
+      "max": 1603.72998046875,
+      "mean": 302.42144775390625,
+      "median": 300.0,
+      "std": 31.736230850219727,
+      "q25": 299.9989929199219,
+      "q75": 300.0069885253906
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000020.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000020.vtk",
+    "timestep": 20
+  },
+  {
+    "peak_temperature": {
+      "value": 2473.820068359375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99973828125,
+      "liquid_fraction": 0.00024609375,
+      "mushy_fraction": 1.5625e-05,
+      "liquid_points": 63,
+      "liquid_bounds": {
+        "xmin": 6.375e-05,
+        "xmax": 8.625e-05,
+        "ymin": 0.00013875,
+        "ymax": 0.00016125000000000002,
+        "zmin": 0.0001425,
+        "zmax": 0.00015000000000000001
+      },
+      "width": 2.249999999999999e-05,
+      "height": 2.2500000000000005e-05,
+      "depth": 7.50000000000002e-06,
+      "aspect_ratio_wh": 0.9999999999999994,
+      "aspect_ratio_wd": 2.999999999999991
+    },
+    "gradients": {
+      "mean_magnitude": 669203.0,
+      "max_magnitude": 232193456.0,
+      "std_magnitude": 6761558.5,
+      "mean_x": 65.95509338378906,
+      "mean_y": -9.525983810424805,
+      "mean_z": 11.663999557495117
+    },
+    "spatial_stats": {
+      "min": 295.1990051269531,
+      "max": 2473.820068359375,
+      "mean": 304.70428466796875,
+      "median": 300.00201416015625,
+      "std": 58.18191909790039,
+      "q25": 299.9939880371094,
+      "q75": 300.0140075683594
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000040.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000040.vtk",
+    "timestep": 40
+  },
+  {
+    "peak_temperature": {
+      "value": 3119.409912109375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99928125,
+      "liquid_fraction": 0.00065625,
+      "mushy_fraction": 6.25e-05,
+      "liquid_points": 168,
+      "liquid_bounds": {
+        "xmin": 6e-05,
+        "xmax": 9e-05,
+        "ymin": 0.000135,
+        "ymax": 0.000165,
+        "zmin": 0.00013875,
+        "zmax": 0.00015000000000000001
+      },
+      "width": 3.0000000000000004e-05,
+      "height": 2.9999999999999997e-05,
+      "depth": 1.1250000000000002e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 2.6666666666666665
+    },
+    "gradients": {
+      "mean_magnitude": 929883.6875,
+      "max_magnitude": 278596000.0,
+      "std_magnitude": 8772470.0,
+      "mean_x": 50.056819915771484,
+      "mean_y": -18.60869598388672,
+      "mean_z": 20.70400047302246
+    },
+    "spatial_stats": {
+      "min": 297.7349853515625,
+      "max": 3119.409912109375,
+      "mean": 306.89532470703125,
+      "median": 300.00299072265625,
+      "std": 80.59062957763672,
+      "q25": 299.99200439453125,
+      "q75": 300.0199890136719
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000060.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000060.vtk",
+    "timestep": 60
+  },
+  {
+    "peak_temperature": {
+      "value": 3690.14990234375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99885546875,
+      "liquid_fraction": 0.00105078125,
+      "mushy_fraction": 9.375e-05,
+      "liquid_points": 269,
+      "liquid_bounds": {
+        "xmin": 5.625e-05,
+        "xmax": 9.375e-05,
+        "ymin": 0.00013125,
+        "ymax": 0.00016875,
+        "zmin": 0.00013875,
+        "zmax": 0.00015375
+      },
+      "width": 3.7500000000000003e-05,
+      "height": 3.750000000000002e-05,
+      "depth": 1.4999999999999985e-05,
+      "aspect_ratio_wh": 0.9999999999999997,
+      "aspect_ratio_wd": 2.5000000000000027
+    },
+    "gradients": {
+      "mean_magnitude": 1167598.75,
+      "max_magnitude": 316768672.0,
+      "std_magnitude": 10438709.0,
+      "mean_x": 40.869293212890625,
+      "mean_y": -27.543899536132812,
+      "mean_z": 26.304000854492188
+    },
+    "spatial_stats": {
+      "min": 298.9119873046875,
+      "max": 3690.14990234375,
+      "mean": 309.0219421386719,
+      "median": 300.0039978027344,
+      "std": 100.68549346923828,
+      "q25": 299.99200439453125,
+      "q75": 300.02398681640625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000080.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000080.vtk",
+    "timestep": 80
+  },
+  {
+    "peak_temperature": {
+      "value": 4200.5,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9983359375,
+      "liquid_fraction": 0.0016015625,
+      "mushy_fraction": 6.25e-05,
+      "liquid_points": 410,
+      "liquid_bounds": {
+        "xmin": 5.625e-05,
+        "xmax": 9.375e-05,
+        "ymin": 0.00013125,
+        "ymax": 0.00016875,
+        "zmin": 0.000135,
+        "zmax": 0.00015375
+      },
+      "width": 3.7500000000000003e-05,
+      "height": 3.750000000000002e-05,
+      "depth": 1.8749999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999997,
+      "aspect_ratio_wd": 2.000000000000001
+    },
+    "gradients": {
+      "mean_magnitude": 1389535.75,
+      "max_magnitude": 348269344.0,
+      "std_magnitude": 11898038.0,
+      "mean_x": 32.39857864379883,
+      "mean_y": -34.232513427734375,
+      "mean_z": 26.143999099731445
+    },
+    "spatial_stats": {
+      "min": 299.43798828125,
+      "max": 4200.5,
+      "mean": 311.1029968261719,
+      "median": 300.0039978027344,
+      "std": 119.2158432006836,
+      "q25": 299.9930114746094,
+      "q75": 300.0270080566406
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000100.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000100.vtk",
+    "timestep": 100
+  },
+  {
+    "peak_temperature": {
+      "value": 4662.8798828125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99791015625,
+      "liquid_fraction": 0.0019140625,
+      "mushy_fraction": 0.00017578125,
+      "liquid_points": 490,
+      "liquid_bounds": {
+        "xmin": 5.25e-05,
+        "xmax": 9.75e-05,
+        "ymin": 0.0001275,
+        "ymax": 0.0001725,
+        "zmin": 0.000135,
+        "zmax": 0.00015375
+      },
+      "width": 4.4999999999999996e-05,
+      "height": 4.499999999999998e-05,
+      "depth": 1.8749999999999995e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 2.4000000000000004
+    },
+    "gradients": {
+      "mean_magnitude": 1600211.75,
+      "max_magnitude": 374634688.0,
+      "std_magnitude": 13216990.0,
+      "mean_x": 6.663109302520752,
+      "mean_y": -29.617645263671875,
+      "mean_z": 23.423999786376953
+    },
+    "spatial_stats": {
+      "min": 299.6570129394531,
+      "max": 4662.8798828125,
+      "mean": 313.1544494628906,
+      "median": 300.0039978027344,
+      "std": 136.61766052246094,
+      "q25": 299.9930114746094,
+      "q75": 300.0299987792969
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000120.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000120.vtk",
+    "timestep": 120
+  },
+  {
+    "peak_temperature": {
+      "value": 5085.10986328125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99745703125,
+      "liquid_fraction": 0.00240234375,
+      "mushy_fraction": 0.000140625,
+      "liquid_points": 615,
+      "liquid_bounds": {
+        "xmin": 5.25e-05,
+        "xmax": 9.75e-05,
+        "ymin": 0.0001275,
+        "ymax": 0.0001725,
+        "zmin": 0.00013125,
+        "zmax": 0.00015375
+      },
+      "width": 4.4999999999999996e-05,
+      "height": 4.499999999999998e-05,
+      "depth": 2.2500000000000005e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.9999999999999993
+    },
+    "gradients": {
+      "mean_magnitude": 1801316.5,
+      "max_magnitude": 397077408.0,
+      "std_magnitude": 14421583.0,
+      "mean_x": -21.44781494140625,
+      "mean_y": -24.976343154907227,
+      "mean_z": 21.375999450683594
+    },
+    "spatial_stats": {
+      "min": 299.63299560546875,
+      "max": 5085.10986328125,
+      "mean": 315.1786804199219,
+      "median": 300.0039978027344,
+      "std": 153.05250549316406,
+      "q25": 299.9939880371094,
+      "q75": 300.03399658203125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000140.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000140.vtk",
+    "timestep": 140
+  },
+  {
+    "peak_temperature": {
+      "value": 5473.740234375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99720703125,
+      "liquid_fraction": 0.00271484375,
+      "mushy_fraction": 7.8125e-05,
+      "liquid_points": 695,
+      "liquid_bounds": {
+        "xmin": 5.25e-05,
+        "xmax": 9.75e-05,
+        "ymin": 0.0001275,
+        "ymax": 0.0001725,
+        "zmin": 0.00013125,
+        "zmax": 0.00015375
+      },
+      "width": 4.4999999999999996e-05,
+      "height": 4.499999999999998e-05,
+      "depth": 2.2500000000000005e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.9999999999999993
+    },
+    "gradients": {
+      "mean_magnitude": 1994938.25,
+      "max_magnitude": 416426816.0,
+      "std_magnitude": 15535251.0,
+      "mean_x": -36.784305572509766,
+      "mean_y": -22.349143981933594,
+      "mean_z": 14.911999702453613
+    },
+    "spatial_stats": {
+      "min": 299.635986328125,
+      "max": 5473.740234375,
+      "mean": 317.1838684082031,
+      "median": 300.0039978027344,
+      "std": 168.70278930664062,
+      "q25": 299.9949951171875,
+      "q75": 300.0379943847656
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000160.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000160.vtk",
+    "timestep": 160
+  },
+  {
+    "peak_temperature": {
+      "value": 5833.080078125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99682421875,
+      "liquid_fraction": 0.00311328125,
+      "mushy_fraction": 6.25e-05,
+      "liquid_points": 797,
+      "liquid_bounds": {
+        "xmin": 4.875e-05,
+        "xmax": 0.00010125000000000001,
+        "ymin": 0.00012375,
+        "ymax": 0.00017625,
+        "zmin": 0.0001275,
+        "zmax": 0.0001575
+      },
+      "width": 5.250000000000001e-05,
+      "height": 5.25e-05,
+      "depth": 2.9999999999999997e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.7500000000000004
+    },
+    "gradients": {
+      "mean_magnitude": 2182257.75,
+      "max_magnitude": 433300192.0,
+      "std_magnitude": 16572657.0,
+      "mean_x": -44.54363250732422,
+      "mean_y": -21.94205665588379,
+      "mean_z": 10.368000030517578
+    },
+    "spatial_stats": {
+      "min": 299.6520080566406,
+      "max": 5833.080078125,
+      "mean": 319.174072265625,
+      "median": 300.0039978027344,
+      "std": 183.67738342285156,
+      "q25": 299.9960021972656,
+      "q75": 300.0429992675781
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000180.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000180.vtk",
+    "timestep": 180
+  },
+  {
+    "peak_temperature": {
+      "value": 6167.02001953125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99633984375,
+      "liquid_fraction": 0.00353515625,
+      "mushy_fraction": 0.000125,
+      "liquid_points": 905,
+      "liquid_bounds": {
+        "xmin": 4.875e-05,
+        "xmax": 0.00010125000000000001,
+        "ymin": 0.00012375,
+        "ymax": 0.00017625,
+        "zmin": 0.0001275,
+        "zmax": 0.0001575
+      },
+      "width": 5.250000000000001e-05,
+      "height": 5.25e-05,
+      "depth": 2.9999999999999997e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.7500000000000004
+    },
+    "gradients": {
+      "mean_magnitude": 2363741.0,
+      "max_magnitude": 448102816.0,
+      "std_magnitude": 17542898.0,
+      "mean_x": -54.2111701965332,
+      "mean_y": -18.471752166748047,
+      "mean_z": 4.544000148773193
+    },
+    "spatial_stats": {
+      "min": 299.6600036621094,
+      "max": 6167.02001953125,
+      "mean": 321.14947509765625,
+      "median": 300.0039978027344,
+      "std": 198.0342254638672,
+      "q25": 299.9960021972656,
+      "q75": 300.0480041503906
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000200.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000200.vtk",
+    "timestep": 200
+  },
+  {
+    "peak_temperature": {
+      "value": 6479.1201171875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99598046875,
+      "liquid_fraction": 0.00387890625,
+      "mushy_fraction": 0.000140625,
+      "liquid_points": 993,
+      "liquid_bounds": {
+        "xmin": 4.875e-05,
+        "xmax": 0.00010125000000000001,
+        "ymin": 0.00012375,
+        "ymax": 0.00017625,
+        "zmin": 0.0001275,
+        "zmax": 0.0001575
+      },
+      "width": 5.250000000000001e-05,
+      "height": 5.25e-05,
+      "depth": 2.9999999999999997e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.7500000000000004
+    },
+    "gradients": {
+      "mean_magnitude": 2539927.5,
+      "max_magnitude": 461206752.0,
+      "std_magnitude": 18453362.0,
+      "mean_x": -58.279075622558594,
+      "mean_y": -18.369901657104492,
+      "mean_z": -1.8559999465942383
+    },
+    "spatial_stats": {
+      "min": 299.6000061035156,
+      "max": 6479.1201171875,
+      "mean": 323.1120300292969,
+      "median": 300.0039978027344,
+      "std": 211.8369903564453,
+      "q25": 299.9960021972656,
+      "q75": 300.0539855957031
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000220.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000220.vtk",
+    "timestep": 220
+  },
+  {
+    "peak_temperature": {
+      "value": 6771.43017578125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99565234375,
+      "liquid_fraction": 0.00425390625,
+      "mushy_fraction": 9.375e-05,
+      "liquid_points": 1089,
+      "liquid_bounds": {
+        "xmin": 4.875e-05,
+        "xmax": 0.00010125000000000001,
+        "ymin": 0.00012375,
+        "ymax": 0.00017625,
+        "zmin": 0.0001275,
+        "zmax": 0.0001575
+      },
+      "width": 5.250000000000001e-05,
+      "height": 5.25e-05,
+      "depth": 2.9999999999999997e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.7500000000000004
+    },
+    "gradients": {
+      "mean_magnitude": 2711576.5,
+      "max_magnitude": 472929344.0,
+      "std_magnitude": 19312292.0,
+      "mean_x": -51.37665939331055,
+      "mean_y": -13.388011932373047,
+      "mean_z": -4.159999847412109
+    },
+    "spatial_stats": {
+      "min": 299.5140075683594,
+      "max": 6771.43017578125,
+      "mean": 325.06512451171875,
+      "median": 300.0039978027344,
+      "std": 225.15066528320312,
+      "q25": 299.99700927734375,
+      "q75": 300.06201171875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000240.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000240.vtk",
+    "timestep": 240
+  },
+  {
+    "peak_temperature": {
+      "value": 7046.1298828125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9952578125,
+      "liquid_fraction": 0.0046171875,
+      "mushy_fraction": 0.000125,
+      "liquid_points": 1182,
+      "liquid_bounds": {
+        "xmin": 4.875e-05,
+        "xmax": 0.00010125000000000001,
+        "ymin": 0.00012375,
+        "ymax": 0.00017625,
+        "zmin": 0.00012375,
+        "zmax": 0.0001575
+      },
+      "width": 5.250000000000001e-05,
+      "height": 5.25e-05,
+      "depth": 3.375000000000001e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.5555555555555556
+    },
+    "gradients": {
+      "mean_magnitude": 2879186.0,
+      "max_magnitude": 483472032.0,
+      "std_magnitude": 20125370.0,
+      "mean_x": -50.72394943237305,
+      "mean_y": -10.683234214782715,
+      "mean_z": -0.6399999856948853
+    },
+    "spatial_stats": {
+      "min": 299.4949951171875,
+      "max": 7046.1298828125,
+      "mean": 327.0103759765625,
+      "median": 300.0039978027344,
+      "std": 238.0191192626953,
+      "q25": 299.99700927734375,
+      "q75": 300.0719909667969
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000260.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000260.vtk",
+    "timestep": 260
+  },
+  {
+    "peak_temperature": {
+      "value": 7304.81982421875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9949453125,
+      "liquid_fraction": 0.0048828125,
+      "mushy_fraction": 0.000171875,
+      "liquid_points": 1250,
+      "liquid_bounds": {
+        "xmin": 4.875e-05,
+        "xmax": 0.00010125000000000001,
+        "ymin": 0.00012375,
+        "ymax": 0.00017625,
+        "zmin": 0.00012375,
+        "zmax": 0.0001575
+      },
+      "width": 5.250000000000001e-05,
+      "height": 5.25e-05,
+      "depth": 3.375000000000001e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.5555555555555556
+    },
+    "gradients": {
+      "mean_magnitude": 3043001.75,
+      "max_magnitude": 493006752.0,
+      "std_magnitude": 20896188.0,
+      "mean_x": -51.535614013671875,
+      "mean_y": -8.393234252929688,
+      "mean_z": 2.880000114440918
+    },
+    "spatial_stats": {
+      "min": 299.3900146484375,
+      "max": 7304.81982421875,
+      "mean": 328.9478454589844,
+      "median": 300.0039978027344,
+      "std": 250.47128295898438,
+      "q25": 299.99798583984375,
+      "q75": 300.0830078125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000280.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000280.vtk",
+    "timestep": 280
+  },
+  {
+    "peak_temperature": {
+      "value": 7549.18017578125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9946953125,
+      "liquid_fraction": 0.0051796875,
+      "mushy_fraction": 0.000125,
+      "liquid_points": 1326,
+      "liquid_bounds": {
+        "xmin": 4.5e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012375,
+        "zmax": 0.0001575
+      },
+      "width": 6e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 3.375000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999999,
+      "aspect_ratio_wd": 1.7777777777777775
+    },
+    "gradients": {
+      "mean_magnitude": 3203407.75,
+      "max_magnitude": 501662784.0,
+      "std_magnitude": 21628458.0,
+      "mean_x": -41.1278190612793,
+      "mean_y": -6.391895294189453,
+      "mean_z": 3.5199999809265137
+    },
+    "spatial_stats": {
+      "min": 299.37200927734375,
+      "max": 7549.18017578125,
+      "mean": 330.8786315917969,
+      "median": 300.0039978027344,
+      "std": 262.5399475097656,
+      "q25": 299.99798583984375,
+      "q75": 300.093994140625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000300.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000300.vtk",
+    "timestep": 300
+  },
+  {
+    "peak_temperature": {
+      "value": 7780.7099609375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99421484375,
+      "liquid_fraction": 0.0055234375,
+      "mushy_fraction": 0.00026171875,
+      "liquid_points": 1414,
+      "liquid_bounds": {
+        "xmin": 4.5e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012375,
+        "zmax": 0.00016125000000000002
+      },
+      "width": 6e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 3.750000000000002e-05,
+      "aspect_ratio_wh": 0.9999999999999999,
+      "aspect_ratio_wd": 1.5999999999999994
+    },
+    "gradients": {
+      "mean_magnitude": 3360622.5,
+      "max_magnitude": 509566880.0,
+      "std_magnitude": 22325738.0,
+      "mean_x": -32.69562911987305,
+      "mean_y": -2.4629874229431152,
+      "mean_z": 3.072000026702881
+    },
+    "spatial_stats": {
+      "min": 299.4389953613281,
+      "max": 7780.7099609375,
+      "mean": 332.8028564453125,
+      "median": 300.0039978027344,
+      "std": 274.2488098144531,
+      "q25": 299.99798583984375,
+      "q75": 300.10699462890625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000320.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000320.vtk",
+    "timestep": 320
+  },
+  {
+    "peak_temperature": {
+      "value": 8000.22998046875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99380859375,
+      "liquid_fraction": 0.00587109375,
+      "mushy_fraction": 0.0003203125,
+      "liquid_points": 1503,
+      "liquid_bounds": {
+        "xmin": 4.5e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012375,
+        "zmax": 0.00016125000000000002
+      },
+      "width": 6e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 3.750000000000002e-05,
+      "aspect_ratio_wh": 0.9999999999999999,
+      "aspect_ratio_wd": 1.5999999999999994
+    },
+    "gradients": {
+      "mean_magnitude": 3514669.75,
+      "max_magnitude": 516825600.0,
+      "std_magnitude": 22990578.0,
+      "mean_x": -21.196882247924805,
+      "mean_y": 2.3029277324676514,
+      "mean_z": 3.4560000896453857
+    },
+    "spatial_stats": {
+      "min": 299.4679870605469,
+      "max": 8000.22998046875,
+      "mean": 334.7194519042969,
+      "median": 300.0039978027344,
+      "std": 285.6117248535156,
+      "q25": 299.99798583984375,
+      "q75": 300.1189880371094
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000340.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000340.vtk",
+    "timestep": 340
+  },
+  {
+    "peak_temperature": {
+      "value": 8209.2099609375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99359375,
+      "liquid_fraction": 0.00627734375,
+      "mushy_fraction": 0.00012890625,
+      "liquid_points": 1607,
+      "liquid_bounds": {
+        "xmin": 4.5e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012375,
+        "zmax": 0.00016125000000000002
+      },
+      "width": 6e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 3.750000000000002e-05,
+      "aspect_ratio_wh": 0.9999999999999999,
+      "aspect_ratio_wd": 1.5999999999999994
+    },
+    "gradients": {
+      "mean_magnitude": 3666005.25,
+      "max_magnitude": 523471072.0,
+      "std_magnitude": 23626048.0,
+      "mean_x": -2.4414453506469727,
+      "mean_y": 10.21457576751709,
+      "mean_z": 3.4560000896453857
+    },
+    "spatial_stats": {
+      "min": 299.531005859375,
+      "max": 8209.2099609375,
+      "mean": 336.6319885253906,
+      "median": 300.0039978027344,
+      "std": 296.6673278808594,
+      "q25": 299.99798583984375,
+      "q75": 300.1319885253906
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000360.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000360.vtk",
+    "timestep": 360
+  },
+  {
+    "peak_temperature": {
+      "value": 8408.1396484375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99321875,
+      "liquid_fraction": 0.0065390625,
+      "mushy_fraction": 0.0002421875,
+      "liquid_points": 1674,
+      "liquid_bounds": {
+        "xmin": 4.5e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016125000000000002
+      },
+      "width": 6e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.125000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999999,
+      "aspect_ratio_wd": 1.4545454545454541
+    },
+    "gradients": {
+      "mean_magnitude": 3814615.25,
+      "max_magnitude": 529553792.0,
+      "std_magnitude": 24233922.0,
+      "mean_x": 29.770828247070312,
+      "mean_y": 20.821714401245117,
+      "mean_z": 3.7119998931884766
+    },
+    "spatial_stats": {
+      "min": 299.47198486328125,
+      "max": 8408.1396484375,
+      "mean": 338.53924560546875,
+      "median": 300.0039978027344,
+      "std": 307.42388916015625,
+      "q25": 299.99798583984375,
+      "q75": 300.1449890136719
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000380.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000380.vtk",
+    "timestep": 380
+  },
+  {
+    "peak_temperature": {
+      "value": 8597.990234375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.992921875,
+      "liquid_fraction": 0.0068359375,
+      "mushy_fraction": 0.0002421875,
+      "liquid_points": 1750,
+      "liquid_bounds": {
+        "xmin": 4.5e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016125000000000002
+      },
+      "width": 6e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.125000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999999,
+      "aspect_ratio_wd": 1.4545454545454541
+    },
+    "gradients": {
+      "mean_magnitude": 3960789.0,
+      "max_magnitude": 535144512.0,
+      "std_magnitude": 24816524.0,
+      "mean_x": 61.70003890991211,
+      "mean_y": 32.72572708129883,
+      "mean_z": 3.8399999141693115
+    },
+    "spatial_stats": {
+      "min": 299.3659973144531,
+      "max": 8597.990234375,
+      "mean": 340.4427795410156,
+      "median": 300.0039978027344,
+      "std": 317.9046936035156,
+      "q25": 299.99798583984375,
+      "q75": 300.15899658203125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000400.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000400.vtk",
+    "timestep": 400
+  },
+  {
+    "peak_temperature": {
+      "value": 8779.490234375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.992609375,
+      "liquid_fraction": 0.007171875,
+      "mushy_fraction": 0.00021875,
+      "liquid_points": 1836,
+      "liquid_bounds": {
+        "xmin": 4.5e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016125000000000002
+      },
+      "width": 6e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.125000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999999,
+      "aspect_ratio_wd": 1.4545454545454541
+    },
+    "gradients": {
+      "mean_magnitude": 4104602.25,
+      "max_magnitude": 540280576.0,
+      "std_magnitude": 25375560.0,
+      "mean_x": 90.49259185791016,
+      "mean_y": 42.533599853515625,
+      "mean_z": 4.223999977111816
+    },
+    "spatial_stats": {
+      "min": 299.2669982910156,
+      "max": 8779.490234375,
+      "mean": 342.3424987792969,
+      "median": 300.0050048828125,
+      "std": 328.12457275390625,
+      "q25": 299.9989929199219,
+      "q75": 300.1730041503906
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000420.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000420.vtk",
+    "timestep": 420
+  },
+  {
+    "peak_temperature": {
+      "value": 8953.3095703125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9924140625,
+      "liquid_fraction": 0.007453125,
+      "mushy_fraction": 0.0001328125,
+      "liquid_points": 1908,
+      "liquid_bounds": {
+        "xmin": 4.5e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016125000000000002
+      },
+      "width": 6e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.125000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999999,
+      "aspect_ratio_wd": 1.4545454545454541
+    },
+    "gradients": {
+      "mean_magnitude": 4246189.0,
+      "max_magnitude": 545015296.0,
+      "std_magnitude": 25912544.0,
+      "mean_x": 127.37631225585938,
+      "mean_y": 50.21813201904297,
+      "mean_z": 4.0960001945495605
+    },
+    "spatial_stats": {
+      "min": 299.2170104980469,
+      "max": 8953.3095703125,
+      "mean": 344.2388000488281,
+      "median": 300.0050048828125,
+      "std": 338.09576416015625,
+      "q25": 299.9989929199219,
+      "q75": 300.1889953613281
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000440.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000440.vtk",
+    "timestep": 440
+  },
+  {
+    "peak_temperature": {
+      "value": 9119.990234375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.991984375,
+      "liquid_fraction": 0.00773828125,
+      "mushy_fraction": 0.00027734375,
+      "liquid_points": 1981,
+      "liquid_bounds": {
+        "xmin": 4.5e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016125000000000002
+      },
+      "width": 6e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.125000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999999,
+      "aspect_ratio_wd": 1.4545454545454541
+    },
+    "gradients": {
+      "mean_magnitude": 4385626.5,
+      "max_magnitude": 549409856.0,
+      "std_magnitude": 26429306.0,
+      "mean_x": 165.85662841796875,
+      "mean_y": 56.6642951965332,
+      "mean_z": 3.7119998931884766
+    },
+    "spatial_stats": {
+      "min": 299.21099853515625,
+      "max": 9119.990234375,
+      "mean": 346.13104248046875,
+      "median": 300.0050048828125,
+      "std": 347.8294677734375,
+      "q25": 299.9989929199219,
+      "q75": 300.2049865722656
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000460.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000460.vtk",
+    "timestep": 460
+  },
+  {
+    "peak_temperature": {
+      "value": 9279.58984375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99173046875,
+      "liquid_fraction": 0.00809375,
+      "mushy_fraction": 0.00017578125,
+      "liquid_points": 2072,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00012,
+        "zmax": 0.00016125000000000002
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.125000000000001e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.6363636363636358
+    },
+    "gradients": {
+      "mean_magnitude": 4523077.5,
+      "max_magnitude": 553517888.0,
+      "std_magnitude": 26926494.0,
+      "mean_x": 211.63522338867188,
+      "mean_y": 63.037994384765625,
+      "mean_z": 3.072000026702881
+    },
+    "spatial_stats": {
+      "min": 299.23199462890625,
+      "max": 9279.58984375,
+      "mean": 348.02117919921875,
+      "median": 300.0060119628906,
+      "std": 357.3409729003906,
+      "q25": 299.9989929199219,
+      "q75": 300.2200012207031
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000480.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000480.vtk",
+    "timestep": 480
+  },
+  {
+    "peak_temperature": {
+      "value": 9432.75,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.991390625,
+      "liquid_fraction": 0.008296875,
+      "mushy_fraction": 0.0003125,
+      "liquid_points": 2124,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00012,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.4999999999999996e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.5000000000000002
+    },
+    "gradients": {
+      "mean_magnitude": 4658577.0,
+      "max_magnitude": 557363200.0,
+      "std_magnitude": 27405562.0,
+      "mean_x": 266.8814697265625,
+      "mean_y": 70.70305633544922,
+      "mean_z": 2.559999942779541
+    },
+    "spatial_stats": {
+      "min": 299.2770080566406,
+      "max": 9432.75,
+      "mean": 349.9086608886719,
+      "median": 300.0060119628906,
+      "std": 366.6407775878906,
+      "q25": 299.9989929199219,
+      "q75": 300.23699951171875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000500.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000500.vtk",
+    "timestep": 500
+  },
+  {
+    "peak_temperature": {
+      "value": 9579.75,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9911328125,
+      "liquid_fraction": 0.008625,
+      "mushy_fraction": 0.0002421875,
+      "liquid_points": 2208,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.874999999999999e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.3846153846153848
+    },
+    "gradients": {
+      "mean_magnitude": 4792124.5,
+      "max_magnitude": 560951104.0,
+      "std_magnitude": 27867356.0,
+      "mean_x": 328.318115234375,
+      "mean_y": 76.03715515136719,
+      "mean_z": 2.431999921798706
+    },
+    "spatial_stats": {
+      "min": 299.2820129394531,
+      "max": 9579.75,
+      "mean": 351.7928161621094,
+      "median": 300.0069885253906,
+      "std": 375.7339172363281,
+      "q25": 299.9989929199219,
+      "q75": 300.2550048828125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000520.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000520.vtk",
+    "timestep": 520
+  },
+  {
+    "peak_temperature": {
+      "value": 9721.0302734375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99075390625,
+      "liquid_fraction": 0.008890625,
+      "mushy_fraction": 0.00035546875,
+      "liquid_points": 2276,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.874999999999999e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.3846153846153848
+    },
+    "gradients": {
+      "mean_magnitude": 4923828.0,
+      "max_magnitude": 564259072.0,
+      "std_magnitude": 28312944.0,
+      "mean_x": 393.01617431640625,
+      "mean_y": 78.78166198730469,
+      "mean_z": 2.1760001182556152
+    },
+    "spatial_stats": {
+      "min": 299.27801513671875,
+      "max": 9721.0302734375,
+      "mean": 353.674072265625,
+      "median": 300.00799560546875,
+      "std": 384.6297912597656,
+      "q25": 299.9989929199219,
+      "q75": 300.27301025390625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000540.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000540.vtk",
+    "timestep": 540
+  },
+  {
+    "peak_temperature": {
+      "value": 9857.099609375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99037109375,
+      "liquid_fraction": 0.00927734375,
+      "mushy_fraction": 0.0003515625,
+      "liquid_points": 2375,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.874999999999999e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.3846153846153848
+    },
+    "gradients": {
+      "mean_magnitude": 5053729.0,
+      "max_magnitude": 567280256.0,
+      "std_magnitude": 28743316.0,
+      "mean_x": 456.07513427734375,
+      "mean_y": 80.16735076904297,
+      "mean_z": 2.1760001182556152
+    },
+    "spatial_stats": {
+      "min": 299.2829895019531,
+      "max": 9857.099609375,
+      "mean": 355.5518798828125,
+      "median": 300.00799560546875,
+      "std": 393.3360900878906,
+      "q25": 299.9989929199219,
+      "q75": 300.2900085449219
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000560.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000560.vtk",
+    "timestep": 560
+  },
+  {
+    "peak_temperature": {
+      "value": 9988.2099609375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9900390625,
+      "liquid_fraction": 0.00960546875,
+      "mushy_fraction": 0.00035546875,
+      "liquid_points": 2459,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.874999999999999e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.3846153846153848
+    },
+    "gradients": {
+      "mean_magnitude": 5181911.5,
+      "max_magnitude": 570069568.0,
+      "std_magnitude": 29159246.0,
+      "mean_x": 524.7822265625,
+      "mean_y": 81.90570068359375,
+      "mean_z": 2.944000005722046
+    },
+    "spatial_stats": {
+      "min": 299.27301025390625,
+      "max": 9988.2099609375,
+      "mean": 357.4268798828125,
+      "median": 300.0090026855469,
+      "std": 401.8619689941406,
+      "q25": 299.9989929199219,
+      "q75": 300.3070068359375
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000580.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000580.vtk",
+    "timestep": 580
+  },
+  {
+    "peak_temperature": {
+      "value": 10114.7001953125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9897265625,
+      "liquid_fraction": 0.009953125,
+      "mushy_fraction": 0.0003203125,
+      "liquid_points": 2548,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.874999999999999e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.3846153846153848
+    },
+    "gradients": {
+      "mean_magnitude": 5308486.5,
+      "max_magnitude": 572616256.0,
+      "std_magnitude": 29561496.0,
+      "mean_x": 597.7719116210938,
+      "mean_y": 84.62870025634766,
+      "mean_z": 2.944000005722046
+    },
+    "spatial_stats": {
+      "min": 299.2820129394531,
+      "max": 10114.7001953125,
+      "mean": 359.2999267578125,
+      "median": 300.010009765625,
+      "std": 410.2171325683594,
+      "q25": 299.9989929199219,
+      "q75": 300.32501220703125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000600.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000600.vtk",
+    "timestep": 600
+  },
+  {
+    "peak_temperature": {
+      "value": 10236.5,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9895234375,
+      "liquid_fraction": 0.01025390625,
+      "mushy_fraction": 0.00022265625,
+      "liquid_points": 2625,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.874999999999999e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.3846153846153848
+    },
+    "gradients": {
+      "mean_magnitude": 5433509.0,
+      "max_magnitude": 574973568.0,
+      "std_magnitude": 29950658.0,
+      "mean_x": 675.3165893554688,
+      "mean_y": 88.90899658203125,
+      "mean_z": 3.072000026702881
+    },
+    "spatial_stats": {
+      "min": 299.3179931640625,
+      "max": 10236.5,
+      "mean": 361.1713562011719,
+      "median": 300.010986328125,
+      "std": 418.4082336425781,
+      "q25": 299.9989929199219,
+      "q75": 300.3450012207031
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000620.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000620.vtk",
+    "timestep": 620
+  },
+  {
+    "peak_temperature": {
+      "value": 10354.0,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9893359375,
+      "liquid_fraction": 0.0104765625,
+      "mushy_fraction": 0.0001875,
+      "liquid_points": 2682,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.874999999999999e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.3846153846153848
+    },
+    "gradients": {
+      "mean_magnitude": 5557032.0,
+      "max_magnitude": 577133568.0,
+      "std_magnitude": 30327316.0,
+      "mean_x": 765.5462646484375,
+      "mean_y": 94.37801361083984,
+      "mean_z": 3.200000047683716
+    },
+    "spatial_stats": {
+      "min": 299.3349914550781,
+      "max": 10354.0,
+      "mean": 363.04119873046875,
+      "median": 300.0119934082031,
+      "std": 426.441650390625,
+      "q25": 299.9989929199219,
+      "q75": 300.3659973144531
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000640.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000640.vtk",
+    "timestep": 640
+  },
+  {
+    "peak_temperature": {
+      "value": 10467.7001953125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98903515625,
+      "liquid_fraction": 0.0106328125,
+      "mushy_fraction": 0.00033203125,
+      "liquid_points": 2722,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.874999999999999e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.3846153846153848
+    },
+    "gradients": {
+      "mean_magnitude": 5679138.0,
+      "max_magnitude": 579114880.0,
+      "std_magnitude": 30692278.0,
+      "mean_x": 864.2571411132812,
+      "mean_y": 98.87445068359375,
+      "mean_z": 3.5840001106262207
+    },
+    "spatial_stats": {
+      "min": 299.3710021972656,
+      "max": 10467.7001953125,
+      "mean": 364.9097595214844,
+      "median": 300.01300048828125,
+      "std": 434.3253479003906,
+      "q25": 299.9989929199219,
+      "q75": 300.38824462890625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000660.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000660.vtk",
+    "timestep": 660
+  },
+  {
+    "peak_temperature": {
+      "value": 10577.5,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9887734375,
+      "liquid_fraction": 0.01093359375,
+      "mushy_fraction": 0.00029296875,
+      "liquid_points": 2799,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.000165
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 4.874999999999999e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.3846153846153848
+    },
+    "gradients": {
+      "mean_magnitude": 5799859.0,
+      "max_magnitude": 580946816.0,
+      "std_magnitude": 31045976.0,
+      "mean_x": 971.1761474609375,
+      "mean_y": 102.26162719726562,
+      "mean_z": 3.4560000896453857
+    },
+    "spatial_stats": {
+      "min": 299.26800537109375,
+      "max": 10577.5,
+      "mean": 366.7770690917969,
+      "median": 300.0140075683594,
+      "std": 442.064208984375,
+      "q25": 299.9989929199219,
+      "q75": 300.4159851074219
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000680.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000680.vtk",
+    "timestep": 680
+  },
+  {
+    "peak_temperature": {
+      "value": 10683.5,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98844140625,
+      "liquid_fraction": 0.01117578125,
+      "mushy_fraction": 0.0003828125,
+      "liquid_points": 2861,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.00016875
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.25e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.2857142857142856
+    },
+    "gradients": {
+      "mean_magnitude": 5919235.0,
+      "max_magnitude": 582669376.0,
+      "std_magnitude": 31389006.0,
+      "mean_x": 1087.89208984375,
+      "mean_y": 104.22789001464844,
+      "mean_z": 3.7119998931884766
+    },
+    "spatial_stats": {
+      "min": 299.1449890136719,
+      "max": 10683.5,
+      "mean": 368.6429748535156,
+      "median": 300.0159912109375,
+      "std": 449.6630554199219,
+      "q25": 299.9989929199219,
+      "q75": 300.4492492675781
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000700.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000700.vtk",
+    "timestep": 700
+  },
+  {
+    "peak_temperature": {
+      "value": 10785.7001953125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98812890625,
+      "liquid_fraction": 0.0114609375,
+      "mushy_fraction": 0.00041015625,
+      "liquid_points": 2934,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.00016875
+      },
+      "width": 6.75e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.25e-05,
+      "aspect_ratio_wh": 1.0000000000000002,
+      "aspect_ratio_wd": 1.2857142857142856
+    },
+    "gradients": {
+      "mean_magnitude": 6037289.0,
+      "max_magnitude": 584332032.0,
+      "std_magnitude": 31721918.0,
+      "mean_x": 1212.1812744140625,
+      "mean_y": 104.40438842773438,
+      "mean_z": 3.200000047683716
+    },
+    "spatial_stats": {
+      "min": 299.0469970703125,
+      "max": 10785.7001953125,
+      "mean": 370.5073547363281,
+      "median": 300.0169982910156,
+      "std": 457.1254577636719,
+      "q25": 299.9989929199219,
+      "q75": 300.4909973144531
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000720.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000720.vtk",
+    "timestep": 720
+  },
+  {
+    "peak_temperature": {
+      "value": 10884.2001953125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9877734375,
+      "liquid_fraction": 0.01182421875,
+      "mushy_fraction": 0.00040234375,
+      "liquid_points": 3027,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.2666666666666664
+    },
+    "gradients": {
+      "mean_magnitude": 6154015.0,
+      "max_magnitude": 586026752.0,
+      "std_magnitude": 32045302.0,
+      "mean_x": 1340.885986328125,
+      "mean_y": 99.67181396484375,
+      "mean_z": 2.944000005722046
+    },
+    "spatial_stats": {
+      "min": 299.0199890136719,
+      "max": 10884.2001953125,
+      "mean": 372.36962890625,
+      "median": 300.0190124511719,
+      "std": 464.4546813964844,
+      "q25": 299.9989929199219,
+      "q75": 300.5539855957031
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000740.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000740.vtk",
+    "timestep": 740
+  },
+  {
+    "peak_temperature": {
+      "value": 10979.5,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9874375,
+      "liquid_fraction": 0.01210546875,
+      "mushy_fraction": 0.00045703125,
+      "liquid_points": 3099,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 6269471.5,
+      "max_magnitude": 587630784.0,
+      "std_magnitude": 32359478.0,
+      "mean_x": 1476.754150390625,
+      "mean_y": 92.79285430908203,
+      "mean_z": 2.559999942779541
+    },
+    "spatial_stats": {
+      "min": 298.9779968261719,
+      "max": 10979.5,
+      "mean": 374.2302551269531,
+      "median": 300.02099609375,
+      "std": 471.65545654296875,
+      "q25": 299.9989929199219,
+      "q75": 300.6319885253906
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000760.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000760.vtk",
+    "timestep": 760
+  },
+  {
+    "peak_temperature": {
+      "value": 11071.2998046875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.987171875,
+      "liquid_fraction": 0.0124609375,
+      "mushy_fraction": 0.0003671875,
+      "liquid_points": 3190,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 6383682.0,
+      "max_magnitude": 589233472.0,
+      "std_magnitude": 32664806.0,
+      "mean_x": 1615.3623046875,
+      "mean_y": 91.01445007324219,
+      "mean_z": 1.9199999570846558
+    },
+    "spatial_stats": {
+      "min": 298.9320068359375,
+      "max": 11071.2998046875,
+      "mean": 376.0895080566406,
+      "median": 300.02398681640625,
+      "std": 478.7326965332031,
+      "q25": 299.9989929199219,
+      "q75": 300.7200012207031
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000780.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000780.vtk",
+    "timestep": 780
+  },
+  {
+    "peak_temperature": {
+      "value": 11160.0,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.986890625,
+      "liquid_fraction": 0.01275390625,
+      "mushy_fraction": 0.00035546875,
+      "liquid_points": 3265,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 6496673.0,
+      "max_magnitude": 590802880.0,
+      "std_magnitude": 32961600.0,
+      "mean_x": 1759.0447998046875,
+      "mean_y": 94.15674591064453,
+      "mean_z": 1.2799999713897705
+    },
+    "spatial_stats": {
+      "min": 298.9119873046875,
+      "max": 11160.0,
+      "mean": 377.9471130371094,
+      "median": 300.0260009765625,
+      "std": 485.6895751953125,
+      "q25": 300.0,
+      "q75": 300.8179931640625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000800.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000800.vtk",
+    "timestep": 800
+  },
+  {
+    "peak_temperature": {
+      "value": 11245.900390625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9866015625,
+      "liquid_fraction": 0.013015625,
+      "mushy_fraction": 0.0003828125,
+      "liquid_points": 3332,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 6608482.0,
+      "max_magnitude": 592271040.0,
+      "std_magnitude": 33250220.0,
+      "mean_x": 1916.416259765625,
+      "mean_y": 97.95269012451172,
+      "mean_z": 0.3840000033378601
+    },
+    "spatial_stats": {
+      "min": 298.8890075683594,
+      "max": 11245.900390625,
+      "mean": 379.8033752441406,
+      "median": 300.02899169921875,
+      "std": 492.5306396484375,
+      "q25": 300.0,
+      "q75": 300.9280090332031
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000820.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000820.vtk",
+    "timestep": 820
+  },
+  {
+    "peak_temperature": {
+      "value": 11329.0,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98630859375,
+      "liquid_fraction": 0.01326171875,
+      "mushy_fraction": 0.0004296875,
+      "liquid_points": 3395,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 6719141.5,
+      "max_magnitude": 593609728.0,
+      "std_magnitude": 33530880.0,
+      "mean_x": 2082.2099609375,
+      "mean_y": 98.31268310546875,
+      "mean_z": -0.25600001215934753
+    },
+    "spatial_stats": {
+      "min": 298.8290100097656,
+      "max": 11329.0,
+      "mean": 381.6585693359375,
+      "median": 300.0329895019531,
+      "std": 499.2599182128906,
+      "q25": 300.0,
+      "q75": 301.0530090332031
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000840.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000840.vtk",
+    "timestep": 840
+  },
+  {
+    "peak_temperature": {
+      "value": 11409.0,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9860546875,
+      "liquid_fraction": 0.01358984375,
+      "mushy_fraction": 0.00035546875,
+      "liquid_points": 3479,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 6828674.5,
+      "max_magnitude": 594876736.0,
+      "std_magnitude": 33803856.0,
+      "mean_x": 2253.119140625,
+      "mean_y": 96.6817626953125,
+      "mean_z": -0.8960000276565552
+    },
+    "spatial_stats": {
+      "min": 298.78399658203125,
+      "max": 11409.0,
+      "mean": 383.5126037597656,
+      "median": 300.0369873046875,
+      "std": 505.8802490234375,
+      "q25": 300.0,
+      "q75": 301.1830139160156
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000860.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000860.vtk",
+    "timestep": 860
+  },
+  {
+    "peak_temperature": {
+      "value": 11486.400390625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.985765625,
+      "liquid_fraction": 0.013796875,
+      "mushy_fraction": 0.0004375,
+      "liquid_points": 3532,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 6937108.5,
+      "max_magnitude": 596074240.0,
+      "std_magnitude": 34069436.0,
+      "mean_x": 2431.685302734375,
+      "mean_y": 95.3612060546875,
+      "mean_z": -1.5360000133514404
+    },
+    "spatial_stats": {
+      "min": 298.7170104980469,
+      "max": 11486.400390625,
+      "mean": 385.36572265625,
+      "median": 300.0409851074219,
+      "std": 512.3949584960938,
+      "q25": 300.0,
+      "q75": 301.32598876953125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000880.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000880.vtk",
+    "timestep": 880
+  },
+  {
+    "peak_temperature": {
+      "value": 11561.0,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.985578125,
+      "liquid_fraction": 0.0141328125,
+      "mushy_fraction": 0.0002890625,
+      "liquid_points": 3618,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 7044465.0,
+      "max_magnitude": 597187968.0,
+      "std_magnitude": 34327724.0,
+      "mean_x": 2619.6640625,
+      "mean_y": 93.04164123535156,
+      "mean_z": -2.0480000972747803
+    },
+    "spatial_stats": {
+      "min": 298.7980041503906,
+      "max": 11561.0,
+      "mean": 387.21807861328125,
+      "median": 300.0459899902344,
+      "std": 518.8065795898438,
+      "q25": 300.0,
+      "q75": 301.48199462890625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000900.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000900.vtk",
+    "timestep": 900
+  },
+  {
+    "peak_temperature": {
+      "value": 11633.2001953125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98523828125,
+      "liquid_fraction": 0.01430859375,
+      "mushy_fraction": 0.000453125,
+      "liquid_points": 3663,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 7150777.5,
+      "max_magnitude": 598236416.0,
+      "std_magnitude": 34579260.0,
+      "mean_x": 2812.066650390625,
+      "mean_y": 91.47657012939453,
+      "mean_z": -2.944000005722046
+    },
+    "spatial_stats": {
+      "min": 298.9580078125,
+      "max": 11633.2001953125,
+      "mean": 389.0695495605469,
+      "median": 300.052001953125,
+      "std": 525.1199340820312,
+      "q25": 300.0010070800781,
+      "q75": 301.65399169921875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000920.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000920.vtk",
+    "timestep": 920
+  },
+  {
+    "peak_temperature": {
+      "value": 11702.7998046875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9849375,
+      "liquid_fraction": 0.0145703125,
+      "mushy_fraction": 0.0004921875,
+      "liquid_points": 3730,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 7256067.5,
+      "max_magnitude": 599241024.0,
+      "std_magnitude": 34824280.0,
+      "mean_x": 3014.406982421875,
+      "mean_y": 90.8709945678711,
+      "mean_z": -3.4560000896453857
+    },
+    "spatial_stats": {
+      "min": 299.0,
+      "max": 11702.7998046875,
+      "mean": 390.9200134277344,
+      "median": 300.0580139160156,
+      "std": 531.3374633789062,
+      "q25": 300.0010070800781,
+      "q75": 301.8389892578125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000940.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000940.vtk",
+    "timestep": 940
+  },
+  {
+    "peak_temperature": {
+      "value": 11770.0,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98458984375,
+      "liquid_fraction": 0.01488671875,
+      "mushy_fraction": 0.0005234375,
+      "liquid_points": 3811,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.00016875
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.625000000000001e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.333333333333333
+    },
+    "gradients": {
+      "mean_magnitude": 7360368.5,
+      "max_magnitude": 600171072.0,
+      "std_magnitude": 35062952.0,
+      "mean_x": 3223.345703125,
+      "mean_y": 89.77239227294922,
+      "mean_z": -4.607999801635742
+    },
+    "spatial_stats": {
+      "min": 298.9549865722656,
+      "max": 11770.0,
+      "mean": 392.7696838378906,
+      "median": 300.06500244140625,
+      "std": 537.4608154296875,
+      "q25": 300.0010070800781,
+      "q75": 302.02801513671875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000960.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000960.vtk",
+    "timestep": 960
+  },
+  {
+    "peak_temperature": {
+      "value": 11834.7001953125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98433203125,
+      "liquid_fraction": 0.0151796875,
+      "mushy_fraction": 0.00048828125,
+      "liquid_points": 3886,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 7463699.0,
+      "max_magnitude": 601081280.0,
+      "std_magnitude": 35295620.0,
+      "mean_x": 3439.6845703125,
+      "mean_y": 87.22328186035156,
+      "mean_z": -5.375999927520752
+    },
+    "spatial_stats": {
+      "min": 299.0369873046875,
+      "max": 11834.7001953125,
+      "mean": 394.6185607910156,
+      "median": 300.0719909667969,
+      "std": 543.4933471679688,
+      "q25": 300.00201416015625,
+      "q75": 302.23699951171875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_000980.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_000980.vtk",
+    "timestep": 980
+  },
+  {
+    "peak_temperature": {
+      "value": 11847.5,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.984078125,
+      "liquid_fraction": 0.01550390625,
+      "mushy_fraction": 0.00041796875,
+      "liquid_points": 3969,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 7552600.5,
+      "max_magnitude": 594071680.0,
+      "std_magnitude": 35404500.0,
+      "mean_x": 3660.27197265625,
+      "mean_y": 85.5964126586914,
+      "mean_z": -6.144000053405762
+    },
+    "spatial_stats": {
+      "min": 299.135009765625,
+      "max": 11847.5,
+      "mean": 396.3741760253906,
+      "median": 300.0799865722656,
+      "std": 548.4228515625,
+      "q25": 300.00201416015625,
+      "q75": 302.4700012207031
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001000.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001000.vtk",
+    "timestep": 1000
+  },
+  {
+    "peak_temperature": {
+      "value": 10939.099609375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98396484375,
+      "liquid_fraction": 0.01564453125,
+      "mushy_fraction": 0.000390625,
+      "liquid_points": 4005,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 7396793.0,
+      "max_magnitude": 506883136.0,
+      "std_magnitude": 33475472.0,
+      "mean_x": 3885.103515625,
+      "mean_y": 88.20867156982422,
+      "mean_z": -7.168000221252441
+    },
+    "spatial_stats": {
+      "min": 299.2239990234375,
+      "max": 10939.099609375,
+      "mean": 396.3741760253906,
+      "median": 300.0889892578125,
+      "std": 534.6431274414062,
+      "q25": 300.00201416015625,
+      "q75": 302.7179870605469
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001020.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001020.vtk",
+    "timestep": 1020
+  },
+  {
+    "peak_temperature": {
+      "value": 10217.099609375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98385546875,
+      "liquid_fraction": 0.01574609375,
+      "mushy_fraction": 0.0003984375,
+      "liquid_points": 4031,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 7259034.5,
+      "max_magnitude": 454665472.0,
+      "std_magnitude": 31847726.0,
+      "mean_x": 4108.66162109375,
+      "mean_y": 91.74259185791016,
+      "mean_z": -8.960000038146973
+    },
+    "spatial_stats": {
+      "min": 299.22100830078125,
+      "max": 10217.099609375,
+      "mean": 396.3741760253906,
+      "median": 300.0979919433594,
+      "std": 521.9686279296875,
+      "q25": 300.00299072265625,
+      "q75": 302.98199462890625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001040.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001040.vtk",
+    "timestep": 1040
+  },
+  {
+    "peak_temperature": {
+      "value": 9611.8095703125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98375390625,
+      "liquid_fraction": 0.01580859375,
+      "mushy_fraction": 0.0004375,
+      "liquid_points": 4047,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 7133492.0,
+      "max_magnitude": 409539872.0,
+      "std_magnitude": 30420822.0,
+      "mean_x": 4325.49560546875,
+      "mean_y": 93.07837677001953,
+      "mean_z": -10.239999771118164
+    },
+    "spatial_stats": {
+      "min": 299.1780090332031,
+      "max": 9611.8095703125,
+      "mean": 396.3741760253906,
+      "median": 300.10699462890625,
+      "std": 510.1832275390625,
+      "q25": 300.00299072265625,
+      "q75": 303.25225830078125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001060.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001060.vtk",
+    "timestep": 1060
+  },
+  {
+    "peak_temperature": {
+      "value": 9089.16015625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98362109375,
+      "liquid_fraction": 0.01592578125,
+      "mushy_fraction": 0.000453125,
+      "liquid_points": 4077,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 7017300.5,
+      "max_magnitude": 371234208.0,
+      "std_magnitude": 29145274.0,
+      "mean_x": 4542.61279296875,
+      "mean_y": 93.24434661865234,
+      "mean_z": -11.64799976348877
+    },
+    "spatial_stats": {
+      "min": 299.1310119628906,
+      "max": 9089.16015625,
+      "mean": 396.3741760253906,
+      "median": 300.11700439453125,
+      "std": 499.150146484375,
+      "q25": 300.00299072265625,
+      "q75": 303.53900146484375
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001080.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001080.vtk",
+    "timestep": 1080
+  },
+  {
+    "peak_temperature": {
+      "value": 8629.2998046875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98354296875,
+      "liquid_fraction": 0.01596875,
+      "mushy_fraction": 0.00048828125,
+      "liquid_points": 4088,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6908688.5,
+      "max_magnitude": 338549792.0,
+      "std_magnitude": 27990404.0,
+      "mean_x": 4765.80810546875,
+      "mean_y": 97.16998291015625,
+      "mean_z": -13.184000015258789
+    },
+    "spatial_stats": {
+      "min": 299.0669860839844,
+      "max": 8629.2998046875,
+      "mean": 396.3741760253906,
+      "median": 300.12799072265625,
+      "std": 488.76898193359375,
+      "q25": 300.0039978027344,
+      "q75": 303.8492431640625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001100.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001100.vtk",
+    "timestep": 1100
+  },
+  {
+    "peak_temperature": {
+      "value": 8219.2900390625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98346875,
+      "liquid_fraction": 0.01605859375,
+      "mushy_fraction": 0.00047265625,
+      "liquid_points": 4111,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6806452.0,
+      "max_magnitude": 312280800.0,
+      "std_magnitude": 26935202.0,
+      "mean_x": 4992.048828125,
+      "mean_y": 105.00031280517578,
+      "mean_z": -14.847999572753906
+    },
+    "spatial_stats": {
+      "min": 298.968994140625,
+      "max": 8219.2900390625,
+      "mean": 396.3741760253906,
+      "median": 300.1390075683594,
+      "std": 478.96319580078125,
+      "q25": 300.0039978027344,
+      "q75": 304.1712341308594
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001120.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001120.vtk",
+    "timestep": 1120
+  },
+  {
+    "peak_temperature": {
+      "value": 7850.009765625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98340625,
+      "liquid_fraction": 0.0161015625,
+      "mushy_fraction": 0.0004921875,
+      "liquid_points": 4122,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6709690.0,
+      "max_magnitude": 292878624.0,
+      "std_magnitude": 25964186.0,
+      "mean_x": 5215.75732421875,
+      "mean_y": 110.25717163085938,
+      "mean_z": -16.639999389648438
+    },
+    "spatial_stats": {
+      "min": 298.89801025390625,
+      "max": 7850.009765625,
+      "mean": 396.3741760253906,
+      "median": 300.1520080566406,
+      "std": 469.6708984375,
+      "q25": 300.0050048828125,
+      "q75": 304.510009765625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001140.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001140.vtk",
+    "timestep": 1140
+  },
+  {
+    "peak_temperature": {
+      "value": 7514.77001953125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9833515625,
+      "liquid_fraction": 0.01610546875,
+      "mushy_fraction": 0.00054296875,
+      "liquid_points": 4123,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6617714.0,
+      "max_magnitude": 275089760.0,
+      "std_magnitude": 25065556.0,
+      "mean_x": 5431.044921875,
+      "mean_y": 113.3926010131836,
+      "mean_z": -18.304000854492188
+    },
+    "spatial_stats": {
+      "min": 298.8680114746094,
+      "max": 7514.77001953125,
+      "mean": 396.3741760253906,
+      "median": 300.1650085449219,
+      "std": 460.84130859375,
+      "q25": 300.0050048828125,
+      "q75": 304.885009765625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001160.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001160.vtk",
+    "timestep": 1160
+  },
+  {
+    "peak_temperature": {
+      "value": 7208.47998046875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.983296875,
+      "liquid_fraction": 0.0161328125,
+      "mushy_fraction": 0.0005703125,
+      "liquid_points": 4130,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6529969.5,
+      "max_magnitude": 258812896.0,
+      "std_magnitude": 24229916.0,
+      "mean_x": 5642.1669921875,
+      "mean_y": 113.34945678710938,
+      "mean_z": -20.09600067138672
+    },
+    "spatial_stats": {
+      "min": 298.9010009765625,
+      "max": 7208.47998046875,
+      "mean": 396.3741760253906,
+      "median": 300.1789855957031,
+      "std": 452.43121337890625,
+      "q25": 300.0050048828125,
+      "q75": 305.2699890136719
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001180.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001180.vtk",
+    "timestep": 1180
+  },
+  {
+    "peak_temperature": {
+      "value": 6927.1298828125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.983296875,
+      "liquid_fraction": 0.01612890625,
+      "mushy_fraction": 0.00057421875,
+      "liquid_points": 4129,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6446012.0,
+      "max_magnitude": 243930672.0,
+      "std_magnitude": 23449740.0,
+      "mean_x": 5854.3232421875,
+      "mean_y": 113.3740005493164,
+      "mean_z": -22.399999618530273
+    },
+    "spatial_stats": {
+      "min": 298.9100036621094,
+      "max": 6927.1298828125,
+      "mean": 396.3741760253906,
+      "median": 300.1919860839844,
+      "std": 444.4041442871094,
+      "q25": 300.0060119628906,
+      "q75": 305.66424560546875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001200.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001200.vtk",
+    "timestep": 1200
+  },
+  {
+    "peak_temperature": {
+      "value": 6667.47021484375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.983296875,
+      "liquid_fraction": 0.0161328125,
+      "mushy_fraction": 0.0005703125,
+      "liquid_points": 4130,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6365476.0,
+      "max_magnitude": 230285824.0,
+      "std_magnitude": 22718810.0,
+      "mean_x": 6067.81103515625,
+      "mean_y": 114.7971420288086,
+      "mean_z": -24.447999954223633
+    },
+    "spatial_stats": {
+      "min": 298.96099853515625,
+      "max": 6667.47021484375,
+      "mean": 396.3741455078125,
+      "median": 300.2080078125,
+      "std": 436.7285461425781,
+      "q25": 300.0060119628906,
+      "q75": 306.0712585449219
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001220.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001220.vtk",
+    "timestep": 1220
+  },
+  {
+    "peak_temperature": {
+      "value": 6426.8798828125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98337109375,
+      "liquid_fraction": 0.01609765625,
+      "mushy_fraction": 0.00053125,
+      "liquid_points": 4121,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6288058.5,
+      "max_magnitude": 217759616.0,
+      "std_magnitude": 22031920.0,
+      "mean_x": 6281.3232421875,
+      "mean_y": 111.8508071899414,
+      "mean_z": -26.75200080871582
+    },
+    "spatial_stats": {
+      "min": 298.9150085449219,
+      "max": 6426.8798828125,
+      "mean": 396.3741760253906,
+      "median": 300.2229919433594,
+      "std": 429.3770446777344,
+      "q25": 300.0069885253906,
+      "q75": 306.50823974609375
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001240.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001240.vtk",
+    "timestep": 1240
+  },
+  {
+    "peak_temperature": {
+      "value": 6203.2099609375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9834375,
+      "liquid_fraction": 0.0160390625,
+      "mushy_fraction": 0.0005234375,
+      "liquid_points": 4106,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6213489.5,
+      "max_magnitude": 206238688.0,
+      "std_magnitude": 21384708.0,
+      "mean_x": 6487.40087890625,
+      "mean_y": 105.6872787475586,
+      "mean_z": -29.312000274658203
+    },
+    "spatial_stats": {
+      "min": 298.9159851074219,
+      "max": 6203.2099609375,
+      "mean": 396.3741760253906,
+      "median": 300.239990234375,
+      "std": 422.32598876953125,
+      "q25": 300.00799560546875,
+      "q75": 306.9809875488281
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001260.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001260.vtk",
+    "timestep": 1260
+  },
+  {
+    "peak_temperature": {
+      "value": 5994.64990234375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9835078125,
+      "liquid_fraction": 0.0159921875,
+      "mushy_fraction": 0.0005,
+      "liquid_points": 4094,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6141534.0,
+      "max_magnitude": 195617840.0,
+      "std_magnitude": 20773430.0,
+      "mean_x": 6687.25,
+      "mean_y": 99.42034912109375,
+      "mean_z": -32.25600051879883
+    },
+    "spatial_stats": {
+      "min": 298.9100036621094,
+      "max": 5994.64990234375,
+      "mean": 396.3741760253906,
+      "median": 300.25799560546875,
+      "std": 415.5542297363281,
+      "q25": 300.00799560546875,
+      "q75": 307.4462585449219
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001280.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001280.vtk",
+    "timestep": 1280
+  },
+  {
+    "peak_temperature": {
+      "value": 5799.56982421875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9835625,
+      "liquid_fraction": 0.01587109375,
+      "mushy_fraction": 0.00056640625,
+      "liquid_points": 4063,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6071979.0,
+      "max_magnitude": 185796960.0,
+      "std_magnitude": 20194758.0,
+      "mean_x": 6884.9814453125,
+      "mean_y": 92.9371566772461,
+      "mean_z": -35.327999114990234
+    },
+    "spatial_stats": {
+      "min": 298.927001953125,
+      "max": 5799.56982421875,
+      "mean": 396.3741760253906,
+      "median": 300.2760009765625,
+      "std": 409.0416259765625,
+      "q25": 300.0090026855469,
+      "q75": 307.96124267578125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001300.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001300.vtk",
+    "timestep": 1300
+  },
+  {
+    "peak_temperature": {
+      "value": 5616.7099609375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98361328125,
+      "liquid_fraction": 0.01577734375,
+      "mushy_fraction": 0.000609375,
+      "liquid_points": 4039,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 6004650.0,
+      "max_magnitude": 176706816.0,
+      "std_magnitude": 19645926.0,
+      "mean_x": 7084.0771484375,
+      "mean_y": 83.60186767578125,
+      "mean_z": -38.9119987487793
+    },
+    "spatial_stats": {
+      "min": 298.9639892578125,
+      "max": 5616.7099609375,
+      "mean": 396.3741760253906,
+      "median": 300.2950134277344,
+      "std": 402.7716979980469,
+      "q25": 300.010009765625,
+      "q75": 308.458251953125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001320.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001320.vtk",
+    "timestep": 1320
+  },
+  {
+    "peak_temperature": {
+      "value": 5444.93994140625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.983671875,
+      "liquid_fraction": 0.01567578125,
+      "mushy_fraction": 0.00065234375,
+      "liquid_points": 4013,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5939383.5,
+      "max_magnitude": 168272576.0,
+      "std_magnitude": 19124430.0,
+      "mean_x": 7280.255859375,
+      "mean_y": 74.69681549072266,
+      "mean_z": -42.36800003051758
+    },
+    "spatial_stats": {
+      "min": 298.9339904785156,
+      "max": 5444.93994140625,
+      "mean": 396.3741760253906,
+      "median": 300.31500244140625,
+      "std": 396.728759765625,
+      "q25": 300.010009765625,
+      "q75": 308.9960021972656
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001340.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001340.vtk",
+    "timestep": 1340
+  },
+  {
+    "peak_temperature": {
+      "value": 5283.22021484375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9837578125,
+      "liquid_fraction": 0.01553515625,
+      "mushy_fraction": 0.00070703125,
+      "liquid_points": 3977,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5876046.0,
+      "max_magnitude": 160435696.0,
+      "std_magnitude": 18628086.0,
+      "mean_x": 7462.162109375,
+      "mean_y": 71.9457778930664,
+      "mean_z": -46.59199905395508
+    },
+    "spatial_stats": {
+      "min": 298.98199462890625,
+      "max": 5283.22021484375,
+      "mean": 396.3741760253906,
+      "median": 300.3349914550781,
+      "std": 390.8988952636719,
+      "q25": 300.010986328125,
+      "q75": 309.5262451171875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001360.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001360.vtk",
+    "timestep": 1360
+  },
+  {
+    "peak_temperature": {
+      "value": 5130.75,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98391796875,
+      "liquid_fraction": 0.01540234375,
+      "mushy_fraction": 0.0006796875,
+      "liquid_points": 3943,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5814530.0,
+      "max_magnitude": 153132048.0,
+      "std_magnitude": 18155002.0,
+      "mean_x": 7629.3916015625,
+      "mean_y": 76.54145050048828,
+      "mean_z": -50.944000244140625
+    },
+    "spatial_stats": {
+      "min": 298.9859924316406,
+      "max": 5130.75,
+      "mean": 396.3741455078125,
+      "median": 300.3550109863281,
+      "std": 385.2698669433594,
+      "q25": 300.0119934082031,
+      "q75": 310.083251953125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001380.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001380.vtk",
+    "timestep": 1380
+  },
+  {
+    "peak_temperature": {
+      "value": 4986.75,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9840859375,
+      "liquid_fraction": 0.01521484375,
+      "mushy_fraction": 0.00069921875,
+      "liquid_points": 3895,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5754724.5,
+      "max_magnitude": 146317680.0,
+      "std_magnitude": 17703398.0,
+      "mean_x": 7786.15087890625,
+      "mean_y": 83.69059753417969,
+      "mean_z": -55.551998138427734
+    },
+    "spatial_stats": {
+      "min": 298.8919982910156,
+      "max": 4986.75,
+      "mean": 396.3741760253906,
+      "median": 300.37652587890625,
+      "std": 379.8298645019531,
+      "q25": 300.01300048828125,
+      "q75": 310.6820068359375
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001400.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001400.vtk",
+    "timestep": 1400
+  },
+  {
+    "peak_temperature": {
+      "value": 4850.5,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98425,
+      "liquid_fraction": 0.01510546875,
+      "mushy_fraction": 0.00064453125,
+      "liquid_points": 3867,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5696527.5,
+      "max_magnitude": 139947312.0,
+      "std_magnitude": 17271806.0,
+      "mean_x": 7937.947265625,
+      "mean_y": 87.29276275634766,
+      "mean_z": -60.41600036621094
+    },
+    "spatial_stats": {
+      "min": 298.9079895019531,
+      "max": 4850.5,
+      "mean": 396.3741760253906,
+      "median": 300.39898681640625,
+      "std": 374.56903076171875,
+      "q25": 300.0140075683594,
+      "q75": 311.2860107421875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001420.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001420.vtk",
+    "timestep": 1420
+  },
+  {
+    "peak_temperature": {
+      "value": 4721.3798828125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98440625,
+      "liquid_fraction": 0.01497265625,
+      "mushy_fraction": 0.00062109375,
+      "liquid_points": 3833,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5639843.0,
+      "max_magnitude": 133979600.0,
+      "std_magnitude": 16858772.0,
+      "mean_x": 8083.4697265625,
+      "mean_y": 87.4975814819336,
+      "mean_z": -65.40799713134766
+    },
+    "spatial_stats": {
+      "min": 298.9360046386719,
+      "max": 4721.3798828125,
+      "mean": 396.3741760253906,
+      "median": 300.4200134277344,
+      "std": 369.4769592285156,
+      "q25": 300.0150146484375,
+      "q75": 311.92547607421875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001440.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001440.vtk",
+    "timestep": 1440
+  },
+  {
+    "peak_temperature": {
+      "value": 4598.7998046875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9845703125,
+      "liquid_fraction": 0.0147734375,
+      "mushy_fraction": 0.00065625,
+      "liquid_points": 3782,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5584584.5,
+      "max_magnitude": 128375888.0,
+      "std_magnitude": 16463026.0,
+      "mean_x": 8222.1240234375,
+      "mean_y": 81.36489868164062,
+      "mean_z": -70.78399658203125
+    },
+    "spatial_stats": {
+      "min": 298.9049987792969,
+      "max": 4598.7998046875,
+      "mean": 396.3741760253906,
+      "median": 300.4410095214844,
+      "std": 364.5445861816406,
+      "q25": 300.0159912109375,
+      "q75": 312.57525634765625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001460.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001460.vtk",
+    "timestep": 1460
+  },
+  {
+    "peak_temperature": {
+      "value": 4482.35009765625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9847890625,
+      "liquid_fraction": 0.01458984375,
+      "mushy_fraction": 0.00062109375,
+      "liquid_points": 3735,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5530682.5,
+      "max_magnitude": 123104040.0,
+      "std_magnitude": 16083494.0,
+      "mean_x": 8357.0634765625,
+      "mean_y": 72.52611541748047,
+      "mean_z": -76.54399871826172
+    },
+    "spatial_stats": {
+      "min": 298.7820129394531,
+      "max": 4482.35009765625,
+      "mean": 396.3741455078125,
+      "median": 300.4620056152344,
+      "std": 359.76446533203125,
+      "q25": 300.01800537109375,
+      "q75": 313.2392578125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001480.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001480.vtk",
+    "timestep": 1480
+  },
+  {
+    "peak_temperature": {
+      "value": 4371.6201171875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9849296875,
+      "liquid_fraction": 0.0142890625,
+      "mushy_fraction": 0.00078125,
+      "liquid_points": 3658,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.0001125,
+        "ymax": 0.0001875,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 7.500000000000001e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 0.9999999999999998,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5478065.0,
+      "max_magnitude": 118138816.0,
+      "std_magnitude": 15719111.0,
+      "mean_x": 8482.9541015625,
+      "mean_y": 62.8873291015625,
+      "mean_z": -82.55999755859375
+    },
+    "spatial_stats": {
+      "min": 298.7409973144531,
+      "max": 4371.6201171875,
+      "mean": 396.3741455078125,
+      "median": 300.4809875488281,
+      "std": 355.1284484863281,
+      "q25": 300.0190124511719,
+      "q75": 313.937255859375
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001500.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001500.vtk",
+    "timestep": 1500
+  },
+  {
+    "peak_temperature": {
+      "value": 4266.18994140625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98511328125,
+      "liquid_fraction": 0.01405859375,
+      "mushy_fraction": 0.000828125,
+      "liquid_points": 3599,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 1.1111111111111112,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5426670.5,
+      "max_magnitude": 113445544.0,
+      "std_magnitude": 15368927.0,
+      "mean_x": 8600.482421875,
+      "mean_y": 55.39628219604492,
+      "mean_z": -89.21600341796875
+    },
+    "spatial_stats": {
+      "min": 298.7449951171875,
+      "max": 4266.18994140625,
+      "mean": 396.3741760253906,
+      "median": 300.5010070800781,
+      "std": 350.62933349609375,
+      "q25": 300.0199890136719,
+      "q75": 314.6522521972656
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001520.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001520.vtk",
+    "timestep": 1520
+  },
+  {
+    "peak_temperature": {
+      "value": 4165.759765625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98529296875,
+      "liquid_fraction": 0.0138828125,
+      "mushy_fraction": 0.00082421875,
+      "liquid_points": 3554,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 1.1111111111111112,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5376450.5,
+      "max_magnitude": 109028248.0,
+      "std_magnitude": 15032125.0,
+      "mean_x": 8708.5654296875,
+      "mean_y": 43.34003829956055,
+      "mean_z": -96.0
+    },
+    "spatial_stats": {
+      "min": 298.7760009765625,
+      "max": 4165.759765625,
+      "mean": 396.3741455078125,
+      "median": 300.52301025390625,
+      "std": 346.2611083984375,
+      "q25": 300.0220031738281,
+      "q75": 315.3952331542969
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001540.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001540.vtk",
+    "timestep": 1540
+  },
+  {
+    "peak_temperature": {
+      "value": 4069.909912109375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98559375,
+      "liquid_fraction": 0.0136171875,
+      "mushy_fraction": 0.0007890625,
+      "liquid_points": 3486,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 1.1111111111111112,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5327352.0,
+      "max_magnitude": 104853656.0,
+      "std_magnitude": 14707918.0,
+      "mean_x": 8812.7744140625,
+      "mean_y": 29.59506607055664,
+      "mean_z": -102.91200256347656
+    },
+    "spatial_stats": {
+      "min": 298.875,
+      "max": 4069.909912109375,
+      "mean": 396.3741455078125,
+      "median": 300.5429992675781,
+      "std": 342.0177001953125,
+      "q25": 300.02398681640625,
+      "q75": 316.1310119628906
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001560.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001560.vtk",
+    "timestep": 1560
+  },
+  {
+    "peak_temperature": {
+      "value": 3978.330078125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98587890625,
+      "liquid_fraction": 0.01340625,
+      "mushy_fraction": 0.00071484375,
+      "liquid_points": 3432,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.0001125,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.5e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 1.1111111111111112,
+      "aspect_ratio_wd": 1.25
+    },
+    "gradients": {
+      "mean_magnitude": 5279330.5,
+      "max_magnitude": 100885592.0,
+      "std_magnitude": 14395564.0,
+      "mean_x": 8906.82421875,
+      "mean_y": 20.443571090698242,
+      "mean_z": -110.72000122070312
+    },
+    "spatial_stats": {
+      "min": 298.97900390625,
+      "max": 3978.330078125,
+      "mean": 396.3741760253906,
+      "median": 300.5639953613281,
+      "std": 337.89337158203125,
+      "q25": 300.0249938964844,
+      "q75": 316.8710021972656
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001580.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001580.vtk",
+    "timestep": 1580
+  },
+  {
+    "peak_temperature": {
+      "value": 3890.800048828125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9861015625,
+      "liquid_fraction": 0.0131484375,
+      "mushy_fraction": 0.00075,
+      "liquid_points": 3366,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.1875
+    },
+    "gradients": {
+      "mean_magnitude": 5232338.0,
+      "max_magnitude": 97118600.0,
+      "std_magnitude": 14094416.0,
+      "mean_x": 8989.24609375,
+      "mean_y": 12.7605562210083,
+      "mean_z": -118.52799987792969
+    },
+    "spatial_stats": {
+      "min": 299.0270080566406,
+      "max": 3890.800048828125,
+      "mean": 396.3741760253906,
+      "median": 300.5840148925781,
+      "std": 333.8829345703125,
+      "q25": 300.0270080566406,
+      "q75": 317.6570129394531
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001600.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001600.vtk",
+    "timestep": 1600
+  },
+  {
+    "peak_temperature": {
+      "value": 3807.080078125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9863515625,
+      "liquid_fraction": 0.01289453125,
+      "mushy_fraction": 0.00075390625,
+      "liquid_points": 3301,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.0001125,
+        "zmax": 0.0001725
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.9999999999999995e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.1875
+    },
+    "gradients": {
+      "mean_magnitude": 5186320.5,
+      "max_magnitude": 93543704.0,
+      "std_magnitude": 13803828.0,
+      "mean_x": 9061.634765625,
+      "mean_y": 6.17911434173584,
+      "mean_z": -126.8479995727539
+    },
+    "spatial_stats": {
+      "min": 299.0679931640625,
+      "max": 3807.080078125,
+      "mean": 396.3741455078125,
+      "median": 300.6029968261719,
+      "std": 329.98089599609375,
+      "q25": 300.02899169921875,
+      "q75": 318.4580078125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001620.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001620.vtk",
+    "timestep": 1620
+  },
+  {
+    "peak_temperature": {
+      "value": 3726.989990234375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98661328125,
+      "liquid_fraction": 0.01262109375,
+      "mushy_fraction": 0.000765625,
+      "liquid_points": 3231,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.0001725
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.6249999999999985e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.266666666666667
+    },
+    "gradients": {
+      "mean_magnitude": 5141244.0,
+      "max_magnitude": 90160952.0,
+      "std_magnitude": 13523255.0,
+      "mean_x": 9126.40625,
+      "mean_y": 9.139404296875,
+      "mean_z": -135.67999267578125
+    },
+    "spatial_stats": {
+      "min": 299.093994140625,
+      "max": 3726.989990234375,
+      "mean": 396.3741455078125,
+      "median": 300.62298583984375,
+      "std": 326.182861328125,
+      "q25": 300.031005859375,
+      "q75": 319.2902526855469
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001640.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001640.vtk",
+    "timestep": 1640
+  },
+  {
+    "peak_temperature": {
+      "value": 3650.260009765625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98683984375,
+      "liquid_fraction": 0.012296875,
+      "mushy_fraction": 0.00086328125,
+      "liquid_points": 3148,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.0001725
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.6249999999999985e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.266666666666667
+    },
+    "gradients": {
+      "mean_magnitude": 5097080.0,
+      "max_magnitude": 86966288.0,
+      "std_magnitude": 13252188.0,
+      "mean_x": 9188.2919921875,
+      "mean_y": 18.76114845275879,
+      "mean_z": -145.27999877929688
+    },
+    "spatial_stats": {
+      "min": 299.0220031738281,
+      "max": 3650.260009765625,
+      "mean": 396.3741760253906,
+      "median": 300.64300537109375,
+      "std": 322.484619140625,
+      "q25": 300.03399658203125,
+      "q75": 320.14349365234375
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001660.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001660.vtk",
+    "timestep": 1660
+  },
+  {
+    "peak_temperature": {
+      "value": 3576.75,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98714453125,
+      "liquid_fraction": 0.012,
+      "mushy_fraction": 0.00085546875,
+      "liquid_points": 3072,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.0001725
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.6249999999999985e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.266666666666667
+    },
+    "gradients": {
+      "mean_magnitude": 5053792.5,
+      "max_magnitude": 83936688.0,
+      "std_magnitude": 12990114.0,
+      "mean_x": 9239.9658203125,
+      "mean_y": 30.65245819091797,
+      "mean_z": -155.13600158691406
+    },
+    "spatial_stats": {
+      "min": 298.9169921875,
+      "max": 3576.75,
+      "mean": 396.3741455078125,
+      "median": 300.66400146484375,
+      "std": 318.88177490234375,
+      "q25": 300.0360107421875,
+      "q75": 321.02349853515625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001680.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001680.vtk",
+    "timestep": 1680
+  },
+  {
+    "peak_temperature": {
+      "value": 3506.18994140625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9874296875,
+      "liquid_fraction": 0.01175,
+      "mushy_fraction": 0.0008203125,
+      "liquid_points": 3008,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.0001725
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.6249999999999985e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.266666666666667
+    },
+    "gradients": {
+      "mean_magnitude": 5011363.5,
+      "max_magnitude": 81031216.0,
+      "std_magnitude": 12736644.0,
+      "mean_x": 9280.677734375,
+      "mean_y": 39.84333419799805,
+      "mean_z": -165.6320037841797
+    },
+    "spatial_stats": {
+      "min": 298.7969970703125,
+      "max": 3506.18994140625,
+      "mean": 396.3741455078125,
+      "median": 300.68798828125,
+      "std": 315.3713684082031,
+      "q25": 300.03900146484375,
+      "q75": 321.8562316894531
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001700.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001700.vtk",
+    "timestep": 1700
+  },
+  {
+    "peak_temperature": {
+      "value": 3438.469970703125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98776171875,
+      "liquid_fraction": 0.0114140625,
+      "mushy_fraction": 0.00082421875,
+      "liquid_points": 2922,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.0001725
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.6249999999999985e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.266666666666667
+    },
+    "gradients": {
+      "mean_magnitude": 4969753.5,
+      "max_magnitude": 78247056.0,
+      "std_magnitude": 12491321.0,
+      "mean_x": 9318.455078125,
+      "mean_y": 46.629268646240234,
+      "mean_z": -176.51199340820312
+    },
+    "spatial_stats": {
+      "min": 298.6839904785156,
+      "max": 3438.469970703125,
+      "mean": 396.3741455078125,
+      "median": 300.7149963378906,
+      "std": 311.9491882324219,
+      "q25": 300.0419921875,
+      "q75": 322.7282409667969
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001720.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001720.vtk",
+    "timestep": 1720
+  },
+  {
+    "peak_temperature": {
+      "value": 3373.3798828125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.988078125,
+      "liquid_fraction": 0.011171875,
+      "mushy_fraction": 0.00075,
+      "liquid_points": 2860,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.00016875
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.25e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.357142857142857
+    },
+    "gradients": {
+      "mean_magnitude": 4928924.5,
+      "max_magnitude": 75585728.0,
+      "std_magnitude": 12253727.0,
+      "mean_x": 9355.4892578125,
+      "mean_y": 52.70044708251953,
+      "mean_z": -187.7760009765625
+    },
+    "spatial_stats": {
+      "min": 298.6099853515625,
+      "max": 3373.3798828125,
+      "mean": 396.3741455078125,
+      "median": 300.74700927734375,
+      "std": 308.611328125,
+      "q25": 300.0450134277344,
+      "q75": 323.64801025390625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001740.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001740.vtk",
+    "timestep": 1740
+  },
+  {
+    "peak_temperature": {
+      "value": 3310.669921875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.988328125,
+      "liquid_fraction": 0.0108046875,
+      "mushy_fraction": 0.0008671875,
+      "liquid_points": 2766,
+      "liquid_bounds": {
+        "xmin": 3.7500000000000003e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00011625,
+        "ymax": 0.00018375,
+        "zmin": 0.00011625,
+        "zmax": 0.00016875
+      },
+      "width": 7.125e-05,
+      "height": 6.749999999999999e-05,
+      "depth": 5.25e-05,
+      "aspect_ratio_wh": 1.0555555555555558,
+      "aspect_ratio_wd": 1.357142857142857
+    },
+    "gradients": {
+      "mean_magnitude": 4888851.5,
+      "max_magnitude": 73051032.0,
+      "std_magnitude": 12023518.0,
+      "mean_x": 9392.484375,
+      "mean_y": 52.67229461669922,
+      "mean_z": -199.93600463867188
+    },
+    "spatial_stats": {
+      "min": 298.5820007324219,
+      "max": 3310.669921875,
+      "mean": 396.3741760253906,
+      "median": 300.7850036621094,
+      "std": 305.3548278808594,
+      "q25": 300.04901123046875,
+      "q75": 324.58599853515625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001760.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001760.vtk",
+    "timestep": 1760
+  },
+  {
+    "peak_temperature": {
+      "value": 3250.2900390625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98868359375,
+      "liquid_fraction": 0.0104765625,
+      "mushy_fraction": 0.00083984375,
+      "liquid_points": 2682,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00011625,
+        "zmax": 0.00016875
+      },
+      "width": 6.75e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 5.25e-05,
+      "aspect_ratio_wh": 1.1249999999999998,
+      "aspect_ratio_wd": 1.2857142857142856
+    },
+    "gradients": {
+      "mean_magnitude": 4849513.0,
+      "max_magnitude": 70621600.0,
+      "std_magnitude": 11800361.0,
+      "mean_x": 9429.68359375,
+      "mean_y": 48.34498596191406,
+      "mean_z": -212.3520050048828
+    },
+    "spatial_stats": {
+      "min": 298.5769958496094,
+      "max": 3250.2900390625,
+      "mean": 396.3741455078125,
+      "median": 300.8280029296875,
+      "std": 302.1765441894531,
+      "q25": 300.0530090332031,
+      "q75": 325.4907531738281
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001780.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001780.vtk",
+    "timestep": 1780
+  },
+  {
+    "peak_temperature": {
+      "value": 3192.18994140625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98895703125,
+      "liquid_fraction": 0.0101796875,
+      "mushy_fraction": 0.00086328125,
+      "liquid_points": 2606,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00011625,
+        "zmax": 0.00016875
+      },
+      "width": 6.75e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 5.25e-05,
+      "aspect_ratio_wh": 1.1249999999999998,
+      "aspect_ratio_wd": 1.2857142857142856
+    },
+    "gradients": {
+      "mean_magnitude": 4810893.0,
+      "max_magnitude": 68253704.0,
+      "std_magnitude": 11583955.0,
+      "mean_x": 9456.4365234375,
+      "mean_y": 44.44193649291992,
+      "mean_z": -225.66400146484375
+    },
+    "spatial_stats": {
+      "min": 298.5769958496094,
+      "max": 3192.18994140625,
+      "mean": 396.3741455078125,
+      "median": 300.87701416015625,
+      "std": 299.0738830566406,
+      "q25": 300.0570068359375,
+      "q75": 326.4230041503906
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001800.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001800.vtk",
+    "timestep": 1800
+  },
+  {
+    "peak_temperature": {
+      "value": 3136.18994140625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.98935546875,
+      "liquid_fraction": 0.0098515625,
+      "mushy_fraction": 0.00079296875,
+      "liquid_points": 2522,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00011625,
+        "zmax": 0.00016875
+      },
+      "width": 6.75e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 5.25e-05,
+      "aspect_ratio_wh": 1.1249999999999998,
+      "aspect_ratio_wd": 1.2857142857142856
+    },
+    "gradients": {
+      "mean_magnitude": 4772966.5,
+      "max_magnitude": 65939292.0,
+      "std_magnitude": 11373991.0,
+      "mean_x": 9471.0498046875,
+      "mean_y": 45.51970291137695,
+      "mean_z": -239.8719940185547
+    },
+    "spatial_stats": {
+      "min": 298.5509948730469,
+      "max": 3136.18994140625,
+      "mean": 396.3741455078125,
+      "median": 300.92950439453125,
+      "std": 296.0439147949219,
+      "q25": 300.06201171875,
+      "q75": 327.35198974609375
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001820.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001820.vtk",
+    "timestep": 1820
+  },
+  {
+    "peak_temperature": {
+      "value": 3082.22998046875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9896484375,
+      "liquid_fraction": 0.00954296875,
+      "mushy_fraction": 0.00080859375,
+      "liquid_points": 2443,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00011625,
+        "zmax": 0.00016875
+      },
+      "width": 6.75e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 5.25e-05,
+      "aspect_ratio_wh": 1.1249999999999998,
+      "aspect_ratio_wd": 1.2857142857142856
+    },
+    "gradients": {
+      "mean_magnitude": 4735721.5,
+      "max_magnitude": 63739556.0,
+      "std_magnitude": 11170177.0,
+      "mean_x": 9485.568359375,
+      "mean_y": 50.78129959106445,
+      "mean_z": -254.33599853515625
+    },
+    "spatial_stats": {
+      "min": 298.6029968261719,
+      "max": 3082.22998046875,
+      "mean": 396.3741455078125,
+      "median": 300.9859924316406,
+      "std": 293.0838623046875,
+      "q25": 300.0669860839844,
+      "q75": 328.29150390625
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001840.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001840.vtk",
+    "timestep": 1840
+  },
+  {
+    "peak_temperature": {
+      "value": 3030.179931640625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.989953125,
+      "liquid_fraction": 0.009203125,
+      "mushy_fraction": 0.00084375,
+      "liquid_points": 2356,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.00010875,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016875
+      },
+      "width": 6.75e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.8750000000000006e-05,
+      "aspect_ratio_wh": 1.1249999999999998,
+      "aspect_ratio_wd": 1.3846153846153844
+    },
+    "gradients": {
+      "mean_magnitude": 4699138.0,
+      "max_magnitude": 61638796.0,
+      "std_magnitude": 10972280.0,
+      "mean_x": 9508.4052734375,
+      "mean_y": 52.25151443481445,
+      "mean_z": -269.44000244140625
+    },
+    "spatial_stats": {
+      "min": 298.6570129394531,
+      "max": 3030.179931640625,
+      "mean": 396.3741455078125,
+      "median": 301.0459899902344,
+      "std": 290.1916809082031,
+      "q25": 300.072998046875,
+      "q75": 329.2592468261719
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001860.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001860.vtk",
+    "timestep": 1860
+  },
+  {
+    "peak_temperature": {
+      "value": 2979.89990234375,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.990328125,
+      "liquid_fraction": 0.00891796875,
+      "mushy_fraction": 0.00075390625,
+      "liquid_points": 2283,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016875
+      },
+      "width": 6.375e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.8750000000000006e-05,
+      "aspect_ratio_wh": 1.0625,
+      "aspect_ratio_wd": 1.3076923076923077
+    },
+    "gradients": {
+      "mean_magnitude": 4663191.5,
+      "max_magnitude": 59679020.0,
+      "std_magnitude": 10780034.0,
+      "mean_x": 9536.7529296875,
+      "mean_y": 56.644344329833984,
+      "mean_z": -285.31201171875
+    },
+    "spatial_stats": {
+      "min": 298.7030029296875,
+      "max": 2979.89990234375,
+      "mean": 396.3741455078125,
+      "median": 301.1080017089844,
+      "std": 287.36468505859375,
+      "q25": 300.0790100097656,
+      "q75": 330.2482604980469
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001880.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001880.vtk",
+    "timestep": 1880
+  },
+  {
+    "peak_temperature": {
+      "value": 2931.2900390625,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9906171875,
+      "liquid_fraction": 0.00859375,
+      "mushy_fraction": 0.0007890625,
+      "liquid_points": 2200,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016875
+      },
+      "width": 6.375e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.8750000000000006e-05,
+      "aspect_ratio_wh": 1.0625,
+      "aspect_ratio_wd": 1.3076923076923077
+    },
+    "gradients": {
+      "mean_magnitude": 4627867.5,
+      "max_magnitude": 58010328.0,
+      "std_magnitude": 10593219.0,
+      "mean_x": 9567.8779296875,
+      "mean_y": 60.18677520751953,
+      "mean_z": -302.33599853515625
+    },
+    "spatial_stats": {
+      "min": 298.7239990234375,
+      "max": 2931.2900390625,
+      "mean": 396.3741760253906,
+      "median": 301.17401123046875,
+      "std": 284.600830078125,
+      "q25": 300.08599853515625,
+      "q75": 331.23223876953125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001900.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001900.vtk",
+    "timestep": 1900
+  },
+  {
+    "peak_temperature": {
+      "value": 2884.280029296875,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99097265625,
+      "liquid_fraction": 0.0082109375,
+      "mushy_fraction": 0.00081640625,
+      "liquid_points": 2102,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016875
+      },
+      "width": 6.375e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.8750000000000006e-05,
+      "aspect_ratio_wh": 1.0625,
+      "aspect_ratio_wd": 1.3076923076923077
+    },
+    "gradients": {
+      "mean_magnitude": 4593150.5,
+      "max_magnitude": 56488116.0,
+      "std_magnitude": 10411587.0,
+      "mean_x": 9592.6103515625,
+      "mean_y": 60.735294342041016,
+      "mean_z": -320.0
+    },
+    "spatial_stats": {
+      "min": 298.7200012207031,
+      "max": 2884.280029296875,
+      "mean": 396.3741760253906,
+      "median": 301.2430114746094,
+      "std": 281.89764404296875,
+      "q25": 300.0929870605469,
+      "q75": 332.23651123046875
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001920.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001920.vtk",
+    "timestep": 1920
+  },
+  {
+    "peak_temperature": {
+      "value": 2838.75,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.9912578125,
+      "liquid_fraction": 0.0078046875,
+      "mushy_fraction": 0.0009375,
+      "liquid_points": 1998,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012,
+        "ymax": 0.00018,
+        "zmin": 0.00012,
+        "zmax": 0.00016875
+      },
+      "width": 6.375e-05,
+      "height": 6.000000000000001e-05,
+      "depth": 4.8750000000000006e-05,
+      "aspect_ratio_wh": 1.0625,
+      "aspect_ratio_wd": 1.3076923076923077
+    },
+    "gradients": {
+      "mean_magnitude": 4559025.0,
+      "max_magnitude": 55038456.0,
+      "std_magnitude": 10234946.0,
+      "mean_x": 9613.330078125,
+      "mean_y": 61.50590515136719,
+      "mean_z": -338.8160095214844
+    },
+    "spatial_stats": {
+      "min": 298.72100830078125,
+      "max": 2838.75,
+      "mean": 396.3741760253906,
+      "median": 301.31500244140625,
+      "std": 279.2532043457031,
+      "q25": 300.1000061035156,
+      "q75": 333.229736328125
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001940.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001940.vtk",
+    "timestep": 1940
+  },
+  {
+    "peak_temperature": {
+      "value": 2794.719970703125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.991609375,
+      "liquid_fraction": 0.00745703125,
+      "mushy_fraction": 0.00093359375,
+      "liquid_points": 1909,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012375,
+        "ymax": 0.00017625,
+        "zmin": 0.00012,
+        "zmax": 0.00016875
+      },
+      "width": 6.375e-05,
+      "height": 5.25e-05,
+      "depth": 4.8750000000000006e-05,
+      "aspect_ratio_wh": 1.2142857142857144,
+      "aspect_ratio_wd": 1.3076923076923077
+    },
+    "gradients": {
+      "mean_magnitude": 4525476.0,
+      "max_magnitude": 53631756.0,
+      "std_magnitude": 10063108.0,
+      "mean_x": 9645.240234375,
+      "mean_y": 61.53034591674805,
+      "mean_z": -358.52801513671875
+    },
+    "spatial_stats": {
+      "min": 298.7229919433594,
+      "max": 2794.719970703125,
+      "mean": 396.3741455078125,
+      "median": 301.3900146484375,
+      "std": 276.66571044921875,
+      "q25": 300.1080017089844,
+      "q75": 334.2510070800781
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001960.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001960.vtk",
+    "timestep": 1960
+  },
+  {
+    "peak_temperature": {
+      "value": 2752.050048828125,
+      "location": [
+        7.500000000000001e-05,
+        0.00015000000000000001,
+        0.00014625
+      ],
+      "index": 126420
+    },
+    "melt_pool": {
+      "solid_fraction": 0.99203125,
+      "liquid_fraction": 0.00716796875,
+      "mushy_fraction": 0.00080078125,
+      "liquid_points": 1835,
+      "liquid_bounds": {
+        "xmin": 4.125e-05,
+        "xmax": 0.000105,
+        "ymin": 0.00012375,
+        "ymax": 0.00017625,
+        "zmin": 0.00012,
+        "zmax": 0.000165
+      },
+      "width": 6.375e-05,
+      "height": 5.25e-05,
+      "depth": 4.4999999999999996e-05,
+      "aspect_ratio_wh": 1.2142857142857144,
+      "aspect_ratio_wd": 1.416666666666667
+    },
+    "gradients": {
+      "mean_magnitude": 4492477.5,
+      "max_magnitude": 52269000.0,
+      "std_magnitude": 9895850.0,
+      "mean_x": 9679.71875,
+      "mean_y": 61.20693588256836,
+      "mean_z": -379.135986328125
+    },
+    "spatial_stats": {
+      "min": 298.7229919433594,
+      "max": 2752.050048828125,
+      "mean": 396.3741760253906,
+      "median": 301.468994140625,
+      "std": 274.1328125,
+      "q25": 300.11700439453125,
+      "q75": 335.2797546386719
+    },
+    "file": "/home/yzk/LBMProject/tests/validation/output_laser_melting_senior/temperature_001980.vtk.vtk",
+    "solver": "LBMProject",
+    "filename": "temperature_001980.vtk",
+    "timestep": 1980
+  }
+]

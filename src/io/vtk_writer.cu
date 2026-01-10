@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace io {

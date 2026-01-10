@@ -24,6 +24,7 @@
 #include <cuda_runtime.h>
 #include <stdexcept>
 #include <cmath>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace physics {
@@ -494,13 +495,14 @@ void RecoilPressure::computePressureField(
         C_r_,
         P_max_,
         num_cells);
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         throw std::runtime_error("RecoilPressure::computePressureField kernel failed: " +
                                  std::string(cudaGetErrorString(err)));
     }
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void RecoilPressure::computeForceField(
@@ -524,13 +526,14 @@ void RecoilPressure::computeForceField(
         force_x, force_y, force_z,
         C_r_, h_interface_, dx_, P_max_, f_threshold_,
         nx, ny, nz);
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         throw std::runtime_error("RecoilPressure::computeForceField kernel failed: " +
                                  std::string(cudaGetErrorString(err)));
     }
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void RecoilPressure::addForceField(
@@ -554,13 +557,14 @@ void RecoilPressure::addForceField(
         force_x, force_y, force_z,
         C_r_, h_interface_, dx_, P_max_, f_threshold_,
         nx, ny, nz);
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         throw std::runtime_error("RecoilPressure::addForceField kernel failed: " +
                                  std::string(cudaGetErrorString(err)));
     }
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void RecoilPressure::addForceFromTemperature(
@@ -584,13 +588,14 @@ void RecoilPressure::addForceFromTemperature(
         force_x, force_y, force_z,
         C_r_, h_interface_, dx_, P_max_, f_threshold_,
         nx, ny, nz);
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         throw std::runtime_error("RecoilPressure::addForceFromTemperature kernel failed: " +
                                  std::string(cudaGetErrorString(err)));
     }
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 } // namespace physics

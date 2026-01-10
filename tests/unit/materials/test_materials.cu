@@ -37,14 +37,15 @@ protected:
 TEST_F(MaterialPropertiesTest, Ti6Al4VBasicProperties) {
     MaterialProperties ti64 = MaterialDatabase::getTi6Al4V();
 
-    // Check basic solid properties
-    EXPECT_FLOAT_EQ(ti64.rho_solid, 4420.0f);
-    EXPECT_FLOAT_EQ(ti64.cp_solid, 610.0f);
-    EXPECT_FLOAT_EQ(ti64.k_solid, 7.0f);
+    // Check basic solid properties (updated to match walberla)
+    EXPECT_FLOAT_EQ(ti64.rho_solid, 4430.0f);  // kg/m³ (walberla)
+    EXPECT_FLOAT_EQ(ti64.cp_solid, 526.0f);   // J/(kg·K) (walberla)
+    EXPECT_FLOAT_EQ(ti64.k_solid, 6.7f);      // W/(m·K) (walberla)
 
-    // Check liquid properties (CORRECTED VALUES from Mills 2002, Valencia & Quested 2008)
+    // Check liquid properties
+    // Note: cp_liquid uses solid value (526) for walberla validation consistency
     EXPECT_FLOAT_EQ(ti64.rho_liquid, 4110.0f);
-    EXPECT_FLOAT_EQ(ti64.cp_liquid, 831.0f);
+    EXPECT_FLOAT_EQ(ti64.cp_liquid, 526.0f);  // Same as solid for walberla match
     EXPECT_FLOAT_EQ(ti64.k_liquid, 33.0f);
 
     // Check phase change parameters

@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 #include <stdexcept>
 #include <iostream>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace physics {

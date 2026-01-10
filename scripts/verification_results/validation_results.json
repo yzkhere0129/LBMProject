@@ -1,0 +1,45 @@
+{
+  "timestamp": "2026-01-04T16:36:38.417966",
+  "vtk_directory": "/home/yzk/LBMProject/scripts/test_vtk_data",
+  "timesteps_analyzed": [
+    0,
+    10,
+    20,
+    30
+  ],
+  "parameters": {
+    "temperature_min_K": 0.0,
+    "temperature_max_K": 50000.0,
+    "fill_level_min": 0.0,
+    "fill_level_max": 1.0,
+    "max_gradient_K_per_m": 100000000.0,
+    "energy_change_threshold": 0.05
+  },
+  "results": [
+    {
+      "check_name": "Temperature Field (t=0)",
+      "passed": true,
+      "message": "PASS: Valid T field",
+      "details": {
+        "min_val": 300.0004588534808,
+        "max_val": 1738.95025990438,
+        "mean_val": 379.8667113375722,
+        "std_val": 189.95222490159767,
+        "nan_count": 0,
+        "inf_count": 0,
+        "total_cells": 8000
+      }
+    },
+    {
+      "check_name": "Fill Level (t=0)",
+      "passed": false,
+      "message": "Fill level field not found",
+      "details": {
+        "available_fields": [
+          "temperature"
+        ]
+      }
+    },
+    {
+      "check_name": "Temperature Gradients (t=0)",
+      "passed": 

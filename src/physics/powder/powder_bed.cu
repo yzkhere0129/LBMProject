@@ -5,6 +5,7 @@
 
 #include "physics/powder_bed.h"
 #include "physics/vof_solver.h"
+#include "utils/cuda_check.h"
 
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
@@ -156,10 +157,10 @@ void PowderBed::allocateDeviceMemory(int num_particles) {
     freeDeviceMemory();
 
     if (num_particles > 0) {
-        cudaMalloc(&d_particle_x_, num_particles * sizeof(float));
-        cudaMalloc(&d_particle_y_, num_particles * sizeof(float));
-        cudaMalloc(&d_particle_z_, num_particles * sizeof(float));
-        cudaMalloc(&d_particle_radius_, num_particles * sizeof(float));
+        CUDA_CHECK(cudaMalloc(&d_particle_x_, num_particles * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_particle_y_, num_particles * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_particle_z_, num_particles * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_particle_radius_, num_particles * sizeof(float)));
         num_particles_device_ = num_particles;
 
         cudaError_t err = cudaGetLastError();
@@ -364,10 +365,10 @@ void PowderBed::copyParticlesToDevice() {
     }
 
     // Copy to device
-    cudaMemcpy(d_particle_x_, h_x.data(), n * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_particle_y_, h_y.data(), n * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_particle_z_, h_z.data(), n * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_particle_radius_, h_r.data(), n * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_particle_x_, h_x.data(), n * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_particle_y_, h_y.data(), n * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_particle_z_, h_z.data(), n * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_particle_radius_, h_r.data(), n * sizeof(float), cudaMemcpyHostToDevice));
 }
 
 void PowderBed::updateVOFFillLevel() {
@@ -387,8 +388,9 @@ void PowderBed::updateVOFFillLevel() {
         num_particles_device_,
         dx_, interface_width,
         nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -420,8 +422,9 @@ void PowderBed::initializeThermalConductivity(float* d_thermal_conductivity,
         config_.effective_k, k_bulk,
         z_min, z_max, dx,
         nx, ny, nz);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // ============================================================================

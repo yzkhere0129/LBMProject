@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 #include <stdexcept>
 #include <cmath>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace physics {
@@ -313,8 +314,9 @@ void MarangoniEffect::computeMarangoniForce(const float* temperature,
         dsigma_dT_, dx_, h_interface_,
         max_gradient_limit_, interface_cutoff_min_, interface_cutoff_max_,
         nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -342,8 +344,9 @@ void MarangoniEffect::addMarangoniForce(const float* temperature,
         max_gradient_limit_, T_melt_,
         interface_cutoff_min_, interface_cutoff_max_,
         nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {

@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <cub/cub.cuh>
+#include "utils/cuda_check.h"
 
 /**
  * @brief Compute laser heat source distribution on GPU
@@ -107,7 +108,7 @@ float computeTotalLaserEnergy(
     // Use CUB for efficient reduction on GPU
     size_t temp_storage_bytes = 0;
     float* d_sum;
-    cudaMalloc(&d_sum, sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_sum, sizeof(float)));
 
     // Get required temporary storage size
     cub::DeviceReduce::Sum(nullptr, temp_storage_bytes,
@@ -115,7 +116,7 @@ float computeTotalLaserEnergy(
 
     // Allocate temporary storage
     void* d_temp_storage = nullptr;
-    cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    CUDA_CHECK(cudaMalloc(&d_temp_storage, temp_storage_bytes));
 
     // Run reduction
     cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes,
@@ -123,11 +124,11 @@ float computeTotalLaserEnergy(
 
     // Copy result back to host
     float total_heat_rate;
-    cudaMemcpy(&total_heat_rate, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(&total_heat_rate, d_sum, sizeof(float), cudaMemcpyDeviceToHost));
 
     // Free temporary storage
-    cudaFree(d_temp_storage);
-    cudaFree(d_sum);
+    CUDA_CHECK(cudaFree(d_temp_storage));
+    CUDA_CHECK(cudaFree(d_sum));
 
     // Convert to total power [W]
     return total_heat_rate * dV;
@@ -177,26 +178,28 @@ float computeTotalLaserEnergyNoCUB(
 
     // Allocate memory for partial sums
     float* d_partial_sums;
-    cudaMalloc(&d_partial_sums, blocks * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_partial_sums, blocks * sizeof(float)));
 
     // First reduction
     sumReductionKernel<<<blocks, threads, threads * sizeof(float)>>>(
         heat_source, d_partial_sums, total_cells);
+    CUDA_CHECK_KERNEL();
 
     // If we have multiple blocks, need another reduction
     if (blocks > 1) {
         float* d_final_sum;
-        cudaMalloc(&d_final_sum, sizeof(float));
+        CUDA_CHECK(cudaMalloc(&d_final_sum, sizeof(float)));
 
         sumReductionKernel<<<1, blocks, blocks * sizeof(float)>>>(
             d_partial_sums, d_final_sum, blocks);
+        CUDA_CHECK_KERNEL();
 
         float total_heat_rate;
         cudaMemcpy(&total_heat_rate, d_final_sum, sizeof(float),
                    cudaMemcpyDeviceToHost);
 
-        cudaFree(d_final_sum);
-        cudaFree(d_partial_sums);
+        CUDA_CHECK(cudaFree(d_final_sum));
+        CUDA_CHECK(cudaFree(d_partial_sums));
 
         return total_heat_rate * dV;
     } else {
@@ -204,7 +207,7 @@ float computeTotalLaserEnergyNoCUB(
         cudaMemcpy(&total_heat_rate, d_partial_sums, sizeof(float),
                    cudaMemcpyDeviceToHost);
 
-        cudaFree(d_partial_sums);
+        CUDA_CHECK(cudaFree(d_partial_sums));
 
         return total_heat_rate * dV;
     }

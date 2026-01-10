@@ -28,6 +28,7 @@ add_cuda_test(test_boundary unit/boundary/test_boundary_conditions.cu)
 # Unit tests - Physics/Thermal
 add_cuda_test(test_lattice_d3q7 unit/thermal/test_lattice_d3q7.cu)
 add_cuda_test(test_thermal_lbm unit/thermal/test_thermal_lbm.cu)
+add_cuda_test(test_dirichlet_bc unit/thermal/test_dirichlet_bc.cu)
 
 # ============================================================================
 # STABILITY REGRESSION TESTS
@@ -63,6 +64,7 @@ add_cuda_test(test_fluid_lbm unit/fluid/test_fluid_lbm.cu)
 add_cuda_test(test_fluid_debug unit/fluid/test_fluid_debug.cu)
 add_cuda_test(test_fluid_boundaries unit/fluid/test_fluid_boundaries.cu)
 add_cuda_test(test_guo_force unit/fluid/test_guo_force.cu)
+add_cuda_test(test_moving_wall_bc unit/fluid/test_moving_wall_bc.cu)
 
 # Unit tests - Liquid Fraction Copy (verifies device-to-host transfer)
 add_cuda_test(test_liquid_fraction_copy unit/test_liquid_fraction_copy.cu)
@@ -106,6 +108,7 @@ add_cuda_test(test_vof_surface_tension unit/vof/test_vof_surface_tension.cu)
 add_cuda_test(test_vof_marangoni unit/vof/test_vof_marangoni.cu)
 add_cuda_test(test_vof_contact_angle unit/vof/test_vof_contact_angle.cu)
 add_cuda_test(test_vof_mass_conservation unit/vof/test_vof_mass_conservation.cu)
+add_cuda_test(test_vof_interface_compression unit/vof/test_vof_interface_compression.cu)
 
 # ============================================================================
 # COMPREHENSIVE VOF TEST SUITE (80% → 95% coverage target)
@@ -143,6 +146,22 @@ add_cuda_test(test_darcy_damping_solid unit/multiphysics/test_darcy_damping_soli
 
 # Unit test - Force Initialization (HIGH PRIORITY: prevents garbage value accumulation)
 add_cuda_test(test_force_initialization unit/test_force_initialization.cu)
+
+# ============================================================================
+# REGRESSION TESTS - Bug Fixes Validation
+# ============================================================================
+
+# Regression test - VOF advection bulk cell bug fix
+# CRITICAL: Tests that bulk cells (f~0 and f~1) properly propagate advected values
+# Bug: Interface compression kernel returned early without writing to output buffer
+# Fix: Added fill_level[idx] = f; before early return (vof_solver.cu:419-421)
+add_cuda_test(test_vof_advection_bulk_cells regression/test_vof_advection_bulk_cells.cu)
+
+# Regression test - Timestep convergence omega clamping
+# Tests that all timesteps in convergence study produce stable omega values
+# Bug: dt=0.5μs caused omega=1.92 (above stability limit), breaking convergence
+# Fix: Changed timesteps from {4,2,1,0.5}μs to {8,4,2,1}μs
+add_cuda_test(test_timestep_omega_clamping regression/test_timestep_omega_clamping.cu)
 
 # Debug tests - Minimal reproduction tests
 add_executable(test_fluidlbm_nan_debug debug/test_fluidlbm_nan_debug.cu)

@@ -4,6 +4,7 @@
  */
 
 #include "physics/vof_solver.h"
+#include "utils/cuda_check.h"
 #include <cuda_runtime.h>
 #include <cmath>
 #include <algorithm>
@@ -355,6 +356,175 @@ __global__ void initializeDropletKernel(
 }
 
 /**
+ * @brief Olsson-Kreiss interface compression kernel
+ *
+ * Implements the Olsson-Kreiss compression scheme to sharpen diffused interfaces
+ * and restore mass conservation after upwind advection.
+ *
+ * Physics:
+ *   ∂φ/∂t = ∇·(ε·φ·(1-φ)·n)
+ *
+ * Where:
+ *   ε = C * max(|u|, |v|, |w|) * dx   [compression coefficient]
+ *   n = -∇φ/|∇φ|                       [interface normal]
+ *   C = 0.5                            [Olsson-Kreiss constant]
+ *
+ * The compression term:
+ *   - Acts only at interfaces (φ·(1-φ) = 0 at bulk cells)
+ *   - Transports material toward interface (∇·flux)
+ *   - Counteracts numerical diffusion from upwind scheme
+ *   - Preserves mass (divergence form)
+ *
+ * Discretization:
+ *   df/dt = ∇·(ε·f·(1-f)·n)
+ *   ≈ [Fx(i+1/2) - Fx(i-1/2)]/dx + [Fy(j+1/2) - Fy(j-1/2)]/dx + [Fz(k+1/2) - Fz(k-1/2)]/dx
+ *
+ * Where flux at face i+1/2:
+ *   Fx(i+1/2) = ε · f_face · (1-f_face) · nx_face
+ *   f_face = (f[i] + f[i+1]) / 2
+ *   nx_face = -(f[i+1] - f[i]) / (|∇f| * dx)
+ *
+ * Stability:
+ *   - Only applied to interface cells (0.01 < φ < 0.99)
+ *   - CFL condition: ε·dt/dx < 0.5
+ *   - Result clamped to [0, 1]
+ *
+ * References:
+ *   - Olsson & Kreiss (2005). A conservative level set method for two phase flow.
+ *     Journal of Computational Physics, 210(1), 225-246.
+ */
+__global__ void applyInterfaceCompressionKernel(
+    float* fill_level,
+    const float* fill_level_old,
+    const float* ux,
+    const float* uy,
+    const float* uz,
+    float dx,
+    float dt,
+    float C_compress,
+    int nx, int ny, int nz)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + nx * (j + ny * k);
+
+    float f = fill_level_old[idx];
+
+    // For bulk cells (f~0 or f~1), skip compression but MUST copy advected value
+    // BUG FIX: Previously returned without writing, causing advection to not propagate
+    if (f < 0.01f || f > 0.99f) {
+        fill_level[idx] = f;  // Copy advected value to output buffer
+        return;
+    }
+
+    // ========================================================================
+    // Compute compression coefficient: ε = C * max(|u|, |v|, |w|) * dx
+    // ========================================================================
+    float u = ux[idx];
+    float v = uy[idx];
+    float w = uz[idx];
+    float u_max = fmaxf(fabsf(u), fmaxf(fabsf(v), fabsf(w)));
+    float epsilon = C_compress * u_max * dx;
+
+    // Skip compression if velocity is too small, but MUST copy advected value
+    if (u_max < 1e-8f) {
+        fill_level[idx] = fill_level_old[idx];
+        return;
+    }
+
+    // ========================================================================
+    // Periodic boundary indexing
+    // ========================================================================
+    int i_m = (i > 0) ? i - 1 : nx - 1;
+    int i_p = (i < nx - 1) ? i + 1 : 0;
+    int j_m = (j > 0) ? j - 1 : ny - 1;
+    int j_p = (j < ny - 1) ? j + 1 : 0;
+    int k_m = (k > 0) ? k - 1 : nz - 1;
+    int k_p = (k < nz - 1) ? k + 1 : 0;
+
+    int idx_xm = i_m + nx * (j + ny * k);
+    int idx_xp = i_p + nx * (j + ny * k);
+    int idx_ym = i + nx * (j_m + ny * k);
+    int idx_yp = i + nx * (j_p + ny * k);
+    int idx_zm = i + nx * (j + ny * k_m);
+    int idx_zp = i + nx * (j + ny * k_p);
+
+    // ========================================================================
+    // Compute interface normal: n = -∇φ/|∇φ|
+    // ========================================================================
+    // Using central differences
+    float grad_x = (fill_level_old[idx_xp] - fill_level_old[idx_xm]) / (2.0f * dx);
+    float grad_y = (fill_level_old[idx_yp] - fill_level_old[idx_ym]) / (2.0f * dx);
+    float grad_z = (fill_level_old[idx_zp] - fill_level_old[idx_zm]) / (2.0f * dx);
+
+    float grad_mag = sqrtf(grad_x * grad_x + grad_y * grad_y + grad_z * grad_z);
+
+    // Skip compression if gradient is too small, but MUST copy advected value
+    if (grad_mag < 1e-8f) {
+        fill_level[idx] = fill_level_old[idx];
+        return;
+    }
+
+    float nx_norm = -grad_x / grad_mag;
+    float ny_norm = -grad_y / grad_mag;
+    float nz_norm = -grad_z / grad_mag;
+
+    // ========================================================================
+    // Compute compression flux divergence: ∇·(ε·φ·(1-φ)·n)
+    // ========================================================================
+    // Using upwind-biased flux reconstruction at cell faces
+
+    // X-direction flux at i+1/2 and i-1/2
+    float f_xp = 0.5f * (fill_level_old[idx] + fill_level_old[idx_xp]);
+    float f_xm = 0.5f * (fill_level_old[idx_xm] + fill_level_old[idx]);
+
+    // Normal component at faces (using central difference approximation)
+    float nx_xp = 0.5f * (nx_norm + (-1.0f) * (fill_level_old[idx_xp] - fill_level_old[idx]) / (grad_mag * dx + 1e-10f));
+    float nx_xm = 0.5f * (nx_norm + (-1.0f) * (fill_level_old[idx] - fill_level_old[idx_xm]) / (grad_mag * dx + 1e-10f));
+
+    float Flux_xp = epsilon * f_xp * (1.0f - f_xp) * nx_xp;
+    float Flux_xm = epsilon * f_xm * (1.0f - f_xm) * nx_xm;
+
+    // Y-direction flux at j+1/2 and j-1/2
+    float f_yp = 0.5f * (fill_level_old[idx] + fill_level_old[idx_yp]);
+    float f_ym = 0.5f * (fill_level_old[idx_ym] + fill_level_old[idx]);
+
+    float ny_yp = 0.5f * (ny_norm + (-1.0f) * (fill_level_old[idx_yp] - fill_level_old[idx]) / (grad_mag * dx + 1e-10f));
+    float ny_ym = 0.5f * (ny_norm + (-1.0f) * (fill_level_old[idx] - fill_level_old[idx_ym]) / (grad_mag * dx + 1e-10f));
+
+    float Flux_yp = epsilon * f_yp * (1.0f - f_yp) * ny_yp;
+    float Flux_ym = epsilon * f_ym * (1.0f - f_ym) * ny_ym;
+
+    // Z-direction flux at k+1/2 and k-1/2
+    float f_zp = 0.5f * (fill_level_old[idx] + fill_level_old[idx_zp]);
+    float f_zm = 0.5f * (fill_level_old[idx_zm] + fill_level_old[idx]);
+
+    float nz_zp = 0.5f * (nz_norm + (-1.0f) * (fill_level_old[idx_zp] - fill_level_old[idx]) / (grad_mag * dx + 1e-10f));
+    float nz_zm = 0.5f * (nz_norm + (-1.0f) * (fill_level_old[idx] - fill_level_old[idx_zm]) / (grad_mag * dx + 1e-10f));
+
+    float Flux_zp = epsilon * f_zp * (1.0f - f_zp) * nz_zp;
+    float Flux_zm = epsilon * f_zm * (1.0f - f_zm) * nz_zm;
+
+    // Divergence: ∇·F = (Fx+ - Fx-)/dx + (Fy+ - Fy-)/dx + (Fz+ - Fz-)/dx
+    float div_flux = ((Flux_xp - Flux_xm) + (Flux_yp - Flux_ym) + (Flux_zp - Flux_zm)) / dx;
+
+    // ========================================================================
+    // Time integration: φ^{n+1} = φ^n + dt * ∇·(ε·φ·(1-φ)·n)
+    // ========================================================================
+    float f_new = fill_level_old[idx] + dt * div_flux;
+
+    // Flush tiny values to zero
+    if (f_new < 1e-6f) f_new = 0.0f;
+
+    // Clamp to [0, 1] to maintain physical bounds
+    fill_level[idx] = fminf(1.0f, fmaxf(0.0f, f_new));
+}
+
+/**
  * @brief Mass reduction kernel for conservation check
  */
 __global__ void computeMassReductionKernel(
@@ -473,8 +643,9 @@ void VOFSolver::initializeDroplet(float center_x, float center_y,
 
     initializeDropletKernel<<<gridSize, blockSize>>>(
         d_fill_level_, center_x, center_y, center_z, radius, nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update cell flags and interface properties
     convertCells();
@@ -494,9 +665,9 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     const int sample_size = std::min(top_layer_size, num_cells_ - top_layer_offset);
 
     std::vector<float> h_ux(sample_size), h_uy(sample_size), h_uz(sample_size);
-    cudaMemcpy(h_ux.data(), velocity_x + top_layer_offset, sample_size * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_uy.data(), velocity_y + top_layer_offset, sample_size * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_uz.data(), velocity_z + top_layer_offset, sample_size * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_ux.data(), velocity_x + top_layer_offset, sample_size * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_uy.data(), velocity_y + top_layer_offset, sample_size * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_uz.data(), velocity_z + top_layer_offset, sample_size * sizeof(float), cudaMemcpyDeviceToHost));
 
     float v_max = 0.0f;
     for (int i = 0; i < sample_size; ++i) {
@@ -528,17 +699,41 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
                   (ny_ + blockSize.y - 1) / blockSize.y,
                   (nz_ + blockSize.z - 1) / blockSize.z);
 
+    // ========================================================================
+    // STEP 1: Upwind advection (diffusive but stable)
+    // ========================================================================
     advectFillLevelUpwindKernel<<<gridSize, blockSize>>>(
         d_fill_level_, d_fill_level_tmp_, velocity_x, velocity_y, velocity_z,
         dt, dx_, nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    // IMPORTANT: Synchronize BEFORE swapping buffers to ensure kernel completion
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
-    // Swap buffers (safe now that kernel has completed)
-    float* tmp = d_fill_level_;
-    d_fill_level_ = d_fill_level_tmp_;
-    d_fill_level_tmp_ = tmp;
+    // ========================================================================
+    // STEP 2: Interface compression (Olsson-Kreiss)
+    // ========================================================================
+    // This step counteracts the numerical diffusion from upwind advection,
+    // restoring sharp interfaces and improving mass conservation.
+    //
+    // Compression coefficient: C = 0.5 (standard Olsson-Kreiss value)
+    // Higher C = stronger compression, but may cause oscillations if > 1.0
+    // Lower C = weaker compression, more diffusion remains
+    //
+    // The compression step is applied to the advected field (d_fill_level_tmp_)
+    // and writes the compressed result back to d_fill_level_
+    float C_compress = 0.5f;
+
+    applyInterfaceCompressionKernel<<<gridSize, blockSize>>>(
+        d_fill_level_,      // output: compressed field
+        d_fill_level_tmp_,  // input: advected (diffused) field
+        velocity_x, velocity_y, velocity_z,
+        dx_, dt, C_compress, nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // NOTE: No buffer swap needed here because compression kernel
+    // already wrote directly to d_fill_level_ (the main field)
 }
 
 void VOFSolver::reconstructInterface() {
@@ -549,8 +744,9 @@ void VOFSolver::reconstructInterface() {
 
     reconstructInterfaceKernel<<<gridSize, blockSize>>>(
         d_fill_level_, d_interface_normal_, dx_, nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void VOFSolver::computeCurvature() {
@@ -561,8 +757,9 @@ void VOFSolver::computeCurvature() {
 
     computeCurvatureKernel<<<gridSize, blockSize>>>(
         d_fill_level_, d_interface_normal_, d_curvature_, dx_, nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void VOFSolver::convertCells() {
@@ -573,8 +770,9 @@ void VOFSolver::convertCells() {
 
     convertCellsKernel<<<gridSize, blockSize>>>(
         d_fill_level_, d_cell_flags_, eps, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void VOFSolver::applyBoundaryConditions(int boundary_type, float contact_angle) {
@@ -592,8 +790,9 @@ void VOFSolver::applyBoundaryConditions(int boundary_type, float contact_angle) 
 
         applyContactAngleBoundaryKernel<<<gridSize, blockSize>>>(
             d_interface_normal_, d_cell_flags_, contact_angle, nx_, ny_, nz_);
+        CUDA_CHECK_KERNEL();
 
-        cudaDeviceSynchronize();
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
 }
 
@@ -618,11 +817,12 @@ float VOFSolver::computeTotalMass() const {
 
     // Allocate partial sums
     float* d_partial_sums;
-    cudaMalloc(&d_partial_sums, gridSize * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_partial_sums, gridSize * sizeof(float)));
 
     // First reduction: compute partial sums
     computeMassReductionKernel<<<gridSize, blockSize, blockSize * sizeof(float)>>>(
         d_fill_level_, d_partial_sums, num_cells_);
+    CUDA_CHECK_KERNEL();
 
     // Copy partial sums to host and finish reduction on CPU
     std::vector<float> h_partial_sums(gridSize);
@@ -729,7 +929,8 @@ void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float d
     applyEvaporationMassLossKernel<<<gridSize, blockSize>>>(
         d_fill_level_, J_evap, rho, dx_, dt, nx_, ny_, nz_
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Diagnostic: Print evaporation mass loss info periodically
     static int evap_call_count = 0;
@@ -738,7 +939,7 @@ void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float d
         int top_layer_start = (nz_ - 1) * nx_ * ny_;
         int sample_size = std::min(nx_ * ny_, 10000);
         std::vector<float> h_J(sample_size);
-        cudaMemcpy(h_J.data(), J_evap + top_layer_start, sample_size * sizeof(float), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(h_J.data(), J_evap + top_layer_start, sample_size * sizeof(float), cudaMemcpyDeviceToHost));
 
         float max_J = 0.0f;
         int active_cells = 0;
@@ -884,8 +1085,9 @@ void VOFSolver::applySolidificationShrinkage(const float* dfl_dt, float beta, fl
 
     applySolidificationShrinkageKernel<<<blocks, threads>>>(
         d_fill_level_, dfl_dt, beta, dx, dt, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 } // namespace physics

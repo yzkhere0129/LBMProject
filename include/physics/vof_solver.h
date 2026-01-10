@@ -353,5 +353,37 @@ __global__ void applySolidificationShrinkageKernel(
     float dt,
     int num_cells);
 
+/**
+ * @brief CUDA kernel for Olsson-Kreiss interface compression
+ * @param fill_level Output compressed fill level field [0-1]
+ * @param fill_level_old Input fill level field after advection [0-1]
+ * @param ux Velocity field x-component [m/s] (device pointer)
+ * @param uy Velocity field y-component [m/s] (device pointer)
+ * @param uz Velocity field z-component [m/s] (device pointer)
+ * @param dx Lattice spacing [m]
+ * @param dt Time step [s]
+ * @param C_compress Compression coefficient (typically 0.5)
+ * @param nx, ny, nz Grid dimensions
+ *
+ * @note Implements: ∂φ/∂t = ∇·(ε·φ·(1-φ)·n) where ε = C * |u|_max * dx
+ * @note Only acts on interface cells (0.01 < φ < 0.99)
+ * @note Counteracts numerical diffusion from upwind advection
+ * @note Preserves mass through conservative divergence formulation
+ *
+ * References:
+ *   - Olsson & Kreiss (2005). A conservative level set method for two phase flow.
+ *     Journal of Computational Physics, 210(1), 225-246.
+ */
+__global__ void applyInterfaceCompressionKernel(
+    float* fill_level,
+    const float* fill_level_old,
+    const float* ux,
+    const float* uy,
+    const float* uz,
+    float dx,
+    float dt,
+    float C_compress,
+    int nx, int ny, int nz);
+
 } // namespace physics
 } // namespace lbm

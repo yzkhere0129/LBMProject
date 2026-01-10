@@ -111,3 +111,7 @@ backups/
 # Generated images and templates
 *.png
 *.template
+
+# Build directories
+build_test/
+benchmark/

@@ -6,6 +6,7 @@
 #include "diagnostics/energy_balance.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace diagnostics {
@@ -197,6 +198,7 @@ void computeThermalEnergy(
 {
     // Initialize result to zero
     initializeReductionKernel<<<1, 1>>>(d_result);
+    CUDA_CHECK_KERNEL();
 
     // Launch kernel with 3D grid
     dim3 block(8, 8, 8);
@@ -210,6 +212,7 @@ void computeThermalEnergy(
         T, f_liquid, rho, cp_solid, cp_liquid, dx, T_ref,
         nx, ny, nz, d_result
     );
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -229,6 +232,7 @@ void computeKineticEnergy(
 {
     // Initialize result to zero
     initializeReductionKernel<<<1, 1>>>(d_result);
+    CUDA_CHECK_KERNEL();
 
     // Launch kernel with 3D grid
     dim3 block(8, 8, 8);
@@ -242,6 +246,7 @@ void computeKineticEnergy(
         ux, uy, uz, rho, dx,
         nx, ny, nz, d_result
     );
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -260,6 +265,7 @@ void computeLatentEnergy(
 {
     // Initialize result to zero
     initializeReductionKernel<<<1, 1>>>(d_result);
+    CUDA_CHECK_KERNEL();
 
     // Launch kernel with 3D grid
     dim3 block(8, 8, 8);
@@ -273,6 +279,7 @@ void computeLatentEnergy(
         f_liquid, rho, L_fusion, dx,
         nx, ny, nz, d_result
     );
+    CUDA_CHECK_KERNEL();
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {

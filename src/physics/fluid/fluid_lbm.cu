@@ -6,9 +6,11 @@
 #include "physics/fluid_lbm.h"
 #include "core/collision_bgk.h"
 #include "core/streaming.h"
+#include "core/boundary_conditions.h"
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+#include "utils/cuda_check.h"
 
 namespace lbm {
 namespace physics {
@@ -16,7 +18,7 @@ namespace physics {
 using namespace lbm::core;
 
 // Forward declarations of CUDA kernels
-__global__ void setWallVelocityZeroKernel(
+__global__ void setBoundaryVelocityKernel(
     float* ux, float* uy, float* uz,
     const BoundaryNode* boundary_nodes,
     int n_boundary, int nx, int ny, int nz);
@@ -185,34 +187,34 @@ void FluidLBM::initialize(float initial_density,
     }
 
     // Copy to device
-    cudaMemcpy(d_f_src, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_f_dst, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_f_src, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_f_dst, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice));
 
     delete[] h_f;
 
     // Initialize macroscopic quantities
     float* h_macro = new float[num_cells_];
     std::fill(h_macro, h_macro + num_cells_, initial_density);
-    cudaMemcpy(d_rho, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_rho, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
 
     std::fill(h_macro, h_macro + num_cells_, initial_ux);
-    cudaMemcpy(d_ux, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_ux, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
 
     std::fill(h_macro, h_macro + num_cells_, initial_uy);
-    cudaMemcpy(d_uy, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_uy, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
 
     std::fill(h_macro, h_macro + num_cells_, initial_uz);
-    cudaMemcpy(d_uz, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_uz, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
 
     // Initialize pressure: p = cs²(ρ - ρ₀)
     for (int id = 0; id < num_cells_; ++id) {
         h_macro[id] = D3Q19::CS2 * (initial_density - rho0_);
     }
-    cudaMemcpy(d_pressure, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_pressure, h_macro, num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
 
     delete[] h_macro;
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // Initialize with custom distribution
@@ -221,10 +223,10 @@ void FluidLBM::initialize(const float* density,
                          const float* uy,
                          const float* uz) {
     // Copy macroscopic quantities to device
-    cudaMemcpy(d_rho, density, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(d_ux, ux, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(d_uy, uy, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(d_uz, uz, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
+    CUDA_CHECK(cudaMemcpy(d_rho, density, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(d_ux, ux, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(d_uy, uy, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(d_uz, uz, num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice));
 
     // Copy to host to initialize distribution functions
     float* h_rho = new float[num_cells_];
@@ -232,10 +234,10 @@ void FluidLBM::initialize(const float* density,
     float* h_uy = new float[num_cells_];
     float* h_uz = new float[num_cells_];
 
-    cudaMemcpy(h_rho, density, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_ux, ux, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_uy, uy, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_uz, uz, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_rho, density, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_ux, ux, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_uy, uy, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_uz, uz, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Initialize distribution functions
     size_t f_size = num_cells_ * D3Q19::Q;
@@ -248,15 +250,15 @@ void FluidLBM::initialize(const float* density,
         }
     }
 
-    cudaMemcpy(d_f_src, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_f_dst, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_f_src, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_f_dst, h_f, f_size * sizeof(float), cudaMemcpyHostToDevice));
 
     // Compute pressure
     float* h_pressure = new float[num_cells_];
     for (int id = 0; id < num_cells_; ++id) {
         h_pressure[id] = D3Q19::CS2 * (h_rho[id] - rho0_);
     }
-    cudaMemcpy(d_pressure, h_pressure, num_cells_ * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_pressure, h_pressure, num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
 
     delete[] h_f;
     delete[] h_rho;
@@ -265,7 +267,7 @@ void FluidLBM::initialize(const float* density,
     delete[] h_uz;
     delete[] h_pressure;
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // Collision with uniform force
@@ -279,8 +281,9 @@ void FluidLBM::collisionBGK(float force_x, float force_y, float force_z) {
         d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
         force_x, force_y, force_z, omega_,
         nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
     cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) {
         throw std::runtime_error("FluidLBM collision kernel failed: " +
@@ -303,8 +306,9 @@ void FluidLBM::collisionBGK(const float* force_x,
         d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
         force_x, force_y, force_z, omega_,
         nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
     cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) {
         throw std::runtime_error("FluidLBM collision kernel (varying force) failed: " +
@@ -330,6 +334,7 @@ void FluidLBM::streaming() {
         // Use periodic streaming kernel
         fluidStreamingKernel<<<grid, block>>>(
             d_f_src, d_f_dst, nx_, ny_, nz_);
+        CUDA_CHECK_KERNEL();
     } else {
         // Use boundary-aware streaming kernel
         int periodic_x = (boundary_x_ == BoundaryType::PERIODIC) ? 1 : 0;
@@ -339,9 +344,10 @@ void FluidLBM::streaming() {
         fluidStreamingKernelWithWalls<<<grid, block>>>(
             d_f_src, d_f_dst, nx_, ny_, nz_,
             periodic_x, periodic_y, periodic_z);
+        CUDA_CHECK_KERNEL();
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
     cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) {
         throw std::runtime_error("FluidLBM streaming kernel failed: " +
@@ -358,18 +364,21 @@ void FluidLBM::applyBoundaryConditions(int boundary_type) {
         return;
     }
 
-    // Apply bounce-back boundary conditions on wall boundaries
+    // Apply all boundary conditions using unified kernel
+    // This handles BOUNCE_BACK, VELOCITY, and other BC types
     int block_size = 256;
     int grid_size = (n_boundary_nodes_ + block_size - 1) / block_size;
 
-    applyBounceBackKernel<<<grid_size, block_size>>>(
+    applyBoundaryConditionsKernel<<<grid_size, block_size>>>(
         d_f_src,
+        d_rho,
         d_boundary_nodes_,
         n_boundary_nodes_,
         nx_, ny_, nz_
     );
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
     cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) {
         throw std::runtime_error("FluidLBM applyBoundaryConditions failed: " +
@@ -384,23 +393,28 @@ void FluidLBM::computeMacroscopic() {
 
     computeMacroscopicKernel<<<grid_size, block_size>>>(
         d_f_src, d_rho, d_ux, d_uy, d_uz, num_cells_);
+    CUDA_CHECK_KERNEL();
 
     // Compute pressure
     computePressureKernel<<<grid_size, block_size>>>(
         d_rho, d_pressure, rho0_, D3Q19::CS2, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    // Enforce zero velocity at wall nodes (no-slip condition)
+    // Enforce correct velocity at boundary nodes
+    // - BOUNCE_BACK: zero velocity (no-slip)
+    // - VELOCITY: prescribed wall velocity
     if (n_boundary_nodes_ > 0) {
         int wall_grid_size = (n_boundary_nodes_ + block_size - 1) / block_size;
-        setWallVelocityZeroKernel<<<wall_grid_size, block_size>>>(
+        setBoundaryVelocityKernel<<<wall_grid_size, block_size>>>(
             d_ux, d_uy, d_uz,
             d_boundary_nodes_,
             n_boundary_nodes_,
             nx_, ny_, nz_
         );
+        CUDA_CHECK_KERNEL();
     }
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // Compute buoyancy force
@@ -421,8 +435,9 @@ void FluidLBM::computeBuoyancyForce(const float* temperature,
         T_ref, beta, rho0_,
         gravity_x, gravity_y, gravity_z,
         num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // Apply Darcy damping
@@ -438,31 +453,32 @@ void FluidLBM::applyDarcyDamping(const float* liquid_fraction,
         liquid_fraction, d_ux, d_uy, d_uz,
         force_x, force_y, force_z,
         darcy_constant, num_cells_);
+    CUDA_CHECK_KERNEL();
 
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // Copy velocity to host
 void FluidLBM::copyVelocityToHost(float* host_ux, float* host_uy, float* host_uz) const {
     if (host_ux != nullptr) {
-        cudaMemcpy(host_ux, d_ux, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(host_ux, d_ux, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
     }
     if (host_uy != nullptr) {
-        cudaMemcpy(host_uy, d_uy, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(host_uy, d_uy, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
     }
     if (host_uz != nullptr) {
-        cudaMemcpy(host_uz, d_uz, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(host_uz, d_uz, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
     }
 }
 
 // Copy density to host
 void FluidLBM::copyDensityToHost(float* host_rho) const {
-    cudaMemcpy(host_rho, d_rho, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(host_rho, d_rho, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
 // Copy pressure to host
 void FluidLBM::copyPressureToHost(float* host_pressure) const {
-    cudaMemcpy(host_pressure, d_pressure, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(host_pressure, d_pressure, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
 // Compute Reynolds number
@@ -580,7 +596,7 @@ void FluidLBM::initializeBoundaryNodes() {
 
     // Allocate and copy to device if we have boundary nodes
     if (n_boundary_nodes_ > 0) {
-        cudaMalloc(&d_boundary_nodes_, n_boundary_nodes_ * sizeof(BoundaryNode));
+        CUDA_CHECK(cudaMalloc(&d_boundary_nodes_, n_boundary_nodes_ * sizeof(BoundaryNode)));
         cudaMemcpy(d_boundary_nodes_, h_boundary_nodes.data(),
                    n_boundary_nodes_ * sizeof(BoundaryNode),
                    cudaMemcpyHostToDevice);
@@ -598,6 +614,82 @@ void FluidLBM::swapDistributions() {
     float* temp = d_f_src;
     d_f_src = d_f_dst;
     d_f_dst = temp;
+}
+
+// Set moving wall boundary condition
+void FluidLBM::setMovingWall(unsigned int wall_direction,
+                             float ux_wall,
+                             float uy_wall,
+                             float uz_wall) {
+    // Copy boundary nodes to host for modification
+    std::vector<core::BoundaryNode> h_boundary_nodes(n_boundary_nodes_);
+    if (n_boundary_nodes_ > 0) {
+        CUDA_CHECK(cudaMemcpy(h_boundary_nodes.data(), d_boundary_nodes_,
+                             n_boundary_nodes_ * sizeof(core::BoundaryNode),
+                             cudaMemcpyDeviceToHost));
+    }
+
+    // Modify boundary nodes matching the specified wall direction
+    // EXCLUDE corner nodes that are also on other (non-periodic) walls
+    // Use position-based corner detection since boundary nodes may be stored separately
+    int modified_count = 0;
+    int excluded_corners = 0;
+    for (auto& node : h_boundary_nodes) {
+        // Check if this node is on the specified wall
+        if (node.directions & wall_direction) {
+            // Check if this is a corner node by examining position
+            bool is_corner = false;
+
+            // Check if node is at an x-boundary (when x walls are not periodic)
+            if (boundary_x_ == BoundaryType::WALL) {
+                if (node.x == 0 || node.x == nx_ - 1) {
+                    is_corner = true;
+                }
+            }
+            // Check if node is at a y-boundary (when y walls are not periodic)
+            if (boundary_y_ == BoundaryType::WALL) {
+                if (node.y == 0 || node.y == ny_ - 1) {
+                    // Only counts as corner if this isn't the moving wall direction
+                    if (!(wall_direction & Streaming::BOUNDARY_Y_MIN) && node.y == 0) {
+                        is_corner = true;
+                    }
+                    if (!(wall_direction & Streaming::BOUNDARY_Y_MAX) && node.y == ny_ - 1) {
+                        is_corner = true;
+                    }
+                }
+            }
+            // Check if node is at a z-boundary (when z walls are not periodic)
+            if (boundary_z_ == BoundaryType::WALL) {
+                if (node.z == 0 || node.z == nz_ - 1) {
+                    is_corner = true;
+                }
+            }
+
+            if (!is_corner) {
+                // Interior wall node: apply velocity BC
+                node.type = core::BoundaryType::VELOCITY;
+                node.ux = ux_wall;
+                node.uy = uy_wall;
+                node.uz = uz_wall;
+                modified_count++;
+            } else {
+                // Corner node: keep as bounce-back to avoid singularity
+                excluded_corners++;
+            }
+        }
+    }
+
+    // Copy modified boundary nodes back to device
+    if (n_boundary_nodes_ > 0) {
+        CUDA_CHECK(cudaMemcpy(d_boundary_nodes_, h_boundary_nodes.data(),
+                             n_boundary_nodes_ * sizeof(core::BoundaryNode),
+                             cudaMemcpyHostToDevice));
+    }
+
+    std::cout << "FluidLBM: Set moving wall BC on " << modified_count
+              << " nodes with velocity (" << ux_wall << ", "
+              << uy_wall << ", " << uz_wall << ")"
+              << " (" << excluded_corners << " corner nodes excluded)" << std::endl;
 }
 
 //=============================================================================
@@ -1011,8 +1103,10 @@ __global__ void applyDarcyDampingKernel(
     force_z[id] += damping_factor * uz[id];
 }
 
-// Set wall velocity to zero (enforce no-slip condition on velocity field)
-__global__ void setWallVelocityZeroKernel(
+// Enforce correct velocity at boundary nodes
+// - BOUNCE_BACK: zero velocity (no-slip)
+// - VELOCITY: prescribed wall velocity
+__global__ void setBoundaryVelocityKernel(
     float* ux,
     float* uy,
     float* uz,
@@ -1024,14 +1118,20 @@ __global__ void setWallVelocityZeroKernel(
     if (bid >= n_boundary) return;
 
     core::BoundaryNode node = boundary_nodes[bid];
-    if (node.type != core::BoundaryType::BOUNCE_BACK) return;
-
     int id = node.x + node.y * nx + node.z * nx * ny;
 
-    // Explicitly enforce zero velocity at wall nodes
-    ux[id] = 0.0f;
-    uy[id] = 0.0f;
-    uz[id] = 0.0f;
+    if (node.type == core::BoundaryType::BOUNCE_BACK) {
+        // Explicitly enforce zero velocity at no-slip wall nodes
+        ux[id] = 0.0f;
+        uy[id] = 0.0f;
+        uz[id] = 0.0f;
+    }
+    else if (node.type == core::BoundaryType::VELOCITY) {
+        // Explicitly enforce prescribed velocity at moving wall nodes
+        ux[id] = node.ux;
+        uy[id] = node.uy;
+        uz[id] = node.uz;
+    }
 }
 
 } // namespace physics
