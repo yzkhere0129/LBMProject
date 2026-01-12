@@ -931,7 +931,24 @@ void MultiphysicsSolver::step(float dt) {
         thermalStep(dt);
     }
 
-    // Step 3: VOF interface management
+    // ========================================================================
+    // Step 3: Fluid flow
+    // ========================================================================
+    // CRITICAL FIX: Moved BEFORE VOF advection so VOF sees updated velocities
+    //
+    // Previous bug: VOF was reading velocities from previous timestep
+    //   Order was: Laser → Thermal → VOF → Fluid
+    //   VOF would read old velocities, resulting in v_max=0.0 in diagnostics
+    //
+    // Correct order: Laser → Thermal → Fluid → VOF
+    //   VOF now reads current timestep velocities
+    //   This is physically correct: velocity drives interface advection
+    // ========================================================================
+    if (config_.enable_fluid && fluid_) {
+        fluidStep(dt);
+    }
+
+    // Step 4: VOF interface management
     if (vof_) {
         if (config_.enable_vof_advection) {
             // Full VOF with advection
@@ -986,11 +1003,6 @@ void MultiphysicsSolver::step(float dt) {
                        current_step_, evap_cells, max_J);
             }
         }
-    }
-
-    // Step 4: Fluid flow
-    if (config_.enable_fluid && fluid_) {
-        fluidStep(dt);
     }
 
     current_time_ += dt;
@@ -1230,6 +1242,7 @@ void MultiphysicsSolver::vofStep(float dt) {
 
     // Diagnostic: print velocity conversion info on first call
     static bool first_call = true;
+    static int diag_count = 0;
     if (first_call) {
         first_call = false;
         std::cout << "[VOF UNIT FIX] Velocity unit conversion enabled:\n";
@@ -1237,6 +1250,41 @@ void MultiphysicsSolver::vofStep(float dt) {
         std::cout << "  dt = " << config_.dt << " s\n";
         std::cout << "  conversion factor = " << velocity_conversion << " m/s per lattice unit\n";
     }
+
+    // DIAGNOSTIC: Verify converted velocity buffers are non-zero
+    if (diag_count % 500 == 0 && diag_count < 5000) {
+        // Sample top layer to compare with VOF diagnostic
+        const int top_layer_size = config_.nx * config_.ny;
+        const int top_layer_offset = (config_.nz - 1) * config_.nx * config_.ny;
+        const int sample_size = std::min(top_layer_size, 10000);
+
+        std::vector<float> h_ux_lattice(sample_size), h_ux_phys(sample_size);
+        CUDA_CHECK(cudaMemcpy(h_ux_lattice.data(), fluid_->getVelocityX() + top_layer_offset,
+                              sample_size * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_ux_phys.data(), d_velocity_physical_x_ + top_layer_offset,
+                              sample_size * sizeof(float), cudaMemcpyDeviceToHost));
+
+        float v_max_lattice = 0.0f, v_max_phys = 0.0f;
+        for (int i = 0; i < sample_size; ++i) {
+            v_max_lattice = std::max(v_max_lattice, std::abs(h_ux_lattice[i]));
+            v_max_phys = std::max(v_max_phys, std::abs(h_ux_phys[i]));
+        }
+
+        printf("[VELOCITY CONVERSION CHECK] Call %d:\n", diag_count);
+        printf("  Lattice velocity (LBM):  v_max = %.6f (dimensionless)\n", v_max_lattice);
+        printf("  Physical velocity (VOF): v_max = %.6f m/s (%.2f mm/s)\n", v_max_phys, v_max_phys * 1000);
+        printf("  Expected conversion:     %.6f * %.2f = %.6f m/s\n",
+               v_max_lattice, velocity_conversion, v_max_lattice * velocity_conversion);
+
+        if (v_max_phys < 1e-10f && v_max_lattice > 1e-6f) {
+            printf("  ERROR: Conversion kernel FAILED - physical velocity is zero despite non-zero lattice velocity!\n");
+        } else if (std::abs(v_max_phys - v_max_lattice * velocity_conversion) > 1e-4f) {
+            printf("  WARNING: Conversion mismatch detected!\n");
+        } else {
+            printf("  OK: Conversion successful\n");
+        }
+    }
+    diag_count++;
 
     // ========================================================================
     // DIAGNOSTIC: Track fill_level changes to debug static surface issue

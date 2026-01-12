@@ -112,8 +112,12 @@ public:
      * @param dsigma_dT Temperature coefficient of surface tension [N/(m·K)]
      * @param nx, ny, nz Grid dimensions
      * @param dx Lattice spacing [m]
-     * @param h_interface Interface thickness [cells] (typically 2.0)
-     * @note Adds F_m = (dσ/dT · ∇T) × n [N/m³]
+     * @param h_interface Interface thickness [lattice cells] - used for CSF normalization
+     * @note Adds F_m = (dσ/dT) · ∇_s T · |∇f| / h [N/m³]
+     * @note FIX (2026-01-12): h_interface provides proper CSF delta function normalization
+     *       For sharp interfaces (tests): h=2-3 cells
+     *       For smooth VOF interfaces (production): h=4-6 cells
+     *       This ensures ∫ δ(interface) dy ≈ 1 for correct surface-to-volume force conversion
      */
     void addMarangoniForce(const float* temperature, const float* fill_level,
                            const float3* normals, float dsigma_dT,

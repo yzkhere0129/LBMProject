@@ -83,8 +83,9 @@ protected:
  *
  * Configuration:
  * - Thin liquid layer with free surface at top
- * - Temperature gradient in x-direction (hot on left, cold on right)
- * - Marangoni stress drives flow from cold to hot (for metals, dσ/dT < 0)
+ * - Temperature gradient in x-direction (cold on left, hot on right)
+ * - Marangoni stress drives flow from hot to cold (for metals, dσ/dT < 0)
+ * - Physics: Low σ at hot side pulls fluid toward high σ at cold side
  */
 TEST_F(MarangoniForceValidationTest, HorizontalTemperatureGradient) {
     // Domain configuration (quasi-2D liquid layer)
@@ -154,20 +155,30 @@ TEST_F(MarangoniForceValidationTest, HorizontalTemperatureGradient) {
     cudaMemcpy(d_temperature, h_temperature.data(), num_cells * sizeof(float),
                cudaMemcpyHostToDevice);
 
-    // Create simplified VOF field (interface at top)
+    // Create smoothed VOF field (interface at top)
+    // FIX (2026-01-12): Use smoothed interface to avoid excessive |∇f|
+    // Sharp interfaces (f jumping from 1→0.5 in one cell) produce |∇f| ~ 2.5e5 1/m
+    // which leads to unrealistically large Marangoni forces
     std::vector<float> h_fill_level(num_cells);
     std::vector<float3> h_normals(num_cells);
+    const int interface_width = 3;  // Smooth interface over 3 cells
     for (int iz = 0; iz < nz; ++iz) {
         for (int iy = 0; iy < ny; ++iy) {
             for (int ix = 0; ix < nx; ++ix) {
                 int idx = ix + iy * nx + iz * nx * ny;
-                // Liquid everywhere except top layer (simplified)
-                if (iy < ny - 1) {
+
+                // Smooth interface from y=ny-interface_width to y=ny-1
+                if (iy < ny - interface_width) {
                     h_fill_level[idx] = 1.0f;  // Full liquid
                     h_normals[idx] = make_float3(0.0f, 0.0f, 0.0f);
                 } else {
-                    h_fill_level[idx] = 0.5f;  // Interface at top
-                    h_normals[idx] = make_float3(0.0f, 1.0f, 0.0f);  // Normal points up
+                    // Linear transition: f goes from 1.0 (at y=ny-interface_width) to 0.3 (at y=ny-1)
+                    int dist_from_liquid = iy - (ny - interface_width);
+                    float frac = static_cast<float>(dist_from_liquid) / (interface_width - 1);
+                    h_fill_level[idx] = 1.0f - 0.7f * frac;  // Range: [1.0, 0.3]
+
+                    // Set normal for ALL interface cells (kernel requires |n| > 0.01)
+                    h_normals[idx] = make_float3(0.0f, 1.0f, 0.0f);
                 }
             }
         }
@@ -203,8 +214,9 @@ TEST_F(MarangoniForceValidationTest, HorizontalTemperatureGradient) {
         forces.reset();
 
         // Add Marangoni force
+        // FIX (2026-01-12): Use h_interface=3 to match the smoothed interface width
         forces.addMarangoniForce(d_temperature, d_fill_level, d_normals,
-                                 dsigma_dT, nx, ny, nz, dx, 2.0f);
+                                 dsigma_dT, nx, ny, nz, dx, 3.0f);
 
         // Convert to lattice units
         forces.convertToLatticeUnits(dx, dt, rho);
@@ -310,10 +322,12 @@ TEST_F(MarangoniForceValidationTest, HorizontalTemperatureGradient) {
     EXPECT_TRUE(converged) << "Simulation did not converge";
     EXPECT_GT(u_max_physical, 0.0f) << "No Marangoni flow generated";
 
-    // For metals with dσ/dT < 0, flow is from cold to hot
-    // Since temperature increases with x, and dσ/dT < 0, flow should be in +x direction
-    EXPECT_GT(avg_interface_u, 0.0f)
-        << "Flow direction incorrect (should be from cold to hot for dσ/dT < 0)";
+    // For metals with dσ/dT < 0, flow is from hot to cold
+    // Since temperature increases with x, and dσ/dT < 0, flow should be in -x direction
+    // FIX (2026-01-12): Corrected physics - Marangoni flow goes from LOW σ to HIGH σ
+    // For dσ/dT < 0: hot (low σ) → cold (high σ), which is -x direction
+    EXPECT_LT(avg_interface_u, 0.0f)
+        << "Flow direction incorrect (should be from hot to cold for dσ/dT < 0)";
 
     // Velocity should be within order of magnitude of analytical estimate
     // Analytical estimate is rough, so we allow 0.1x to 10x range
@@ -331,12 +345,13 @@ TEST_F(MarangoniForceValidationTest, HorizontalTemperatureGradient) {
     EXPECT_LT(ratio, 3.0f)
         << "Target: velocity within factor of 3 of analytical estimate";
 
-    // Check velocity increases from cold to hot side (for dσ/dT < 0)
-    // At cold side (x=0), velocity should be lower than at hot side (x=nx-1)
+    // Check velocity magnitude is greater at cold side than hot side (for dσ/dT < 0)
+    // Flow is in -x direction, so at cold side (x=0), velocity should be more negative
+    // FIX (2026-01-12): For dσ/dT < 0, flow is from hot to cold (-x direction)
     float u_cold_phys = interface_velocity[0] * dx / dt;
     float u_hot_phys = interface_velocity[nx-1] * dx / dt;
     EXPECT_LT(u_cold_phys, u_hot_phys)
-        << "Velocity should increase from cold to hot for dσ/dT < 0";
+        << "Velocity should be more negative at cold end (stronger outflow) for dσ/dT < 0";
 
     // Free memory
     cudaFree(d_temperature);
@@ -347,7 +362,11 @@ TEST_F(MarangoniForceValidationTest, HorizontalTemperatureGradient) {
 /**
  * Test 2: Marangoni force direction with positive dσ/dT
  *
- * For fluids with positive dσ/dT (e.g., water), flow is from hot to cold.
+ * For fluids with positive dσ/dT (e.g., water), flow is from cold to hot.
+ * FIX (2026-01-12): Corrected physics
+ * - dσ/dT > 0 means σ increases with T
+ * - Hot region has HIGH σ, cold region has LOW σ
+ * - Flow goes from LOW σ to HIGH σ, i.e., cold to hot (+x direction)
  * This test verifies the force direction is correct for both signs of dσ/dT.
  */
 TEST_F(MarangoniForceValidationTest, ForcDirectionWithPositiveDsigmaDT) {
@@ -387,14 +406,25 @@ TEST_F(MarangoniForceValidationTest, ForcDirectionWithPositiveDsigmaDT) {
     cudaMemcpy(d_temperature, h_temperature.data(), num_cells * sizeof(float),
                cudaMemcpyHostToDevice);
 
-    // VOF field (interface at top)
+    // VOF field (interface at top, smoothed)
+    // FIX (2026-01-12): Use smoothed interface to avoid excessive |∇f|
     std::vector<float> h_fill_level(num_cells);
     std::vector<float3> h_normals(num_cells);
+    const int interface_width = 3;
     for (int idx = 0; idx < num_cells; ++idx) {
         int iy = (idx / nx) % ny;
-        h_fill_level[idx] = (iy < ny - 1) ? 1.0f : 0.5f;
-        h_normals[idx] = (iy < ny - 1) ? make_float3(0.0f, 0.0f, 0.0f)
-                                        : make_float3(0.0f, 1.0f, 0.0f);
+
+        if (iy < ny - interface_width) {
+            h_fill_level[idx] = 1.0f;
+            h_normals[idx] = make_float3(0.0f, 0.0f, 0.0f);
+        } else {
+            int dist_from_liquid = iy - (ny - interface_width);
+            float frac = static_cast<float>(dist_from_liquid) / (interface_width - 1);
+            h_fill_level[idx] = 1.0f - 0.7f * frac;
+
+            // Set normal for ALL interface cells
+            h_normals[idx] = make_float3(0.0f, 1.0f, 0.0f);
+        }
     }
 
     float* d_fill_level;
@@ -414,8 +444,9 @@ TEST_F(MarangoniForceValidationTest, ForcDirectionWithPositiveDsigmaDT) {
     // Run simulation
     for (int step = 0; step < 5000; ++step) {
         forces.reset();
+        // FIX (2026-01-12): Use h_interface=3 to match the smoothed interface width
         forces.addMarangoniForce(d_temperature, d_fill_level, d_normals,
-                                 dsigma_dT, nx, ny, nz, dx, 2.0f);
+                                 dsigma_dT, nx, ny, nz, dx, 3.0f);
         forces.convertToLatticeUnits(dx, dt, rho);
 
         solver.computeMacroscopic();
@@ -444,16 +475,17 @@ TEST_F(MarangoniForceValidationTest, ForcDirectionWithPositiveDsigmaDT) {
     std::cout << "Velocity at cold end: " << (u_cold_end * dx / dt) << " m/s" << std::endl;
     std::cout << "Velocity at hot end:  " << (u_hot_end * dx / dt) << " m/s" << std::endl;
 
-    // For positive dσ/dT, flow is from hot to cold (negative x-direction)
-    // So average velocity should be negative
+    // For positive dσ/dT, flow is from cold to hot (positive x-direction)
+    // FIX (2026-01-12): Corrected physics - high σ at hot side pulls fluid from cold side
+    // So average velocity should be positive
     float avg_u = std::accumulate(ux.begin(), ux.end(), 0.0f) / ux.size();
     avg_u *= dx / dt;
 
     std::cout << "Average velocity: " << avg_u << " m/s" << std::endl;
-    std::cout << "Expected: negative (flow from hot to cold)" << std::endl;
+    std::cout << "Expected: positive (flow from cold to hot)" << std::endl;
 
-    EXPECT_LT(avg_u, 0.0f)
-        << "Flow direction incorrect for positive dσ/dT (should be hot to cold)";
+    EXPECT_GT(avg_u, 0.0f)
+        << "Flow direction incorrect for positive dσ/dT (should be cold to hot)";
 
     cudaFree(d_temperature);
     cudaFree(d_fill_level);

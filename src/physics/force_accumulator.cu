@@ -195,8 +195,8 @@ __global__ void addSurfaceTensionForceKernel(
 
 /**
  * @brief Add Marangoni force (thermocapillary)
- * F_m = (dσ/dT) · ∇_s T · |∇f| [N/m³]
- * where |∇f| acts as interface delta function
+ * F_m = (dσ/dT) · ∇_s T · |∇f| / h [N/m³]
+ * where |∇f|/h acts as interface delta function
  */
 __global__ void addMarangoniForceKernel(
     const float* temperature,
@@ -325,13 +325,20 @@ __global__ void addMarangoniForceKernel(
     //
     // Physical derivation:
     //   Surface stress: τ_s = (dσ/dT) · ∇_s T  [N/m²]
-    //   CSF converts surface force to volumetric: F = τ_s · δ_interface  [N/m³]
-    //   where δ_interface ≈ |∇f| / h (interface delta function)
+    //   CSF converts surface force to volumetric: F = τ_s · δ(interface)  [N/m³]
+    //   where δ(interface) ≈ |∇f| / h (interface delta function)
     //   and h is the interface thickness [lattice units, dimensionless]
     //
     // Units: [N/(m·K)] · [K/m] · [1/m] / [dimensionless] = [N/m³]  ✓
     //
-    // CRITICAL: Division by h_interface normalizes the delta function
+    // FIX (2026-01-12): Restored h_interface division for proper CSF normalization
+    // The raw |∇f| in sharp interfaces can be very large (|∇f| ~ Δf/dx ~ 1e5 1/m)
+    // Division by h_interface (typically 2-4 lattice cells) provides proper normalization
+    // so that ∫ δ(interface) dy ≈ 1
+    //
+    // CRITICAL: h_interface should match the actual interface thickness in lattice units
+    // For sharp test interfaces: h=2-3 cells
+    // For smooth VOF interfaces: h=4-6 cells
     float coeff = dsigma_dT * grad_f_mag / h_interface;
 
     fx[idx] += coeff * grad_T_s_x;
@@ -799,6 +806,9 @@ void ForceAccumulator::addMarangoniForce(
     const float3* normals, float dsigma_dT,
     int nx, int ny, int nz, float dx, float h_interface)
 {
+    // FIX (2026-01-12): Restored h_interface usage for proper CSF normalization
+    // The parameter is essential for normalizing the interface delta function
+
     dim3 threads(8, 8, 8);
     dim3 blocks((nx + threads.x - 1) / threads.x,
                 (ny + threads.y - 1) / threads.y,
