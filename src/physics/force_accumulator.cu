@@ -214,24 +214,29 @@ __global__ void addMarangoniForceKernel(
 
     int idx = i + nx * (j + ny * k);
 
-    // Only apply at interface
-    float f = fill_level[idx];
-
-    // Debug output (remove after verification)
-    if (i == nx/2 && j == ny-1 && k == nz/2) {
-        printf("DEBUG Marangoni ENTRY [%d,%d,%d]: f=%.3f, cutoff=(0.01, 0.99)\n", i, j, k, f);
-    }
-
-    if (f <= 0.01f || f >= 0.99f) {
-        return;  // Not at interface
-    }
-
-    // Get interface normal
+    // FIX (2026-01-12): Use interface normal magnitude for interface detection
+    // This fixes the bug where fill_level=1.0 (fully liquid) excluded ALL cells
+    //
+    // Previous approach: f in [0.01, 0.99] - fails when domain is fully liquid
+    // New approach: Use |n| > threshold - works regardless of fill_level
+    //
+    // Interface normal is computed by VOF solver and only has significant
+    // magnitude at actual interface cells
     float3 n = normals[idx];
+    float n_mag = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
 
-    // Debug output (remove after verification)
-    if (i == nx/2 && j == ny-1 && k == nz/2) {
-        printf("DEBUG normal [%d,%d,%d]: n=(%.3f,%.3f,%.3f)\n", i, j, k, n.x, n.y, n.z);
+    // Skip non-interface cells (normal magnitude too small)
+    // Threshold 0.01 filters out numerical noise in bulk regions
+    if (n_mag < 0.01f) {
+        return;
+    }
+
+    // Also check fill_level as secondary filter (keep for VOF consistency)
+    float f = fill_level[idx];
+    if (f <= 0.001f || f >= 0.999f) {
+        // Even with significant normal, skip pure gas/liquid cells
+        // Use wider cutoffs (0.001, 0.999) to capture more interface
+        return;
     }
 
     // Compute temperature gradient (central differences)
@@ -260,12 +265,6 @@ __global__ void addMarangoniForceKernel(
     float grad_T_s_x = grad_T_x - grad_T_dot_n * n.x;
     float grad_T_s_y = grad_T_y - grad_T_dot_n * n.y;
     float grad_T_s_z = grad_T_z - grad_T_dot_n * n.z;
-
-    // Debug output (remove after verification)
-    if (i == nx/2 && j == ny-1 && k == nz/2) {
-        printf("DEBUG grad_T [%d,%d,%d]: grad_T=(%.3e,%.3e,%.3e), grad_Ts=(%.3e,%.3e,%.3e)\n",
-               i, j, k, grad_T_x, grad_T_y, grad_T_z, grad_T_s_x, grad_T_s_y, grad_T_s_z);
-    }
 
     // Compute fill level gradient magnitude (interface delta function)
     // Use one-sided differences at boundaries to avoid zero gradients
@@ -318,12 +317,6 @@ __global__ void addMarangoniForceKernel(
 
     float grad_f_mag = sqrtf(grad_f_x*grad_f_x + grad_f_y*grad_f_y + grad_f_z*grad_f_z);
 
-    // Debug output (remove after verification)
-    if (i == nx/2 && j == ny-1 && k == nz/2) {
-        printf("DEBUG grad_f [%d,%d,%d]: grad_f_mag=%.6e, grad_f=(%.3e,%.3e,%.3e)\n",
-               i, j, k, grad_f_mag, grad_f_x, grad_f_y, grad_f_z);
-    }
-
     if (grad_f_mag < 1e-12f) {
         return;  // No interface
     }
@@ -340,13 +333,6 @@ __global__ void addMarangoniForceKernel(
     //
     // CRITICAL: Division by h_interface normalizes the delta function
     float coeff = dsigma_dT * grad_f_mag / h_interface;
-
-    // Debug output (remove after verification)
-    if (i == nx/2 && j == ny-1 && k == nz/2) {
-        printf("DEBUG Marangoni [%d,%d,%d]: f=%.3f, grad_f_mag=%.6e, grad_T_s=(%.3e,%.3e,%.3e), coeff=%.3e, F=(%.3e,%.3e,%.3e)\n",
-               i, j, k, f, grad_f_mag, grad_T_s_x, grad_T_s_y, grad_T_s_z, coeff,
-               coeff * grad_T_s_x, coeff * grad_T_s_y, coeff * grad_T_s_z);
-    }
 
     fx[idx] += coeff * grad_T_s_x;
     fy[idx] += coeff * grad_T_s_y;

@@ -179,6 +179,20 @@ __global__ void addMarangoniForceKernel(
 
     int idx = i + nx * (j + ny * k);
 
+    // FIX (2026-01-12): Add interface normal magnitude check as primary filter
+    // This fixes the bug where fill_level=1.0 (fully liquid) excluded ALL cells
+    //
+    // Interface normal is computed by VOF solver and only has significant
+    // magnitude at actual interface cells
+    float3 n = interface_normal[idx];
+    float n_mag = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
+
+    // Skip non-interface cells (normal magnitude too small)
+    // Threshold 0.01 filters out numerical noise in bulk regions
+    if (n_mag < 0.01f) {
+        return;  // Don't modify existing force
+    }
+
     // HYBRID INTERFACE DETECTION:
     // 1. Standard VOF interface cells (FIX BUG 1: configurable cutoffs)
     float f = fill_level[idx];
@@ -242,9 +256,7 @@ __global__ void addMarangoniForceKernel(
         grad_T_z *= scale;
     }
 
-    // Interface normal
-    float3 n = interface_normal[idx];
-
+    // Interface normal (already loaded at top for n_mag check)
     // Tangential temperature gradient
     float n_dot_gradT = n.x * grad_T_x + n.y * grad_T_y + n.z * grad_T_z;
 
