@@ -1627,3 +1627,409 @@ set_tests_properties(NaturalConvectionRa1e3 PROPERTIES
     TIMEOUT 600  # 10 minutes (faster convergence for low Ra)
     LABELS "validation;thermal;fluid;buoyancy;benchmark;phase2"
 )
+
+# ========================================
+# Test 5: Couette-Poiseuille Flow
+# ========================================
+#
+# Validation test for fluid dynamics combining shear-driven (Couette)
+# and pressure-driven (Poiseuille) flow in a 2D channel.
+#
+# Reference:
+# Classical fluid mechanics. Analytical solution:
+# u(y) = 3*y^2 - 2*y (normalized coordinates y in [0,1])
+#
+# Tests:
+# - Combined boundary-driven and body-force-driven flow
+# - Moving wall boundary condition (top wall at U=1 m/s)
+# - No-slip wall boundary condition (bottom wall)
+# - Body force (pressure gradient)
+# - Steady-state convergence
+#
+# Validation metrics:
+# - L2 error < 5% against analytical solution
+# - Velocity profile shape matches parabolic+linear combination
+# - Boundary conditions satisfied (u(0)=0, u(1) satisfies BC)
+#
+# Expected runtime: 5-10 minutes to reach steady state
+#
+add_executable(test_couette_poiseuille
+    test_couette_poiseuille.cu
+)
+
+set_target_properties(test_couette_poiseuille PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_couette_poiseuille PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_couette_poiseuille
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME CouettePoiseuille
+    COMMAND test_couette_poiseuille
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(CouettePoiseuille PROPERTIES
+    TIMEOUT 600  # 10 minutes
+    LABELS "validation;fluid;benchmark;analytical;phase1;critical"
+)
+
+# ========================================
+# PURE COUETTE FLOW (walberla standard)
+# ========================================
+#
+# Validates pure shear-driven flow with NO body force.
+# Analytical solution: u(y) = U_top * (y/H) [LINEAR]
+# Target: L2 error < 1% (walberla achieves <1e-10%)
+#
+add_executable(test_pure_couette
+    test_pure_couette.cu
+)
+
+set_target_properties(test_pure_couette PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_pure_couette PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_pure_couette
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME PureCouetteFlow
+    COMMAND test_pure_couette
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(PureCouetteFlow PROPERTIES
+    TIMEOUT 300  # 5 minutes
+    LABELS "validation;fluid;couette;analytical;walberla;critical"
+)
+
+# ========================================
+# PURE POISEUILLE FLOW (walberla standard)
+# ========================================
+#
+# Validates pure pressure-driven flow with NO moving walls.
+# Analytical solution: u(y) = u_max * 4*eta*(1-eta) [PARABOLIC]
+# Target: L2 error < 2%, flow rate error < 1% (walberla achieves 0.65%)
+#
+add_executable(test_pure_poiseuille
+    test_pure_poiseuille.cu
+)
+
+set_target_properties(test_pure_poiseuille PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_pure_poiseuille PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_pure_poiseuille
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME PurePoiseuilleFlow
+    COMMAND test_pure_poiseuille
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(PurePoiseuilleFlow PROPERTIES
+    TIMEOUT 300  # 5 minutes
+    LABELS "validation;fluid;poiseuille;analytical;walberla;critical"
+)
+
+# ========================================
+# TRT COLLISION MODEL VALIDATION TESTS
+# ========================================
+#
+# Validation tests for Two-Relaxation-Time (TRT) collision operator.
+# TRT improves accuracy over BGK/SRT by using separate relaxation rates
+# for symmetric and anti-symmetric populations.
+#
+# Expected improvements:
+# - Pure Couette: 0.043% → <0.01% (approaching machine precision)
+# - Pure Poiseuille: 1.13% → ~0.3-0.5% (2-3× better accuracy)
+#
+# Tests:
+# 1. test_trt_couette.cu - Pure Couette flow with TRT
+# 2. test_trt_poiseuille.cu - Pure Poiseuille flow with TRT
+# 3. test_trt_magic_number.cu - Verify magic number effect on wall accuracy
+
+# Test 1: TRT Pure Couette Flow
+add_executable(test_trt_couette
+    test_trt_couette.cu
+)
+
+set_target_properties(test_trt_couette PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_trt_couette PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_trt_couette
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME TRTCouetteFlow
+    COMMAND test_trt_couette
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(TRTCouetteFlow PROPERTIES
+    TIMEOUT 300  # 5 minutes
+    LABELS "validation;fluid;couette;trt;analytical;critical"
+)
+
+# Test 2: TRT Pure Poiseuille Flow
+add_executable(test_trt_poiseuille
+    test_trt_poiseuille.cu
+)
+
+set_target_properties(test_trt_poiseuille PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_trt_poiseuille PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_trt_poiseuille
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME TRTPoiseuilleFlow
+    COMMAND test_trt_poiseuille
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(TRTPoiseuilleFlow PROPERTIES
+    TIMEOUT 300  # 5 minutes
+    LABELS "validation;fluid;poiseuille;trt;analytical;critical"
+)
+
+# Test 3: TRT vs BGK Comparison (validates magic number Λ=3/16)
+add_executable(test_trt_magic_number
+    test_trt_magic_number.cu
+)
+
+set_target_properties(test_trt_magic_number PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_trt_magic_number PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_trt_magic_number
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME TRTvsBGKComparison
+    COMMAND test_trt_magic_number
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(TRTvsBGKComparison PROPERTIES
+    TIMEOUT 600  # 10 minutes (runs 2 simulations: BGK + TRT)
+    LABELS "validation;fluid;trt;bgk;comparison;critical"
+)
+
+# Test 4: TRT Combined Couette-Poiseuille Flow
+add_executable(test_trt_couette_poiseuille
+    test_trt_couette_poiseuille.cu
+)
+
+set_target_properties(test_trt_couette_poiseuille PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_trt_couette_poiseuille PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_trt_couette_poiseuille
+    lbm_physics
+    lbm_core
+    lbm_io
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME TRTCouettePoiseuilleFlow
+    COMMAND test_trt_couette_poiseuille
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(TRTCouettePoiseuilleFlow PROPERTIES
+    TIMEOUT 600  # 10 minutes
+    LABELS "validation;fluid;couette_poiseuille;trt;analytical;critical"
+)
+
+# ========================================
+# COUETTE FLOW DIAGNOSTIC TEST
+# ========================================
+#
+# This diagnostic test identifies the root cause of the 1000× accuracy
+# difference between our implementation and walberla's machine precision.
+#
+# Three validation methods:
+# 1. Interior only (j=1 to j=62) - OUR CURRENT APPROACH
+# 2. All cells (j=0 to j=63) - WALBERLA APPROACH
+# 3. Midpoint shift (j+0.5)
+#
+# Expected result: Method 2 should achieve 10-100× better accuracy,
+# proving that boundary cell exclusion is the root cause of our 0.051% error.
+#
+add_executable(test_couette_diagnostic
+    test_couette_diagnostic.cu
+)
+
+set_target_properties(test_couette_diagnostic PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_couette_diagnostic PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_couette_diagnostic
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME CouetteDiagnostic
+    COMMAND test_couette_diagnostic
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(CouetteDiagnostic PROPERTIES
+    TIMEOUT 300  # 5 minutes
+    LABELS "validation;fluid;couette;diagnostic;walberla;critical"
+)
+
+# ========================================
+# WALBERLA EXACT MATCH TEST - COUETTE FLOW
+# ========================================
+#
+# This test EXACTLY reproduces walberla's BoundaryForceCouette.cpp test
+# to achieve machine precision (<1e-6 error) matching walberla's results.
+#
+# Configuration (matching walberla):
+# - Grid: 16 × 16 × 16 (L=16)
+# - TRT collision with magic number Λ = 3/16
+# - omega = 1.0 (tau = 1.0)
+# - Top wall velocity: (0.01, 0, 0)
+# - Bottom wall: no-slip (stationary)
+# - 2000 timesteps
+# - Pure Couette flow (NO body force)
+#
+# Analytical solution: u(y) = U_wall * (y/H) [LINEAR]
+#
+# Expected result: L2 error < 1e-6 (machine precision)
+#
+# Reference: /home/yzk/walberla/tests/lbm/boundary/BoundaryForceCouette.cpp
+#
+add_executable(test_walberla_couette_match
+    test_walberla_couette_match.cu
+)
+
+set_target_properties(test_walberla_couette_match PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_walberla_couette_match PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_walberla_couette_match
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME WalberlaCouetteMatch
+    COMMAND test_walberla_couette_match
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(WalberlaCouetteMatch PROPERTIES
+    TIMEOUT 300  # 5 minutes
+    LABELS "validation;fluid;couette;walberla;exact_match;critical;trt"
+)
