@@ -38,7 +38,14 @@ extern __constant__ float tw[7];
 class D3Q7 {
 public:
     static constexpr int Q = 7;  ///< Number of discrete velocities
-    static constexpr float CS2 = 1.0f / 4.0f;  ///< Speed of sound squared (lattice units) - calibrated for thermal LBM implementation
+
+    /// Speed of sound squared (lattice units)
+    /// NOTE: Standard D3Q7 uses cs²=1/3, but cs²=1/4 is intentionally calibrated
+    /// for this thermal LBM implementation. Empirical testing shows cs²=1/4 gives
+    /// BETTER accuracy (0.09% L2 error) than cs²=1/3 (0.64% L2 error) for the
+    /// 3D heat diffusion validation test. Do NOT "fix" this to 1/3.
+    /// See: docs/HEAT_DIFFUSION_ROOT_CAUSE_ANALYSIS.md for detailed analysis.
+    static constexpr float CS2 = 1.0f / 4.0f;
 
     /**
      * @brief Initialize D3Q7 lattice constants on device
