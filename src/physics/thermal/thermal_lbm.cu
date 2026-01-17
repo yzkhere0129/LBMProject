@@ -727,21 +727,25 @@ __global__ void computeTemperatureKernel(
     // Physical temperature bounds
     // ============================================================
     // Lower bound: Allow arbitrary positive temperatures for testing
-    // Upper bound: 2× vaporization temperature for Ti6Al4V
+    // Upper bound: Increased to support validation tests with high temperatures
     //
     // Physical justification for upper bound:
-    //   T_boil = 3560 K (vaporization)
-    //   At T > 7000 K, all material is vaporized (gas phase).
-    //   Further heating is non-physical in condensed-phase model.
+    //   - LPBF simulations: T_boil ≈ 3560 K (Ti6Al4V vaporization)
+    //   - Validation tests: May use Gaussian pulses with T_peak > 15000 K
+    //   - Safety clamp at 50000 K prevents numerical overflow while allowing
+    //     high-temperature validation scenarios
     //
     // Lower bound: Changed from 300K to 0K for flexibility
     //   - Pure thermal tests may use arbitrary temperatures
     //   - Physical LPBF simulations naturally stay above ambient
     //   - Negative temperatures still clamped (unphysical)
+    //
+    // FIX: Increased T_MAX from 7000K to 50000K to support validation tests
+    //      with high-amplitude Gaussian initial conditions (test_3d_heat_diffusion_senior)
     // ============================================================
 
-    constexpr float T_MIN = 0.0f;     // Allow arbitrary positive temperatures
-    constexpr float T_MAX = 7000.0f;  // 2× T_vaporization for safety margin
+    constexpr float T_MIN = 0.0f;      // Allow arbitrary positive temperatures
+    constexpr float T_MAX = 50000.0f;  // High enough for validation, prevents overflow
 
     T = fmaxf(T, T_MIN);
     T = fminf(T, T_MAX);
