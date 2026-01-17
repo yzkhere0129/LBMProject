@@ -123,6 +123,40 @@ public:
                      const float* force_z);
 
     /**
+     * @brief Perform TRT collision step with uniform force
+     *
+     * Two-Relaxation-Time (TRT) collision operator improves accuracy
+     * by separately relaxing symmetric and antisymmetric distribution
+     * parts with different rates. Uses magic parameter Λ for optimal
+     * wall accuracy (default: Λ = 3/16).
+     *
+     * Reference: Ginzburg, I., et al. (2008). Two-relaxation-time
+     * Lattice Boltzmann scheme: About parametrization, velocity,
+     * pressure and mixed boundary conditions. Commun. Comput. Phys.
+     *
+     * @param force_x Body force x-component [m/s²]
+     * @param force_y Body force y-component [m/s²]
+     * @param force_z Body force z-component [m/s²]
+     * @param lambda Magic parameter (default: 3/16 for optimal walls)
+     */
+    void collisionTRT(float force_x = 0.0f,
+                     float force_y = 0.0f,
+                     float force_z = 0.0f,
+                     float lambda = 3.0f / 16.0f);
+
+    /**
+     * @brief Perform TRT collision with spatially-varying forces
+     * @param force_x Device array of force x-component [m/s²]
+     * @param force_y Device array of force y-component [m/s²]
+     * @param force_z Device array of force z-component [m/s²]
+     * @param lambda Magic parameter (default: 3/16 for optimal walls)
+     */
+    void collisionTRT(const float* force_x,
+                     const float* force_y,
+                     const float* force_z,
+                     float lambda = 3.0f / 16.0f);
+
+    /**
      * @brief Perform streaming step
      */
     void streaming();
@@ -346,6 +380,40 @@ __global__ void fluidBGKCollisionVaryingForceKernel(
     const float* force_y,
     const float* force_z,
     float omega,
+    int nx, int ny, int nz);
+
+/**
+ * @brief CUDA kernel for fluid TRT collision with uniform body force
+ */
+__global__ void fluidTRTCollisionKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    float force_x,
+    float force_y,
+    float force_z,
+    float omega_e,
+    float omega_o,
+    int nx, int ny, int nz);
+
+/**
+ * @brief CUDA kernel for fluid TRT collision with spatially-varying forces
+ */
+__global__ void fluidTRTCollisionVaryingForceKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    float omega_e,
+    float omega_o,
     int nx, int ny, int nz);
 
 /**

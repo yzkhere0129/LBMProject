@@ -13,6 +13,43 @@ find_package(CUDAToolkit REQUIRED)
 include_directories(${CUDAToolkit_INCLUDE_DIRS})
 
 # ========================================
+# Unit Conversion Bug Diagnostic Test
+# ========================================
+#
+# This test demonstrates the unit conversion bug found in some validation tests
+# where physical dt/dx are used with lattice-scale viscosity values.
+#
+# Purpose: Show the bug, explain it, and validate the fix.
+
+add_executable(test_unit_conversion_bug_diagnostic
+    test_unit_conversion_bug_diagnostic.cu
+)
+
+set_target_properties(test_unit_conversion_bug_diagnostic PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_unit_conversion_bug_diagnostic PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_unit_conversion_bug_diagnostic
+    gtest
+    gtest_main
+)
+
+add_test(NAME UnitConversionBugDiagnostic
+    COMMAND test_unit_conversion_bug_diagnostic
+)
+
+set_tests_properties(UnitConversionBugDiagnostic PROPERTIES
+    TIMEOUT 10
+    LABELS "validation;diagnostic;unit_conversion"
+)
+
+# ========================================
 # Omega Clamping Bug Fix Test
 # ========================================
 #
@@ -1930,6 +1967,112 @@ set_tests_properties(TRTCouettePoiseuilleFlow PROPERTIES
 )
 
 # ========================================
+# WALBERLA-MATCHING COUETTE-POISEUILLE TEST
+# ========================================
+#
+# This test EXACTLY reproduces walberla's CouettePoiseuilleTest.cpp configuration
+# to validate that our LBM implementation matches walberla's behavior and accuracy.
+#
+# Configuration (EXACT walberla match):
+# - Grid: 4 × 64 × 4 (quasi-2D channel)
+# - Channel height: H = 63 (NY - 1, node-based coordinates)
+# - Reynolds number: Re = 100 (changed from 10 for SRT stability)
+# - Top wall velocity: U_top = 0.05
+# - TRT collision with magic number Λ = 3/16
+# - Body force: f_x = -6*U_top*ν/H²
+# - Analytical solution: u(η) = U_top*(3η² - 2η)
+# - Include ALL cells in error computation (j=0 to j=NY-1)
+#
+# Expected results:
+# - L2 error < 2% (target: match or beat walberla)
+# - Clear improvement over BGK (factor 1.5-5×)
+# - Steady state convergence
+# - No NaN or instability
+#
+# This test is CRITICAL for validating that our TRT implementation
+# achieves walberla-level accuracy for combined flow problems.
+#
+add_executable(test_couette_poiseuille_walberla_match
+    test_couette_poiseuille_walberla_match.cu
+)
+
+set_target_properties(test_couette_poiseuille_walberla_match PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_couette_poiseuille_walberla_match PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_couette_poiseuille_walberla_match
+    lbm_physics
+    lbm_core
+    lbm_io
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME CouettePoiseuilleWalberlaMatch
+    COMMAND test_couette_poiseuille_walberla_match
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(CouettePoiseuilleWalberlaMatch PROPERTIES
+    TIMEOUT 600  # 10 minutes
+    LABELS "validation;fluid;couette_poiseuille;walberla;trt;exact_match;critical"
+)
+
+# ========================================
+# COUETTE-POISEUILLE RE=10 PROOF TEST
+# ========================================
+#
+# This proof test demonstrates that Reynolds number is the dominant factor
+# in LBM accuracy. It uses the EXACT SAME configuration as walberla_match
+# but changes only Re from 100 to 10. Expected: L2 error drops from ~2% to < 0.5%.
+#
+# Purpose: Prove the ~2% error at Re=100 is due to physics (low viscosity), not bugs.
+#
+
+add_executable(test_couette_poiseuille_re10_proof
+    test_couette_poiseuille_re10_proof.cu
+)
+
+set_target_properties(test_couette_poiseuille_re10_proof PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_couette_poiseuille_re10_proof PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_couette_poiseuille_re10_proof
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME CouettePoiseuilleRe10Proof
+    COMMAND test_couette_poiseuille_re10_proof
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(CouettePoiseuilleRe10Proof PROPERTIES
+    TIMEOUT 300  # 5 minutes (faster convergence at Re=10)
+    LABELS "validation;fluid;couette_poiseuille;reynolds;proof;critical"
+)
+
+# ========================================
 # COUETTE FLOW DIAGNOSTIC TEST
 # ========================================
 #
@@ -2032,4 +2175,196 @@ add_test(NAME WalberlaCouetteMatch
 set_tests_properties(WalberlaCouetteMatch PROPERTIES
     TIMEOUT 300  # 5 minutes
     LABELS "validation;fluid;couette;walberla;exact_match;critical;trt"
+)
+
+# ========================================
+# PURE POISEUILLE FLOW TEST - BODY FORCE ONLY
+# ========================================
+#
+# This test isolates the body force implementation by testing pure
+# Poiseuille flow with NO moving walls. Both walls are stationary (u=0).
+#
+# Purpose: Diagnose the 1.977% error in Couette-Poiseuille by isolating
+# the body force component from the Couette (moving wall) component.
+#
+# Configuration:
+# - Grid: 4 × 64 × 4 (same as Couette-Poiseuille)
+# - Channel height: H = 63
+# - nu = 0.0315, fx = -2.38095e-06 (same as Couette-Poiseuille)
+# - TRT collision with Λ = 3/16
+# - Both walls stationary: u_bottom = u_top = 0
+# - Flow driven purely by body force
+#
+# Analytical solution: u(y) = fx/(2*nu) * y * (H - y) [PARABOLIC]
+#
+# Expected result:
+# - If body force is correct: L2 error < 0.1%
+# - If body force has bug: L2 error ~ 1-2% (similar to Couette-Poiseuille)
+#
+# This will definitively determine if the 1.977% error originates from:
+# a) Body force implementation (if this test also shows ~2% error)
+# b) Interaction between body force and moving walls (if this test passes)
+#
+add_executable(test_pure_poiseuille_walberla
+    test_pure_poiseuille_walberla.cu
+)
+
+set_target_properties(test_pure_poiseuille_walberla PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_pure_poiseuille_walberla PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_pure_poiseuille_walberla
+    lbm_physics
+    lbm_core
+    lbm_io
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME PurePoiseuille
+    COMMAND test_pure_poiseuille_walberla
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(PurePoiseuille PROPERTIES
+    TIMEOUT 600  # 10 minutes
+    LABELS "validation;fluid;poiseuille;body_force;diagnostic;critical"
+)
+
+# ========================================
+# COUETTE-POISEUILLE DIAGNOSTIC SUITE
+# ========================================
+#
+# Systematic diagnostic tests to identify error sources and reduce
+# L2 error from 1.977% to < 1%.
+#
+# Tests:
+# 1. Grid refinement effect (30, 64, 128 cells)
+# 2. Mach number effect (U=0.05 vs U=0.01)
+# 3. BGK vs TRT comparison
+# 4. Error distribution analysis
+# 5. Combined optimization (best settings)
+#
+# Purpose: Determine CONCRETE actions (not theory) to achieve < 1% error.
+#
+add_executable(test_couette_poiseuille_diagnostic
+    test_couette_poiseuille_diagnostic.cu
+)
+
+set_target_properties(test_couette_poiseuille_diagnostic PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_couette_poiseuille_diagnostic PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_couette_poiseuille_diagnostic
+    lbm_physics
+    lbm_core
+    lbm_io
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME CouettePoiseuileDiagnostic
+    COMMAND test_couette_poiseuille_diagnostic
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(CouettePoiseuileDiagnostic PROPERTIES
+    TIMEOUT 1800  # 30 minutes (runs 5 comprehensive diagnostics)
+    LABELS "validation;fluid;diagnostic;optimization;critical"
+)
+
+# ============================================================================
+# Couette-Poiseuille Precision Test
+# Target: <0.01% L2 error with proper convergence
+# ============================================================================
+add_executable(test_couette_poiseuille_precision
+    test_couette_poiseuille_precision.cu
+)
+
+set_target_properties(test_couette_poiseuille_precision PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_couette_poiseuille_precision PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_couette_poiseuille_precision
+    lbm_physics
+    lbm_core
+    lbm_io
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME CouettePoiseuilePrecision
+    COMMAND test_couette_poiseuille_precision
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(CouettePoiseuilePrecision PROPERTIES
+    TIMEOUT 3600  # 60 minutes (128-cell needs long convergence)
+    LABELS "validation;fluid;precision;convergence;critical"
+)
+
+# ============================================================================
+# Couette-Poiseuille 64x128 Re=100 Test
+# Matches reference image specifications
+# ============================================================================
+add_executable(test_couette_poiseuille_64x128_re100
+    test_couette_poiseuille_64x128_re100.cu
+)
+
+set_target_properties(test_couette_poiseuille_64x128_re100 PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_couette_poiseuille_64x128_re100 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_couette_poiseuille_64x128_re100
+    lbm_physics
+    lbm_core
+    lbm_io
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME CouettePoiseuille64x128Re100
+    COMMAND test_couette_poiseuille_64x128_re100
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(CouettePoiseuille64x128Re100 PROPERTIES
+    TIMEOUT 3600  # 60 minutes (128-cell grid, Re=100 may need long convergence)
+    LABELS "validation;fluid;couette_poiseuille;re100;64x128;critical"
 )

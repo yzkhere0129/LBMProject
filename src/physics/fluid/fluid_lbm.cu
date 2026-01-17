@@ -17,6 +17,10 @@ namespace physics {
 
 using namespace lbm::core;
 
+// Forward declarations of helper functions
+__device__ __forceinline__ double computeEquilibriumDouble(
+    int q, double rho, double ux, double uy, double uz);
+
 // Forward declarations of CUDA kernels
 __global__ void setBoundaryVelocityKernel(
     float* ux, float* uy, float* uz,
@@ -312,6 +316,69 @@ void FluidLBM::collisionBGK(const float* force_x,
     cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) {
         throw std::runtime_error("FluidLBM collision kernel (varying force) failed: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    swapDistributions();
+}
+
+// TRT collision with uniform force
+void FluidLBM::collisionTRT(float force_x, float force_y, float force_z, float lambda) {
+    // Compute TRT relaxation rates
+    // omega_even = omega = 1/tau (same as BGK)
+    float omega_even = omega_;
+
+    // omega_odd = 1 / (lambda/(1/omega_even - 0.5) + 0.5)
+    float omega_odd = 1.0f / (lambda / (1.0f / omega_even - 0.5f) + 0.5f);
+
+    dim3 block(8, 8, 8);
+    dim3 grid((nx_ + block.x - 1) / block.x,
+             (ny_ + block.y - 1) / block.y,
+             (nz_ + block.z - 1) / block.z);
+
+    fluidTRTCollisionKernel<<<grid, block>>>(
+        d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+        force_x, force_y, force_z, omega_even, omega_odd,
+        nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM TRT collision kernel failed: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    swapDistributions();
+}
+
+// TRT collision with spatially-varying forces
+void FluidLBM::collisionTRT(const float* force_x,
+                            const float* force_y,
+                            const float* force_z,
+                            float lambda) {
+    // Compute TRT relaxation rates
+    // omega_even = omega = 1/tau (same as BGK)
+    float omega_even = omega_;
+
+    // omega_odd = 1 / (lambda/(1/omega_even - 0.5) + 0.5)
+    float omega_odd = 1.0f / (lambda / (1.0f / omega_even - 0.5f) + 0.5f);
+
+    dim3 block(8, 8, 8);
+    dim3 grid((nx_ + block.x - 1) / block.x,
+             (ny_ + block.y - 1) / block.y,
+             (nz_ + block.z - 1) / block.z);
+
+    fluidTRTCollisionVaryingForceKernel<<<grid, block>>>(
+        d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+        force_x, force_y, force_z, omega_even, omega_odd,
+        nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM TRT collision kernel (varying force) failed: " +
                                std::string(cudaGetErrorString(error)));
     }
 
@@ -697,6 +764,19 @@ void FluidLBM::setMovingWall(unsigned int wall_direction,
 //=============================================================================
 
 // Fluid BGK collision with uniform force (Guo forcing scheme)
+// Double-precision equilibrium computation for high-accuracy TRT kernels
+// This function performs equilibrium calculation in double precision to minimize
+// cumulative errors over long time integrations (e.g., 50,000 timesteps)
+// CRITICAL FIX: Use w_double[q] for maximum precision (15 digits vs 7 for float)
+__device__ __forceinline__ double computeEquilibriumDouble(
+    int q, double rho, double ux, double uy, double uz) {
+    // Compressible form: f_eq = w * rho * (1 + 3*(c·u) + 4.5*(c·u)² - 1.5*u²)
+    // Use double-precision weights to avoid accumulating rounding errors
+    double eu = (double)ex[q] * ux + (double)ey[q] * uy + (double)ez[q] * uz;
+    double u2 = ux*ux + uy*uy + uz*uz;
+    return w_double[q] * rho * (1.0 + 3.0*eu + 4.5*eu*eu - 1.5*u2);
+}
+
 __global__ void fluidBGKCollisionKernel(
     const float* f_src,
     float* f_dst,
@@ -763,13 +843,18 @@ __global__ void fluidBGKCollisionKernel(
         // Equilibrium distribution with force-corrected velocity
         float feq = D3Q19::computeEquilibrium(q, m_rho, m_ux_force, m_uy_force, m_uz_force);
 
-        // Complete Guo forcing term: F_i = (1 - ω/2) * w_i * [3(c_i - u)·F + 9(c_i·u)(c_i·F)]
-        float ci_dot_F = ex[q] * force_x + ey[q] * force_y + ez[q] * force_z;
+        // Complete Guo forcing term with numerical stability optimization
+        // F_i = (1 - ω/2) * w_i * [3(c_i - u)·F + 9(c_i·u)(c_i·F)]
         float ci_dot_u = ex[q] * m_ux + ey[q] * m_uy + ez[q] * m_uz;
+        float ci_dot_F = ex[q] * force_x + ey[q] * force_y + ez[q] * force_z;
 
-        // First term: 3(c_i - u)·F = 3*c_i·F - 3*u·F
-        float u_dot_F = m_ux * force_x + m_uy * force_y + m_uz * force_z;
-        float term1 = 3.0f * (ci_dot_F - u_dot_F);
+        // Numerically stable (c - u)·F computation to avoid catastrophic cancellation
+        float c_minus_u_dot_F = (ex[q] - m_ux) * force_x +
+                                (ey[q] - m_uy) * force_y +
+                                (ez[q] - m_uz) * force_z;
+
+        // First term: 3(c_i - u)·F
+        float term1 = 3.0f * c_minus_u_dot_F;
 
         // Second term: 9(c_i·u)(c_i·F)
         float term2 = 9.0f * ci_dot_u * ci_dot_F;
@@ -852,13 +937,18 @@ __global__ void fluidBGKCollisionVaryingForceKernel(
 
         float feq = D3Q19::computeEquilibrium(q, m_rho, m_ux_force, m_uy_force, m_uz_force);
 
-        // Complete Guo forcing term: F_i = (1 - ω/2) * w_i * [3(c_i - u)·F + 9(c_i·u)(c_i·F)]
-        float ci_dot_F = ex[q] * fx + ey[q] * fy + ez[q] * fz;
+        // Complete Guo forcing term with numerical stability optimization
+        // F_i = (1 - ω/2) * w_i * [3(c_i - u)·F + 9(c_i·u)(c_i·F)]
         float ci_dot_u = ex[q] * m_ux + ey[q] * m_uy + ez[q] * m_uz;
+        float ci_dot_F = ex[q] * fx + ey[q] * fy + ez[q] * fz;
+
+        // Numerically stable (c - u)·F computation to avoid catastrophic cancellation
+        float c_minus_u_dot_F = (ex[q] - m_ux) * fx +
+                                (ey[q] - m_uy) * fy +
+                                (ez[q] - m_uz) * fz;
 
         // First term: 3(c_i - u)·F
-        float u_dot_F = m_ux * fx + m_uy * fy + m_uz * fz;
-        float term1 = 3.0f * (ci_dot_F - u_dot_F);
+        float term1 = 3.0f * c_minus_u_dot_F;
 
         // Second term: 9(c_i·u)(c_i·F)
         float term2 = 9.0f * ci_dot_u * ci_dot_F;
@@ -866,6 +956,251 @@ __global__ void fluidBGKCollisionVaryingForceKernel(
         float force_term = (1.0f - 0.5f * omega) * w[q] * (term1 + term2);
 
         f_dst[id + q * n_cells] = f - omega * (f - feq) + force_term;
+    }
+}
+
+// TRT collision kernel with uniform force
+__global__ void fluidTRTCollisionKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    float force_x,
+    float force_y,
+    float force_z,
+    float omega_even,
+    float omega_odd,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Compute macroscopic quantities with DOUBLE PRECISION to match walberla
+    // This reduces cumulative error over 50,000 timesteps
+    double m_rho_d = 0.0;
+    double m_ux_star_d = 0.0;
+    double m_uy_star_d = 0.0;
+    double m_uz_star_d = 0.0;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        double f_d = (double)f_src[id + q * n_cells];
+        m_rho_d += f_d;
+        m_ux_star_d += (double)ex[q] * f_d;
+        m_uy_star_d += (double)ey[q] * f_d;
+        m_uz_star_d += (double)ez[q] * f_d;
+    }
+
+    // Compute uncorrected velocity with safety check
+    const double RHO_MIN_D = 1e-12;
+    double inv_rho_d = 1.0 / fmax(m_rho_d, RHO_MIN_D);
+    double m_ux_uncorrected_d = m_ux_star_d * inv_rho_d;
+    double m_uy_uncorrected_d = m_uy_star_d * inv_rho_d;
+    double m_uz_uncorrected_d = m_uz_star_d * inv_rho_d;
+
+    // Apply Guo forcing scheme: u = u_uncorrected + 0.5 * F / rho
+    double m_ux_d = m_ux_uncorrected_d + 0.5 * (double)force_x * inv_rho_d;
+    double m_uy_d = m_uy_uncorrected_d + 0.5 * (double)force_y * inv_rho_d;
+    double m_uz_d = m_uz_uncorrected_d + 0.5 * (double)force_z * inv_rho_d;
+
+    // Store corrected macroscopic quantities (convert to float for output)
+    rho[id] = (float)m_rho_d;
+    ux[id] = (float)m_ux_d;
+    uy[id] = (float)m_uy_d;
+    uz[id] = (float)m_uz_d;
+
+    // TRT collision with forcing - ALL OPERATIONS IN DOUBLE PRECISION
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        int q_opp = opposite[q];
+
+        // Read distribution functions
+        double f_q_d = (double)f_src[id + q * n_cells];
+        double f_qbar_d = (double)f_src[id + q_opp * n_cells];
+
+        // Equilibrium distributions - use double-precision computation
+        double feq_q_d = computeEquilibriumDouble(q, m_rho_d, m_ux_d, m_uy_d, m_uz_d);
+        double feq_qbar_d = computeEquilibriumDouble(q_opp, m_rho_d, m_ux_d, m_uy_d, m_uz_d);
+
+        // Symmetric and antisymmetric parts (TRT decomposition)
+        double f_plus_d = 0.5 * (f_q_d + f_qbar_d);
+        double f_minus_d = 0.5 * (f_q_d - f_qbar_d);
+        double feq_plus_d = 0.5 * (feq_q_d + feq_qbar_d);
+        double feq_minus_d = 0.5 * (feq_q_d - feq_qbar_d);
+
+        // Guo forcing term calculation with double precision + FMA for maximum accuracy
+        // CRITICAL OPTIMIZATION: Use double precision + FMA to minimize numerical errors
+        // FMA (fused multiply-add) avoids intermediate rounding for (a*b)+c operations
+        double dx = (double)ex[q];
+        double dy = (double)ey[q];
+        double dz = (double)ez[q];
+        double dF_x = (double)force_x;
+        double dF_y = (double)force_y;
+        double dF_z = (double)force_z;
+
+        // Use FMA for dot products: ci_dot_u = ex*ux + ey*uy + ez*uz
+        double ci_dot_u_d = fma(dx, m_ux_d, fma(dy, m_uy_d, dz * m_uz_d));
+        double ci_dot_F_d = fma(dx, dF_x, fma(dy, dF_y, dz * dF_z));
+
+        // Numerically stable (c - u)·F computation to avoid catastrophic cancellation
+        // Use FMA: (c-u)·F = (ex-ux)*Fx + (ey-uy)*Fy + (ez-uz)*Fz
+        double c_minus_u_dot_F_d = fma(dx - m_ux_d, dF_x, fma(dy - m_uy_d, dF_y, (dz - m_uz_d) * dF_z));
+
+        // Standard Guo term: 3(c - u)·F + 9(c·u)(c·F)
+        double term1_d = 3.0 * c_minus_u_dot_F_d;
+        double term2_d = 9.0 * ci_dot_u_d * ci_dot_F_d;
+
+        // TRT forcing: standard BGK term + TRT correction
+        // CRITICAL FIX: Use w_double[q] for maximum precision (15 digits vs 7 for float)
+        double force_term_d = (1.0 - 0.5 * (double)omega_even) * w_double[q] * (term1_d + term2_d);
+
+        // TRT correction (Walberla ForceModel.h line 533-535)
+        // Full formula: 3w[(1-0.5*omega)((c-u+3(c·u)c)·F) + (omega-omega_odd)*0.5*(c·F)]
+        // Second term expands to: 3w * (omega_even - omega_odd) * 0.5 * (c·F) = 1.5w * (omega_even - omega_odd) * (c·F)
+        force_term_d += 1.5 * w_double[q] * ((double)omega_even - (double)omega_odd) * ci_dot_F_d;
+
+        // TRT collision: relax symmetric part with omega_even, antisymmetric with omega_odd
+        double omega_even_d = (double)omega_even;
+        double omega_odd_d = (double)omega_odd;
+        double f_plus_new_d = f_plus_d - omega_even_d * (f_plus_d - feq_plus_d);
+        double f_minus_new_d = f_minus_d - omega_odd_d * (f_minus_d - feq_minus_d);
+
+        // Reconstruct post-collision distribution with forcing
+        // NOTE: force_term is added as a separate source term, NOT double-applied.
+        // This matches walberla's implementation (CellwiseSweep.impl.h:1647-1648)
+        // Formula: f_new = (f_plus - lambda_e*(f_plus - feq_plus)) + (f_minus - lambda_d*(f_minus - feq_minus)) + forceTerm
+        f_dst[id + q * n_cells] = (float)(f_plus_new_d + f_minus_new_d + force_term_d);
+    }
+}
+
+// TRT collision kernel with spatially-varying forces
+__global__ void fluidTRTCollisionVaryingForceKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    float omega_even,
+    float omega_odd,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Read local forces
+    float fx = force_x[id];
+    float fy = force_y[id];
+    float fz = force_z[id];
+
+    // Compute macroscopic quantities with DOUBLE PRECISION to match walberla
+    // This reduces cumulative error over 50,000 timesteps
+    double m_rho_d = 0.0;
+    double m_ux_star_d = 0.0;
+    double m_uy_star_d = 0.0;
+    double m_uz_star_d = 0.0;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        double f_d = (double)f_src[id + q * n_cells];
+        m_rho_d += f_d;
+        m_ux_star_d += (double)ex[q] * f_d;
+        m_uy_star_d += (double)ey[q] * f_d;
+        m_uz_star_d += (double)ez[q] * f_d;
+    }
+
+    // Compute uncorrected velocity with safety check
+    const double RHO_MIN_D = 1e-12;
+    double inv_rho_d = 1.0 / fmax(m_rho_d, RHO_MIN_D);
+    double m_ux_uncorrected_d = m_ux_star_d * inv_rho_d;
+    double m_uy_uncorrected_d = m_uy_star_d * inv_rho_d;
+    double m_uz_uncorrected_d = m_uz_star_d * inv_rho_d;
+
+    // Apply Guo forcing scheme: u = u_uncorrected + 0.5 * F / rho
+    double m_ux_d = m_ux_uncorrected_d + 0.5 * (double)fx * inv_rho_d;
+    double m_uy_d = m_uy_uncorrected_d + 0.5 * (double)fy * inv_rho_d;
+    double m_uz_d = m_uz_uncorrected_d + 0.5 * (double)fz * inv_rho_d;
+
+    // Store corrected macroscopic quantities (convert to float for output)
+    rho[id] = (float)m_rho_d;
+    ux[id] = (float)m_ux_d;
+    uy[id] = (float)m_uy_d;
+    uz[id] = (float)m_uz_d;
+
+    // TRT collision with forcing - ALL OPERATIONS IN DOUBLE PRECISION
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        int q_opp = opposite[q];
+
+        // Read distribution functions
+        double f_q_d = (double)f_src[id + q * n_cells];
+        double f_qbar_d = (double)f_src[id + q_opp * n_cells];
+
+        // Equilibrium distributions - use double-precision computation
+        double feq_q_d = computeEquilibriumDouble(q, m_rho_d, m_ux_d, m_uy_d, m_uz_d);
+        double feq_qbar_d = computeEquilibriumDouble(q_opp, m_rho_d, m_ux_d, m_uy_d, m_uz_d);
+
+        // Symmetric and antisymmetric parts (TRT decomposition)
+        double f_plus_d = 0.5 * (f_q_d + f_qbar_d);
+        double f_minus_d = 0.5 * (f_q_d - f_qbar_d);
+        double feq_plus_d = 0.5 * (feq_q_d + feq_qbar_d);
+        double feq_minus_d = 0.5 * (feq_q_d - feq_qbar_d);
+
+        // Guo forcing term calculation with double precision + FMA for maximum accuracy
+        // CRITICAL OPTIMIZATION: Use double precision + FMA to minimize numerical errors
+        // FMA (fused multiply-add) avoids intermediate rounding for (a*b)+c operations
+        double dx = (double)ex[q];
+        double dy = (double)ey[q];
+        double dz = (double)ez[q];
+        double dF_x = (double)fx;
+        double dF_y = (double)fy;
+        double dF_z = (double)fz;
+
+        // Use FMA for dot products: ci_dot_u = ex*ux + ey*uy + ez*uz
+        double ci_dot_u_d = fma(dx, m_ux_d, fma(dy, m_uy_d, dz * m_uz_d));
+        double ci_dot_F_d = fma(dx, dF_x, fma(dy, dF_y, dz * dF_z));
+
+        // Numerically stable (c - u)·F computation to avoid catastrophic cancellation
+        // Use FMA: (c-u)·F = (ex-ux)*Fx + (ey-uy)*Fy + (ez-uz)*Fz
+        double c_minus_u_dot_F_d = fma(dx - m_ux_d, dF_x, fma(dy - m_uy_d, dF_y, (dz - m_uz_d) * dF_z));
+
+        // Standard Guo term: 3(c - u)·F + 9(c·u)(c·F)
+        double term1_d = 3.0 * c_minus_u_dot_F_d;
+        double term2_d = 9.0 * ci_dot_u_d * ci_dot_F_d;
+
+        // TRT forcing: standard BGK term + TRT correction
+        // CRITICAL FIX: Use w_double[q] for maximum precision (15 digits vs 7 for float)
+        double force_term_d = (1.0 - 0.5 * (double)omega_even) * w_double[q] * (term1_d + term2_d);
+
+        // TRT correction (Walberla ForceModel.h line 533-535)
+        // Full formula: 3w[(1-0.5*omega)((c-u+3(c·u)c)·F) + (omega-omega_odd)*0.5*(c·F)]
+        // Second term expands to: 3w * (omega_even - omega_odd) * 0.5 * (c·F) = 1.5w * (omega_even - omega_odd) * (c·F)
+        force_term_d += 1.5 * w_double[q] * ((double)omega_even - (double)omega_odd) * ci_dot_F_d;
+
+        // TRT collision: relax symmetric part with omega_even, antisymmetric with omega_odd
+        double omega_even_d = (double)omega_even;
+        double omega_odd_d = (double)omega_odd;
+        double f_plus_new_d = f_plus_d - omega_even_d * (f_plus_d - feq_plus_d);
+        double f_minus_new_d = f_minus_d - omega_odd_d * (f_minus_d - feq_minus_d);
+
+        // Reconstruct post-collision distribution with forcing
+        // NOTE: force_term is added as a separate source term, NOT double-applied.
+        // This matches walberla's implementation (CellwiseSweep.impl.h:1647-1648)
+        // Formula: f_new = (f_plus - lambda_e*(f_plus - feq_plus)) + (f_minus - lambda_d*(f_minus - feq_minus)) + forceTerm
+        f_dst[id + q * n_cells] = (float)(f_plus_new_d + f_minus_new_d + force_term_d);
     }
 }
 
