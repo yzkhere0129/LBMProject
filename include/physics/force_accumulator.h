@@ -80,6 +80,23 @@ public:
                           const float* liquid_fraction = nullptr);
 
     /**
+     * @brief Add VOF-based buoyancy force (density difference model)
+     * @param fill_level VOF fill level field (0=gas, 1=liquid)
+     * @param rho_liquid Liquid phase density [kg/m³]
+     * @param rho_gas Gas phase density [kg/m³]
+     * @param gx, gy, gz Gravity vector [m/s²]
+     * @note Adds F_buoyancy = (ρ_gas - ρ_liquid) × (1-f) × g [N/m³]
+     * @note This is the exact two-phase buoyancy force for VOF simulations
+     * @note Physical interpretation:
+     *       - Gas regions (f=0): Maximum buoyancy (ρ_gas - ρ_liquid) × g
+     *       - Liquid regions (f=1): Zero buoyancy (liquid is reference phase)
+     *       - Interface: Linearly interpolated based on gas fraction (1-f)
+     */
+    void addVOFBuoyancyForce(const float* fill_level,
+                            float rho_liquid, float rho_gas,
+                            float gx, float gy, float gz);
+
+    /**
      * @brief Add Darcy damping for mushy/solid regions
      * @param liquid_fraction Liquid fraction field (0=solid, 1=liquid)
      * @param vx, vy, vz Velocity components [lattice units]

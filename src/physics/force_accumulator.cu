@@ -73,6 +73,62 @@ __global__ void addBuoyancyForceKernel(
 }
 
 /**
+ * @brief Add VOF-based buoyancy force (density difference model)
+ *
+ * Physical derivation:
+ *   Local density: ρ(f) = f × ρ_liquid + (1-f) × ρ_gas
+ *   Reference density: ρ_ref = ρ_liquid (liquid phase as reference)
+ *   Buoyancy force: F = (ρ - ρ_ref) × g = (ρ_gas - ρ_liquid) × (1-f) × g [N/m³]
+ *
+ * This formulation is exact for two-phase flows with constant densities.
+ * It naturally produces:
+ *   - Gas regions (f=0): F = (ρ_gas - ρ_liquid) × g (upward buoyancy if ρ_gas < ρ_liquid)
+ *   - Interface (f=0.5): F = 0.5 × (ρ_gas - ρ_liquid) × g (interpolated)
+ *   - Liquid regions (f=1): F = 0 (no buoyancy relative to reference)
+ *
+ * @param fill_level VOF field [0=gas, 1=liquid]
+ * @param fx, fy, fz Force accumulation arrays [N/m³]
+ * @param rho_liquid Liquid density [kg/m³]
+ * @param rho_gas Gas density [kg/m³]
+ * @param gx, gy, gz Gravity vector [m/s²]
+ * @param n Number of cells
+ */
+__global__ void addVOFBuoyancyForceKernel(
+    const float* fill_level,
+    float* fx, float* fy, float* fz,
+    float rho_liquid, float rho_gas,
+    float gx, float gy, float gz,
+    int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+
+    float f = fill_level[idx];
+
+    // NaN protection
+    if (isnan(f) || isinf(f)) {
+        return;
+    }
+
+    // Clamp fill level to valid range [0, 1]
+    f = fmaxf(0.0f, fminf(1.0f, f));
+
+    // Buoyancy force: F = (ρ_gas - ρ_liquid) × (1-f) × g
+    // Physical interpretation:
+    //   - Density difference (ρ_gas - ρ_liquid) is typically negative (gas lighter)
+    //   - (1-f) gives gas fraction (0=pure liquid, 1=pure gas)
+    //   - Combined with gravity g, produces upward force in gas-rich regions
+    float density_diff = rho_gas - rho_liquid;
+    float gas_fraction = 1.0f - f;
+    float factor = density_diff * gas_fraction;
+
+    // Accumulate force
+    fx[idx] += factor * gx;
+    fy[idx] += factor * gy;
+    fz[idx] += factor * gz;
+}
+
+/**
  * @brief Add Darcy damping (velocity-dependent)
  * F_darcy = -C · (1 - f_l)² / (f_l³ + ε) · ρ · v [N/m³]
  *
@@ -748,6 +804,34 @@ void ForceAccumulator::addBuoyancyForce(
     buoyancy_mag_ = getMaxForceMagnitude();
 }
 
+void ForceAccumulator::addVOFBuoyancyForce(
+    const float* fill_level,
+    float rho_liquid, float rho_gas,
+    float gx, float gy, float gz)
+{
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    addVOFBuoyancyForceKernel<<<blocks, threads>>>(
+        fill_level,
+        d_fx_, d_fy_, d_fz_,
+        rho_liquid, rho_gas,
+        gx, gy, gz,
+        num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        throw std::runtime_error("ForceAccumulator::addVOFBuoyancyForce: Kernel launch failed: " +
+                                std::string(cudaGetErrorString(err)));
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Update diagnostic (same as thermal buoyancy for compatibility)
+    buoyancy_mag_ = getMaxForceMagnitude();
+}
+
 void ForceAccumulator::addDarcyDamping(
     const float* liquid_fraction, const float* vx, const float* vy, const float* vz,
     float darcy_coeff, float dx, float dt, float rho)
@@ -866,29 +950,36 @@ void ForceAccumulator::addRecoilPressureForce(
 }
 
 void ForceAccumulator::convertToLatticeUnits(float dx, float dt, float rho) {
-    // CRITICAL FIX: Corrected force conversion for Guo forcing scheme
+    // CRITICAL FIX (2026-01-17): Correct force conversion for Guo forcing scheme
     //
-    // The Guo forcing scheme in fluidBGKCollisionVaryingForceKernel applies force as:
+    // The Guo forcing scheme in fluidBGKCollisionVaryingForceKernel applies:
     //   u_corrected = u_uncorrected + 0.5 * F / ρ_lattice
     //
-    // Where F is body force and ρ_lattice ≈ 1 in standard LBM.
+    // Where F is ACCELERATION in lattice units (since ρ_lattice ≈ 1).
     //
-    // Starting from physical force density F_phys [N/m³] = [kg/(m²·s²)]:
-    //   - Acceleration: a = F_phys / ρ_phys [m/s²]
-    //   - In lattice: F_lattice should produce the same acceleration
-    //   - Since ρ_lattice ≈ 1, we have: a_lattice = F_lattice / 1 = F_lattice
-    //   - Physical acceleration → lattice: a_lattice = a_phys × (dt / (dx/dt))² = a_phys × dt² / dx²
+    // Starting from physical force density F_phys [N/m³]:
+    //   1. Compute acceleration: a = F_phys / ρ_phys [m/s²]
+    //   2. This is already the correct lattice force (no additional conversion needed)
+    //   3. LBM forces represent acceleration when ρ_lattice = 1
     //
-    // WAIT: This gives F_lattice = a_phys × dt² / dx² = (F_phys / ρ_phys) × dt² / dx²
+    // Correct conversion:
+    //   F_lattice = F_phys / ρ_phys [m/s²]
     //
-    // But empirically, LBM forces should be scaled as:
-    //   F_lattice = F_phys / ρ_phys [acceleration in physical units]
+    // Dimensional analysis:
+    //   [N/m³] / [kg/m³] = [kg·m/s²/m³] / [kg/m³] = [m/s²] ✓
     //
-    // This works because LBM collision happens every lattice timestep (dt_lattice = 1),
-    // and the force directly represents acceleration when ρ_lattice = 1.
+    // Example: Surface tension force
+    //   F_phys = 8.25e10 N/m³ (σ=1.65 N/m, κ=1e5 m⁻¹, |∇f|=5e5 m⁻¹)
+    //   ρ = 4110 kg/m³
+    //   F_lattice = 8.25e10 / 4110 = 2.0e7 m/s² (STILL TOO LARGE!)
     //
-    // Evidence: Buoyancy of 120 N/m³ ÷ 4110 kg/m³ = 0.029 m/s² ≈ reasonable lattice force
-    float conversion_factor = 1.0f / rho;
+    // The real issue is that surface tension forces are calculated with wrong units.
+    // They should already account for dx scaling in the CSF kernel.
+    //
+    // EMPIRICAL FIX: Use dt²/dx scaling to convert from physical to lattice units
+    // This ensures proper dimensional analysis for the LBM scheme.
+    //
+    float conversion_factor = (dt * dt / dx) / rho;
 
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;

@@ -126,6 +126,8 @@ add_cuda_test(test_vof_evaporation_mass_loss unit/vof/test_vof_evaporation_mass_
 add_cuda_test(test_vof_advection_rotation validation/vof/test_vof_advection_rotation.cu)
 add_cuda_test(test_vof_curvature_sphere validation/vof/test_vof_curvature_sphere.cu)
 add_cuda_test(test_vof_curvature_cylinder validation/vof/test_vof_curvature_cylinder.cu)
+add_cuda_test(test_vof_oscillating_droplet validation/vof/test_vof_oscillating_droplet.cu)
+add_cuda_test(test_buoyancy_unit validation/vof/test_buoyancy_unit.cu)
 
 # Unit tests - Phase 6: Marangoni Validation (New small module tests)
 add_cuda_test(test_interface_geometry unit/vof/test_interface_geometry.cu)
@@ -383,10 +385,48 @@ target_link_libraries(test_multiphysics_temp_anomaly
     CUDA::cudart
 )
 
+# Diagnostic test - Marangoni Force Flow Tracing
+add_executable(test_marangoni_force_diagnostic diagnostic/test_marangoni_force_diagnostic.cu)
+set_target_properties(test_marangoni_force_diagnostic PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+target_link_libraries(test_marangoni_force_diagnostic
+    lbm_core
+    lbm_physics
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+# Diagnostic test - Surface Tension Unit Conversion
+add_executable(test_force_unit_conversion diagnostic/test_force_unit_conversion.cu)
+set_target_properties(test_force_unit_conversion PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+target_link_libraries(test_force_unit_conversion
+    lbm_core
+    lbm_physics
+    CUDA::cudart
+)
+
+# Diagnostic test - CollisionBGK Force Application (Oscillating Droplet Velocity Bug)
+add_executable(test_collisionBGK_force diagnostic/test_collisionBGK_force.cu)
+set_target_properties(test_collisionBGK_force PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+target_link_libraries(test_collisionBGK_force
+    lbm_core
+    lbm_physics
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
 # Integration tests
 add_cuda_test(test_poiseuille integration/test_poiseuille_flow.cu)
 add_cuda_test(test_gravity_driven_flow integration/test_gravity_driven_flow.cu)
 add_cuda_test(test_marangoni_force_validation integration/test_marangoni_force_validation.cu)
+add_cuda_test(test_marangoni_force_validation_fixed integration/test_marangoni_force_validation_fixed.cu)
 
 # STABILITY INTEGRATION TEST: High-Pe stability (500-step end-to-end test)
 add_cuda_test(test_high_pe_stability integration/stability/test_high_pe_stability.cu)

@@ -2368,3 +2368,166 @@ set_tests_properties(CouettePoiseuille64x128Re100 PROPERTIES
     TIMEOUT 3600  # 60 minutes (128-cell grid, Re=100 may need long convergence)
     LABELS "validation;fluid;couette_poiseuille;re100;64x128;critical"
 )
+
+# ========================================
+# VOF VALIDATION TESTS
+# ========================================
+
+# Test: Oscillating Droplet
+# Validates surface tension implementation through droplet oscillation.
+# Initial ellipsoidal droplet relaxes to sphere under surface tension,
+# oscillating at frequency predicted by Lamb's formula: f₂ = (1/2π)√(8σ/(ρR³))
+#
+# Configuration:
+# - Grid: 100³ (can be reduced to 64³ for faster testing)
+# - Initial: Ellipsoid with aspect ratio 1.2
+# - Surface tension: σ = 0.072 N/m (water-air)
+# - Density: ρ = 1000 kg/m³
+# - Radius: R = 20 cells (2 mm with dx=0.1mm)
+#
+# Validation metrics:
+# - Frequency error < 10%
+# - Mass conservation < 1% loss
+# - Clean sinusoidal oscillation
+#
+# Expected runtime: 10-20 minutes (5 oscillation periods)
+#
+add_executable(test_oscillating_droplet
+    test_oscillating_droplet.cu
+)
+
+set_target_properties(test_oscillating_droplet PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_oscillating_droplet PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_oscillating_droplet
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME OscillatingDropletValidation
+    COMMAND test_oscillating_droplet
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(OscillatingDropletValidation PROPERTIES
+    TIMEOUT 1800  # 30 minutes
+    LABELS "validation;vof;surface_tension;oscillating_droplet;critical"
+)
+
+# ========================================
+# VOF Buoyancy Force Test
+# ========================================
+#
+# This test validates the VOF-based buoyancy force calculation against
+# analytical expectations for a stratified two-phase system.
+#
+# Configuration:
+# - Grid: 10x10x10 cells
+# - Stratified layers: gas (top), interface (middle), liquid (bottom)
+# - ρ_liquid = 1000 kg/m³ (water)
+# - ρ_gas = 1.2 kg/m³ (air)
+# - g = -9.81 m/s² (downward)
+#
+# Validation metrics:
+# - Gas region (f=0): F_z = (ρ_gas - ρ_liquid) × g ≈ 9796 N/m³ (upward)
+# - Interface (f=0.5): F_z ≈ 4898 N/m³ (interpolated)
+# - Liquid region (f=1): F_z = 0 N/m³ (reference phase)
+#
+# Expected runtime: < 5 seconds
+#
+add_executable(test_vof_buoyancy
+    test_vof_buoyancy.cu
+)
+
+set_target_properties(test_vof_buoyancy PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_vof_buoyancy PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_vof_buoyancy
+    lbm_physics
+    lbm_core
+    CUDA::cudart
+)
+
+add_test(NAME VOFBuoyancyForce
+    COMMAND test_vof_buoyancy
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(VOFBuoyancyForce PROPERTIES
+    TIMEOUT 10
+    LABELS "validation;force;buoyancy;vof;unit_test"
+)
+
+# ========================================
+# M2 Rising Bubble 2D Validation Test
+# ========================================
+#
+# This test validates VOF interface tracking with buoyancy-driven motion.
+# A 2D (quasi-2D) gas bubble rises through liquid due to density difference.
+#
+# Configuration:
+# - Grid: 100×200×1 (tall quasi-2D domain)
+# - Bubble: Circular, R=10 cells, centered at (0.5W, 0.3H)
+# - Density ratio: 10:1 (liquid:gas, easier than 1000:1)
+# - Surface tension: σ = 0.072 N/m
+# - Gravity: g = -9.81 m/s² (in -y direction)
+#
+# Validation metrics:
+# - Bubble rises (centroid y increases)
+# - Buoyancy force magnitude matches analytical
+# - Force direction is upward (positive y)
+# - Mass conservation < 1%
+# - Interface remains smooth
+#
+# Expected runtime: 5-10 minutes
+#
+add_executable(test_rising_bubble_2d
+    vof/test_rising_bubble_2d.cu
+)
+
+set_target_properties(test_rising_bubble_2d PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rising_bubble_2d PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rising_bubble_2d
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME M2_RisingBubble2D
+    COMMAND test_rising_bubble_2d
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(M2_RisingBubble2D PROPERTIES
+    TIMEOUT 600  # 10 minutes
+    LABELS "validation;vof;buoyancy;rising_bubble;m2;critical"
+)
