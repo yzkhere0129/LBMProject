@@ -817,8 +817,11 @@ void MultiphysicsSolver::initialize(float initial_temperature,
     }
 
     // Initialize fluid (zero velocity)
+    // CRITICAL: Use lattice density = 1.0, not physical density!
+    // LBM operates in dimensionless units; physical density is only used
+    // for unit conversions (e.g., in force conversion), not for distribution functions.
     if (fluid_) {
-        fluid_->initialize(config_.density, 0.0f, 0.0f, 0.0f);
+        fluid_->initialize(1.0f, 0.0f, 0.0f, 0.0f);
     }
 
     // Initialize VOF with planar interface
@@ -882,8 +885,9 @@ void MultiphysicsSolver::initialize(const float* temperature_field,
     }
 
     // Initialize fluid (zero velocity)
+    // CRITICAL: Use lattice density = 1.0, not physical density!
     if (fluid_) {
-        fluid_->initialize(config_.density, 0.0f, 0.0f, 0.0f);
+        fluid_->initialize(1.0f, 0.0f, 0.0f, 0.0f);
     }
 
     // Initialize VOF
