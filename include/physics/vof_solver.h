@@ -59,13 +59,27 @@ enum class CellFlag : uint8_t {
 class VOFSolver {
 public:
     /**
-     * @brief Constructor
+     * @brief Boundary type enumeration for VOF solver
+     */
+    enum class BoundaryType {
+        PERIODIC = 0,  // Periodic (wrapping)
+        WALL = 1       // Wall (zero-flux / no-penetration)
+    };
+
+    /**
+     * @brief Constructor with boundary configuration
      * @param nx Domain size in x-direction
      * @param ny Domain size in y-direction
      * @param nz Domain size in z-direction
      * @param dx Lattice spacing [m]
+     * @param bc_x Boundary condition in x-direction (default: PERIODIC)
+     * @param bc_y Boundary condition in y-direction (default: PERIODIC)
+     * @param bc_z Boundary condition in z-direction (default: PERIODIC)
      */
-    VOFSolver(int nx, int ny, int nz, float dx = 1.0f);
+    VOFSolver(int nx, int ny, int nz, float dx = 1.0f,
+              BoundaryType bc_x = BoundaryType::PERIODIC,
+              BoundaryType bc_y = BoundaryType::PERIODIC,
+              BoundaryType bc_z = BoundaryType::PERIODIC);
 
     /**
      * @brief Destructor
@@ -223,6 +237,9 @@ private:
     int num_cells_;
     float dx_;  ///< Lattice spacing [m]
 
+    // Boundary conditions
+    BoundaryType bc_x_, bc_y_, bc_z_;
+
     // Device memory for VOF fields
     float* d_fill_level_;           ///< Fill level field (0-1)
     uint8_t* d_cell_flags_;         ///< Cell flag field (GAS/LIQUID/INTERFACE/OBSTACLE)
@@ -242,6 +259,9 @@ private:
 /**
  * @brief CUDA kernel for first-order upwind advection of fill level
  * @note Uses donor-cell scheme: stable but diffusive
+ * @param bc_x Boundary condition in x (0=periodic, 1=wall)
+ * @param bc_y Boundary condition in y (0=periodic, 1=wall)
+ * @param bc_z Boundary condition in z (0=periodic, 1=wall)
  */
 __global__ void advectFillLevelUpwindKernel(
     const float* fill_level,
@@ -251,7 +271,8 @@ __global__ void advectFillLevelUpwindKernel(
     const float* uz,
     float dt,
     float dx,
-    int nx, int ny, int nz);
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z);
 
 /**
  * @brief CUDA kernel for interface reconstruction

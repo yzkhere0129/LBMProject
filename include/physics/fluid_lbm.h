@@ -157,6 +157,50 @@ public:
                      float lambda = 3.0f / 16.0f);
 
     /**
+     * @brief Compute variable viscosity field from VOF for two-phase flow
+     *
+     * For constant dynamic viscosity μ but variable density ρ(f):
+     * - ν(f) = μ / ρ(f) where ρ(f) = f×ρ_heavy + (1-f)×ρ_light
+     * - τ(f) = ν_lattice(f)/cs² + 0.5
+     * - ω(f) = 1/τ(f)
+     *
+     * @param vof_field VOF fill level field (0=light, 1=heavy)
+     * @param rho_heavy Heavy phase density [kg/m³]
+     * @param rho_light Light phase density [kg/m³]
+     * @param mu_constant Dynamic viscosity [Pa·s] (constant for both phases)
+     */
+    void computeVariableViscosity(const float* vof_field,
+                                  float rho_heavy,
+                                  float rho_light,
+                                  float mu_constant);
+
+    /**
+     * @brief Perform TRT collision with variable viscosity (variable omega field)
+     *
+     * Uses per-cell relaxation parameter omega[i] computed by computeVariableViscosity().
+     * Essential for two-phase flows where kinematic viscosity varies with local density:
+     * ν(f) = μ / ρ(f).
+     *
+     * CRITICAL: For correct dynamics, Guo forcing must use VOF-weighted physical density
+     * ρ_vof(f) = f×ρ_heavy + (1-f)×ρ_light, not the LBM density field.
+     *
+     * @param force_x Device array of force x-component [m/s²]
+     * @param force_y Device array of force y-component [m/s²]
+     * @param force_z Device array of force z-component [m/s²]
+     * @param vof_field VOF fill level field (0=light, 1=heavy)
+     * @param rho_heavy Heavy phase density [kg/m³]
+     * @param rho_light Light phase density [kg/m³]
+     * @param lambda Magic parameter (default: 3/16 for optimal walls)
+     */
+    void collisionTRTVariable(const float* force_x,
+                             const float* force_y,
+                             const float* force_z,
+                             const float* vof_field,
+                             float rho_heavy,
+                             float rho_light,
+                             float lambda = 3.0f / 16.0f);
+
+    /**
      * @brief Perform streaming step
      */
     void streaming();
@@ -337,6 +381,9 @@ private:
     float* d_uz;        ///< Velocity field z-component
     float* d_pressure;  ///< Pressure field [Pa]
 
+    // Variable viscosity support for two-phase flow
+    float* d_omega_field_;  ///< Per-cell relaxation parameter for variable viscosity
+
     // Boundary node management
     core::BoundaryNode* d_boundary_nodes_;  ///< Device array of boundary nodes
     int n_boundary_nodes_;                   ///< Number of boundary nodes
@@ -414,6 +461,39 @@ __global__ void fluidTRTCollisionVaryingForceKernel(
     const float* force_z,
     float omega_e,
     float omega_o,
+    int nx, int ny, int nz);
+
+/**
+ * @brief CUDA kernel for computing variable omega field from VOF
+ */
+__global__ void computeVariableOmegaKernel(
+    const float* vof_field,
+    float* omega_field,
+    float rho_heavy,
+    float rho_light,
+    float mu_constant,
+    float dt,
+    float dx,
+    int num_cells);
+
+/**
+ * @brief CUDA kernel for TRT collision with variable omega (per-cell viscosity)
+ */
+__global__ void fluidTRTCollisionVariableOmegaKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* omega_even_field,
+    const float* vof_field,
+    float rho_heavy,
+    float rho_light,
+    float lambda,
     int nx, int ny, int nz);
 
 /**

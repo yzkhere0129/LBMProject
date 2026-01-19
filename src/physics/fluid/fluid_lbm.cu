@@ -46,6 +46,7 @@ FluidLBM::FluidLBM(int nx, int ny, int nz,
       d_f_src(nullptr), d_f_dst(nullptr),
       d_rho(nullptr), d_ux(nullptr), d_uy(nullptr), d_uz(nullptr),
       d_pressure(nullptr),
+      d_omega_field_(nullptr),
       d_boundary_nodes_(nullptr),
       n_boundary_nodes_(0)
 {
@@ -155,6 +156,16 @@ void FluidLBM::allocateMemory() {
         throw std::runtime_error("FluidLBM: Failed to allocate d_pressure: " +
                                std::string(cudaGetErrorString(error)));
     }
+
+    error = cudaMalloc(&d_omega_field_, macro_size);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM: Failed to allocate d_omega_field_: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    // Initialize omega field to default value (uniform viscosity)
+    std::vector<float> h_omega(num_cells_, omega_);
+    cudaMemcpy(d_omega_field_, h_omega.data(), macro_size, cudaMemcpyHostToDevice);
 }
 
 // Free device memory
@@ -166,10 +177,12 @@ void FluidLBM::freeMemory() {
     if (d_uy) cudaFree(d_uy);
     if (d_uz) cudaFree(d_uz);
     if (d_pressure) cudaFree(d_pressure);
+    if (d_omega_field_) cudaFree(d_omega_field_);
     if (d_boundary_nodes_) cudaFree(d_boundary_nodes_);
 
     d_f_src = d_f_dst = nullptr;
     d_rho = d_ux = d_uy = d_uz = d_pressure = nullptr;
+    d_omega_field_ = nullptr;
     d_boundary_nodes_ = nullptr;
 }
 
@@ -276,6 +289,25 @@ void FluidLBM::initialize(const float* density,
 
 // Collision with uniform force
 void FluidLBM::collisionBGK(float force_x, float force_y, float force_z) {
+    // ============================================================================
+    // CRITICAL FIX: Convert force from physical units [m/s²] to lattice units
+    // ============================================================================
+    // LBM kernels work in dimensionless lattice units
+    // Conversion formula: F_lattice = F_physical × dt² / dx
+    //
+    // Physical interpretation:
+    // - F_physical [m/s²]: acceleration in physical units
+    // - dt [s]: time step
+    // - dx [m]: lattice spacing
+    //
+    // Example: F = 0.1 m/s², dt = 1e-7 s, dx = 1e-6 m
+    // F_lattice = 0.1 × (1e-7)² / 1e-6 = 1e-9 (dimensionless)
+    // ============================================================================
+
+    float force_x_lattice = force_x * dt_ * dt_ / dx_;
+    float force_y_lattice = force_y * dt_ * dt_ / dx_;
+    float force_z_lattice = force_z * dt_ * dt_ / dx_;
+
     dim3 block(8, 8, 8);
     dim3 grid((nx_ + block.x - 1) / block.x,
              (ny_ + block.y - 1) / block.y,
@@ -283,7 +315,7 @@ void FluidLBM::collisionBGK(float force_x, float force_y, float force_z) {
 
     fluidBGKCollisionKernel<<<grid, block>>>(
         d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
-        force_x, force_y, force_z, omega_,
+        force_x_lattice, force_y_lattice, force_z_lattice, omega_,
         nx_, ny_, nz_);
     CUDA_CHECK_KERNEL();
 
@@ -324,6 +356,13 @@ void FluidLBM::collisionBGK(const float* force_x,
 
 // TRT collision with uniform force
 void FluidLBM::collisionTRT(float force_x, float force_y, float force_z, float lambda) {
+    // ============================================================================
+    // CRITICAL FIX: Convert force from physical units [m/s²] to lattice units
+    // ============================================================================
+    float force_x_lattice = force_x * dt_ * dt_ / dx_;
+    float force_y_lattice = force_y * dt_ * dt_ / dx_;
+    float force_z_lattice = force_z * dt_ * dt_ / dx_;
+
     // Compute TRT relaxation rates
     // omega_even = omega = 1/tau (same as BGK)
     float omega_even = omega_;
@@ -338,7 +377,7 @@ void FluidLBM::collisionTRT(float force_x, float force_y, float force_z, float l
 
     fluidTRTCollisionKernel<<<grid, block>>>(
         d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
-        force_x, force_y, force_z, omega_even, omega_odd,
+        force_x_lattice, force_y_lattice, force_z_lattice, omega_even, omega_odd,
         nx_, ny_, nz_);
     CUDA_CHECK_KERNEL();
 
@@ -757,6 +796,59 @@ void FluidLBM::setMovingWall(unsigned int wall_direction,
               << " nodes with velocity (" << ux_wall << ", "
               << uy_wall << ", " << uz_wall << ")"
               << " (" << excluded_corners << " corner nodes excluded)" << std::endl;
+}
+
+// Compute variable viscosity field from VOF
+void FluidLBM::computeVariableViscosity(const float* vof_field,
+                                        float rho_heavy,
+                                        float rho_light,
+                                        float mu_constant) {
+    int block_size = 256;
+    int grid_size = (num_cells_ + block_size - 1) / block_size;
+
+    computeVariableOmegaKernel<<<grid_size, block_size>>>(
+        vof_field, d_omega_field_,
+        rho_heavy, rho_light, mu_constant,
+        dt_, dx_, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM computeVariableViscosity failed: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+}
+
+// TRT collision with variable omega field
+void FluidLBM::collisionTRTVariable(const float* force_x,
+                                    const float* force_y,
+                                    const float* force_z,
+                                    const float* vof_field,
+                                    float rho_heavy,
+                                    float rho_light,
+                                    float lambda) {
+    dim3 block(8, 8, 8);
+    dim3 grid((nx_ + block.x - 1) / block.x,
+             (ny_ + block.y - 1) / block.y,
+             (nz_ + block.z - 1) / block.z);
+
+    fluidTRTCollisionVariableOmegaKernel<<<grid, block>>>(
+        d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+        force_x, force_y, force_z,
+        d_omega_field_, vof_field,
+        rho_heavy, rho_light, lambda,
+        nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM TRT variable omega collision kernel failed: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    swapDistributions();
 }
 
 //=============================================================================
@@ -1466,6 +1558,184 @@ __global__ void setBoundaryVelocityKernel(
         ux[id] = node.ux;
         uy[id] = node.uy;
         uz[id] = node.uz;
+    }
+}
+
+// Compute variable omega field from VOF for two-phase flow
+// For constant dynamic viscosity μ but variable density ρ(f):
+// ν(f) = μ / ρ(f) varies with local density
+__global__ void computeVariableOmegaKernel(
+    const float* vof_field,
+    float* omega_field,
+    float rho_heavy,
+    float rho_light,
+    float mu_constant,
+    float dt,
+    float dx,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    // Read VOF value (0=light phase, 1=heavy phase)
+    float f = vof_field[idx];
+
+    // Compute local density: ρ(f) = f×ρ_heavy + (1-f)×ρ_light
+    float rho_local = f * rho_heavy + (1.0f - f) * rho_light;
+
+    // Clamp density to prevent division by zero
+    rho_local = fmaxf(rho_local, 1e-6f);
+
+    // Compute local kinematic viscosity: ν(f) = μ / ρ(f)
+    float nu_local = mu_constant / rho_local;
+
+    // Convert to lattice units: ν_lattice = ν_physical × dt / dx²
+    float nu_lattice = nu_local * dt / (dx * dx);
+
+    // Compute relaxation time: τ = ν_lattice/cs² + 0.5
+    float tau = nu_lattice / D3Q19::CS2 + 0.5f;
+
+    // Stability: ensure τ > 0.5
+    tau = fmaxf(tau, 0.51f);
+
+    // Compute omega: ω = 1/τ
+    omega_field[idx] = 1.0f / tau;
+}
+
+// TRT collision kernel with variable omega (per-cell viscosity)
+// This allows proper handling of two-phase flows where kinematic viscosity
+// varies with local density: ν(f) = μ / ρ(f)
+__global__ void fluidTRTCollisionVariableOmegaKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* omega_even_field,
+    const float* vof_field,
+    float rho_heavy,
+    float rho_light,
+    float lambda,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Read local forces
+    float fx = force_x[id];
+    float fy = force_y[id];
+    float fz = force_z[id];
+
+    // Read local omega_even (varies with VOF)
+    float omega_even = omega_even_field[id];
+
+    // Compute omega_odd from lambda and omega_even
+    // omega_odd = 1 / (lambda/(1/omega_even - 0.5) + 0.5)
+    float omega_odd = 1.0f / (lambda / (1.0f / omega_even - 0.5f) + 0.5f);
+
+    // CRITICAL FIX: Compute VOF-weighted physical density for Guo forcing
+    // The LBM density field was initialized uniformly (e.g., 1.255), but the
+    // physical density varies with VOF: ρ_vof(f) = f×ρ_heavy + (1-f)×ρ_light
+    float f_vof = vof_field[id];
+    float rho_vof = f_vof * rho_heavy + (1.0f - f_vof) * rho_light;
+    rho_vof = fmaxf(rho_vof, 1e-6f);  // Safety clamp
+
+    // Compute macroscopic quantities with DOUBLE PRECISION
+    double m_rho_d = 0.0;
+    double m_ux_star_d = 0.0;
+    double m_uy_star_d = 0.0;
+    double m_uz_star_d = 0.0;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        double f_d = (double)f_src[id + q * n_cells];
+        m_rho_d += f_d;
+        m_ux_star_d += (double)ex[q] * f_d;
+        m_uy_star_d += (double)ey[q] * f_d;
+        m_uz_star_d += (double)ez[q] * f_d;
+    }
+
+    // Compute uncorrected velocity with safety check (still uses LBM density for momentum)
+    const double RHO_MIN_D = 1e-12;
+    double inv_rho_d = 1.0 / fmax(m_rho_d, RHO_MIN_D);
+    double m_ux_uncorrected_d = m_ux_star_d * inv_rho_d;
+    double m_uy_uncorrected_d = m_uy_star_d * inv_rho_d;
+    double m_uz_uncorrected_d = m_uz_star_d * inv_rho_d;
+
+    // CRITICAL FIX: Apply Guo forcing using VOF-weighted density
+    // This ensures correct force response: Δu = 0.5×F/ρ_vof
+    // Light phase (ρ=0.1694): Δu is 7.4× larger than heavy phase (ρ=1.255)
+    double inv_rho_vof_d = 1.0 / (double)rho_vof;
+    double m_ux_d = m_ux_uncorrected_d + 0.5 * (double)fx * inv_rho_vof_d;
+    double m_uy_d = m_uy_uncorrected_d + 0.5 * (double)fy * inv_rho_vof_d;
+    double m_uz_d = m_uz_uncorrected_d + 0.5 * (double)fz * inv_rho_vof_d;
+
+    // Store corrected macroscopic quantities
+    rho[id] = (float)m_rho_d;
+    ux[id] = (float)m_ux_d;
+    uy[id] = (float)m_uy_d;
+    uz[id] = (float)m_uz_d;
+
+    // TRT collision with forcing - ALL OPERATIONS IN DOUBLE PRECISION
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        int q_opp = opposite[q];
+
+        // Read distribution functions
+        double f_q_d = (double)f_src[id + q * n_cells];
+        double f_qbar_d = (double)f_src[id + q_opp * n_cells];
+
+        // Equilibrium distributions - use double-precision computation
+        double feq_q_d = computeEquilibriumDouble(q, m_rho_d, m_ux_d, m_uy_d, m_uz_d);
+        double feq_qbar_d = computeEquilibriumDouble(q_opp, m_rho_d, m_ux_d, m_uy_d, m_uz_d);
+
+        // Symmetric and antisymmetric parts (TRT decomposition)
+        double f_plus_d = 0.5 * (f_q_d + f_qbar_d);
+        double f_minus_d = 0.5 * (f_q_d - f_qbar_d);
+        double feq_plus_d = 0.5 * (feq_q_d + feq_qbar_d);
+        double feq_minus_d = 0.5 * (feq_q_d - feq_qbar_d);
+
+        // Guo forcing term calculation with double precision + FMA
+        double dx = (double)ex[q];
+        double dy = (double)ey[q];
+        double dz = (double)ez[q];
+        double dF_x = (double)fx;
+        double dF_y = (double)fy;
+        double dF_z = (double)fz;
+
+        // Use FMA for dot products
+        double ci_dot_u_d = fma(dx, m_ux_d, fma(dy, m_uy_d, dz * m_uz_d));
+        double ci_dot_F_d = fma(dx, dF_x, fma(dy, dF_y, dz * dF_z));
+
+        // Numerically stable (c - u)·F computation
+        double c_minus_u_dot_F_d = fma(dx - m_ux_d, dF_x, fma(dy - m_uy_d, dF_y, (dz - m_uz_d) * dF_z));
+
+        // Standard Guo term: 3(c - u)·F + 9(c·u)(c·F)
+        double term1_d = 3.0 * c_minus_u_dot_F_d;
+        double term2_d = 9.0 * ci_dot_u_d * ci_dot_F_d;
+
+        // TRT forcing: standard BGK term + TRT correction
+        double force_term_d = (1.0 - 0.5 * (double)omega_even) * w_double[q] * (term1_d + term2_d);
+
+        // TRT correction term
+        force_term_d += 1.5 * w_double[q] * ((double)omega_even - (double)omega_odd) * ci_dot_F_d;
+
+        // TRT collision: relax symmetric part with omega_even, antisymmetric with omega_odd
+        double omega_even_d = (double)omega_even;
+        double omega_odd_d = (double)omega_odd;
+        double f_plus_new_d = f_plus_d - omega_even_d * (f_plus_d - feq_plus_d);
+        double f_minus_new_d = f_minus_d - omega_odd_d * (f_minus_d - feq_minus_d);
+
+        // Reconstruct post-collision distribution with forcing
+        f_dst[id + q * n_cells] = (float)(f_plus_new_d + f_minus_new_d + force_term_d);
     }
 }
 
