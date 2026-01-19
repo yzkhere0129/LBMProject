@@ -2531,3 +2531,506 @@ set_tests_properties(M2_RisingBubble2D PROPERTIES
     TIMEOUT 600  # 10 minutes
     LABELS "validation;vof;buoyancy;rising_bubble;m2;critical"
 )
+
+# ========================================
+# Rayleigh-Taylor Instability Validation Test
+# ========================================
+#
+# This test validates VOF interface tracking for gravitational instability.
+# Classic benchmark: heavy fluid over light fluid develops bubble-spike structure.
+#
+# Configuration:
+# - Grid: 128×512×4 (8mm × 32mm, quasi-2D)
+# - Heavy fluid: ρ_h = 1.225 kg/m³ (air, on top)
+# - Light fluid: ρ_l = 0.169 kg/m³ (helium, below)
+# - Initial: Sinusoidal perturbation y = -0.05*cos(2πx)
+# - Surface tension: σ = 0.01 N/m
+# - Gravity: g = 9.81 m/s²
+# - Total time: 1.0 s
+#
+# Validation metrics:
+# - Mass conservation < 1%
+# - Bubble-spike structure develops
+# - No NaN/Inf
+# - Monotonic instability growth
+#
+# References:
+# - Tryggvason (1988): Numerical simulations of Rayleigh-Taylor instability
+# - Youngs (1984): Numerical simulation of turbulent mixing
+#
+# Expected runtime: 15-20 minutes (100,000 timesteps with simplified dynamics)
+#
+add_executable(test_rayleigh_taylor
+    vof/test_rayleigh_taylor.cu
+)
+
+set_target_properties(test_rayleigh_taylor PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rayleigh_taylor PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rayleigh_taylor
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RayleighTaylorInstability
+    COMMAND test_rayleigh_taylor
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(RayleighTaylorInstability PROPERTIES
+    TIMEOUT 1800  # 30 minutes (100k timesteps with simplified dynamics)
+    LABELS "validation;vof;instability;rayleigh_taylor;critical"
+)
+
+# ========================================
+# Rayleigh-Taylor Debug Test
+# ========================================
+#
+# Debug version to isolate mass conservation issues.
+# Tests VOF advection components separately to identify root cause of 11.7% error.
+#
+add_executable(test_rayleigh_taylor_debug
+    vof/test_rayleigh_taylor_debug.cu
+)
+
+set_target_properties(test_rayleigh_taylor_debug PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rayleigh_taylor_debug PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rayleigh_taylor_debug
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RayleighTaylorDebug
+    COMMAND test_rayleigh_taylor_debug
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(RayleighTaylorDebug PROPERTIES
+    TIMEOUT 1800  # 30 minutes
+    LABELS "validation;vof;debug;mass_conservation"
+)
+
+# ========================================
+# Rayleigh-Taylor Fixed Test
+# ========================================
+#
+# Fixed version with proper mass conservation (<0.1% error).
+# Fixes: Removed velocity limiter, reduced dt to ensure natural CFL < 0.5
+#
+add_executable(test_rayleigh_taylor_fixed
+    vof/test_rayleigh_taylor_fixed.cu
+)
+
+set_target_properties(test_rayleigh_taylor_fixed PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rayleigh_taylor_fixed PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rayleigh_taylor_fixed
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RayleighTaylorFixed
+    COMMAND test_rayleigh_taylor_fixed
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(RayleighTaylorFixed PROPERTIES
+    TIMEOUT 3600  # 60 minutes (10× more timesteps)
+    LABELS "validation;vof;instability;rayleigh_taylor;fixed;critical"
+)
+
+# ========================================
+# Rayleigh-Taylor Conservative Test
+# ========================================
+# Uses flux-conservative VOF advection for proper mass conservation
+#
+add_executable(test_rayleigh_taylor_conservative
+    vof/test_rayleigh_taylor_conservative.cu
+)
+
+set_target_properties(test_rayleigh_taylor_conservative PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rayleigh_taylor_conservative PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rayleigh_taylor_conservative
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RayleighTaylorConservative
+    COMMAND test_rayleigh_taylor_conservative
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(RayleighTaylorConservative PROPERTIES
+    TIMEOUT 600
+    LABELS "validation;vof;conservative;mass_conservation;critical"
+)
+
+# ========================================
+# Rayleigh-Taylor LBM Test
+# ========================================
+# Uses full FluidLBM solver for divergence-free velocity fields
+#
+add_executable(test_rayleigh_taylor_lbm
+    vof/test_rayleigh_taylor_lbm.cu
+)
+
+set_target_properties(test_rayleigh_taylor_lbm PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rayleigh_taylor_lbm PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rayleigh_taylor_lbm
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RayleighTaylorLBM
+    COMMAND test_rayleigh_taylor_lbm
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(RayleighTaylorLBM PROPERTIES
+    TIMEOUT 600
+    LABELS "validation;vof;lbm;mass_conservation;critical"
+)
+
+# ========================================
+# Rayleigh-Taylor Full Validation Test
+# ========================================
+# Complete validation with analytical solution comparison and VTK output
+#
+add_executable(test_rayleigh_taylor_validation
+    vof/test_rayleigh_taylor_validation.cu
+)
+
+set_target_properties(test_rayleigh_taylor_validation PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rayleigh_taylor_validation PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rayleigh_taylor_validation
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RayleighTaylorValidation
+    COMMAND test_rayleigh_taylor_validation
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+# ========================================
+# Rayleigh-Taylor Force Diagnostic Test
+# ========================================
+# Focused diagnostic for force-velocity coupling in RT instability
+#
+add_executable(test_rayleigh_taylor_force_diagnostic
+    vof/test_rayleigh_taylor_force_diagnostic.cu
+)
+
+set_target_properties(test_rayleigh_taylor_force_diagnostic PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rayleigh_taylor_force_diagnostic PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rayleigh_taylor_force_diagnostic
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RayleighTaylorForceDiagnostic
+    COMMAND test_rayleigh_taylor_force_diagnostic
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+# ========================================
+# Rayleigh-Taylor Mushroom Structures Test
+# ========================================
+# Classic RT instability benchmark producing mushroom-shaped structures
+# Domain: 1m × 4m × 0.1m, rho_heavy=3.0, rho_light=1.0
+# Time range: 0 to 1.0s with keyframes at 0.2s, 0.7s, 0.8s, 0.9s, 1.0s
+# Tracks h₁ (bubble) and h₂ (spike) positions
+#
+add_executable(test_rayleigh_taylor_mushroom
+    vof/test_rayleigh_taylor_mushroom.cu
+)
+
+set_target_properties(test_rayleigh_taylor_mushroom PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rayleigh_taylor_mushroom PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rayleigh_taylor_mushroom
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RayleighTaylorMushroom
+    COMMAND test_rayleigh_taylor_mushroom
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+# ========================================
+# Rayleigh-Taylor Mass Conservation Diagnostic
+# ========================================
+# Diagnostic test to identify sources of mass loss in RT simulation
+# Tracks: zonal masses, VOF statistics, boundary fluxes, interface diffusion
+#
+add_executable(test_rt_mass_conservation_diagnostic
+    vof/test_rt_mass_conservation_diagnostic.cu
+)
+
+set_target_properties(test_rt_mass_conservation_diagnostic PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rt_mass_conservation_diagnostic PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rt_mass_conservation_diagnostic
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RTMassConservationDiagnostic
+    COMMAND test_rt_mass_conservation_diagnostic
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+# ========================================
+# Rayleigh-Taylor Comprehensive Validation
+# ========================================
+# Complete test suite for RT instability validation against reference image
+# Tests: boundary conditions, interface shape, height evolution, mass conservation, symmetry
+# Reference: /home/yzk/LBMProject/1118/屏幕截图 2025-12-18 201835.png
+#
+add_executable(test_rayleigh_taylor_comprehensive
+    vof/test_rayleigh_taylor_comprehensive.cu
+)
+
+set_target_properties(test_rayleigh_taylor_comprehensive PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_rayleigh_taylor_comprehensive PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_rayleigh_taylor_comprehensive
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME RayleighTaylorComprehensive
+    COMMAND test_rayleigh_taylor_comprehensive
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(RayleighTaylorComprehensive PROPERTIES
+    TIMEOUT 3600
+    LABELS "validation;vof;rayleigh_taylor;comprehensive;critical"
+)
+
+# ========================================
+# Force Conversion Units Test
+# ========================================
+# Dimensional analysis to verify correct force conversion formula
+#
+add_executable(test_force_conversion_units
+    vof/test_force_conversion_units.cu
+)
+
+set_target_properties(test_force_conversion_units PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_force_conversion_units PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_force_conversion_units
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME ForceConversionUnits
+    COMMAND test_force_conversion_units
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(RayleighTaylorValidation PROPERTIES
+    TIMEOUT 1800
+    LABELS "validation;vof;analytical;rayleigh_taylor;critical"
+)
+
+#
+# ============================================================================
+# Phase Inversion Test
+# ============================================================================
+# VOF benchmark: Oil block rising in water due to buoyancy
+# Tests density-ratio ~1.1 interface tracking
+#
+add_executable(test_phase_inversion
+    vof/test_phase_inversion.cu
+)
+
+set_target_properties(test_phase_inversion PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_phase_inversion PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_phase_inversion
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME PhaseInversion
+    COMMAND test_phase_inversion
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(PhaseInversion PROPERTIES
+    TIMEOUT 600  # 10 minutes
+    LABELS "validation;vof;buoyancy;phase_inversion"
+)
+
+# ========================================
+# VOF Mass Conservation TVD Test
+# ========================================
+# Comprehensive mass conservation test suite for VOF advection
+# Designed to validate improvements from TVD scheme implementation
+#
+# Test cases:
+# 1. Translation: Uniform velocity, circular interface
+# 2. Rotation: Solid body rotation (360°)
+# 3. Shear: Linear velocity gradient
+# 4. High CFL: Stress test at CFL=0.4
+#
+# Success criteria:
+# - First-order upwind: Mass error 5-20% (baseline)
+# - TVD schemes: Mass error <1% (target)
+#
+add_executable(test_vof_mass_conservation_tvd
+    vof/test_vof_mass_conservation_tvd.cu
+)
+
+set_target_properties(test_vof_mass_conservation_tvd PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "70;75;80;86"
+)
+
+target_include_directories(test_vof_mass_conservation_tvd PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_vof_mass_conservation_tvd
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME VOFMassConservationTVD
+    COMMAND test_vof_mass_conservation_tvd
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(VOFMassConservationTVD PROPERTIES
+    TIMEOUT 600  # 10 minutes (4 test cases)
+    LABELS "validation;vof;mass_conservation;tvd;advection"
+)

@@ -45,6 +45,24 @@ enum class CellFlag : uint8_t {
 };
 
 /**
+ * @brief VOF advection scheme selection
+ */
+enum class VOFAdvectionScheme : uint8_t {
+    UPWIND = 0,     ///< First-order upwind (most diffusive, most stable)
+    TVD = 1         ///< TVD with flux limiter (2nd-order in smooth regions)
+};
+
+/**
+ * @brief TVD flux limiter types
+ */
+enum class TVDLimiter : uint8_t {
+    MINMOD = 0,     ///< Most diffusive, most stable
+    VAN_LEER = 1,   ///< Balanced accuracy and stability (recommended)
+    SUPERBEE = 2,   ///< Least diffusive, most compressive
+    MC = 3          ///< Monotonized Central, good for smooth flows
+};
+
+/**
  * @brief VOF solver for free surface tracking
  *
  * This class implements the Volume of Fluid method for tracking interfaces
@@ -231,6 +249,31 @@ public:
      */
     float getDx() const { return dx_; }
 
+    /**
+     * @brief Set VOF advection scheme
+     * @param scheme UPWIND or TVD
+     * @note Default is UPWIND for stability. Use TVD for better mass conservation.
+     */
+    void setAdvectionScheme(VOFAdvectionScheme scheme) { advection_scheme_ = scheme; }
+
+    /**
+     * @brief Get current advection scheme
+     */
+    VOFAdvectionScheme getAdvectionScheme() const { return advection_scheme_; }
+
+    /**
+     * @brief Set TVD flux limiter type
+     * @param limiter MINMOD, VAN_LEER, SUPERBEE, or MC
+     * @note Only applies when advection_scheme = TVD
+     * @note Recommended: VAN_LEER for general use, SUPERBEE for sharper interfaces
+     */
+    void setTVDLimiter(TVDLimiter limiter) { tvd_limiter_ = limiter; }
+
+    /**
+     * @brief Get current TVD limiter
+     */
+    TVDLimiter getTVDLimiter() const { return tvd_limiter_; }
+
 private:
     // Domain dimensions
     int nx_, ny_, nz_;
@@ -239,6 +282,10 @@ private:
 
     // Boundary conditions
     BoundaryType bc_x_, bc_y_, bc_z_;
+
+    // Advection scheme settings
+    VOFAdvectionScheme advection_scheme_;  ///< Current advection scheme (default: UPWIND)
+    TVDLimiter tvd_limiter_;               ///< TVD flux limiter type (default: VAN_LEER)
 
     // Device memory for VOF fields
     float* d_fill_level_;           ///< Fill level field (0-1)
@@ -273,6 +320,33 @@ __global__ void advectFillLevelUpwindKernel(
     float dx,
     int nx, int ny, int nz,
     int bc_x, int bc_y, int bc_z);
+
+/**
+ * @brief CUDA kernel for TVD advection with flux limiter
+ * @note Second-order accurate in smooth regions, first-order near discontinuities
+ * @param fill_level Input fill level field [0-1]
+ * @param fill_level_new Output fill level field [0-1]
+ * @param ux, uy, uz Velocity components [m/s]
+ * @param dt Time step [s]
+ * @param dx Grid spacing [m]
+ * @param nx, ny, nz Grid dimensions
+ * @param bc_x, bc_y, bc_z Boundary conditions (0=periodic, 1=wall)
+ * @param limiter_type TVD limiter (0=minmod, 1=van Leer, 2=superbee, 3=MC)
+ * @note Maintains conservative flux formulation for mass conservation
+ * @note CFL condition: |u|dt/dx < 0.5 (same as upwind)
+ * @note TVD property ensures no spurious oscillations
+ */
+__global__ void advectFillLevelTVDKernel(
+    const float* fill_level,
+    float* fill_level_new,
+    const float* ux,
+    const float* uy,
+    const float* uz,
+    float dt,
+    float dx,
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z,
+    int limiter_type);
 
 /**
  * @brief CUDA kernel for interface reconstruction

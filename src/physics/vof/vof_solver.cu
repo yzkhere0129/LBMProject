@@ -18,6 +18,62 @@ namespace physics {
 // CUDA Kernels
 // ============================================================================
 
+// ============================================================================
+// Flux Limiter Functions for TVD Schemes
+// ============================================================================
+
+/**
+ * @brief Minmod flux limiter
+ * @note Most diffusive, most stable
+ * φ(r) = max(0, min(1, r))
+ */
+__device__ __forceinline__ float fluxLimiterMinmod(float r) {
+    return fmaxf(0.0f, fminf(1.0f, r));
+}
+
+/**
+ * @brief van Leer flux limiter
+ * @note Good balance between accuracy and stability
+ * φ(r) = (r + |r|) / (1 + |r|)
+ */
+__device__ __forceinline__ float fluxLimiterVanLeer(float r) {
+    if (r <= 0.0f) return 0.0f;
+    return (r + fabsf(r)) / (1.0f + fabsf(r));
+}
+
+/**
+ * @brief Superbee flux limiter
+ * @note Least diffusive, most compressive
+ * φ(r) = max(0, min(2r, 1), min(r, 2))
+ */
+__device__ __forceinline__ float fluxLimiterSuperbee(float r) {
+    return fmaxf(0.0f, fmaxf(fminf(2.0f * r, 1.0f), fminf(r, 2.0f)));
+}
+
+/**
+ * @brief MC (Monotonized Central) flux limiter
+ * @note Good for smooth flows, prevents overshoot
+ * φ(r) = max(0, min((1+r)/2, 2, 2r))
+ */
+__device__ __forceinline__ float fluxLimiterMC(float r) {
+    return fmaxf(0.0f, fminf(fminf(0.5f * (1.0f + r), 2.0f), 2.0f * r));
+}
+
+/**
+ * @brief Generic flux limiter dispatcher
+ * @param r Gradient ratio
+ * @param limiter_type 0=minmod, 1=van Leer, 2=superbee, 3=MC
+ */
+__device__ __forceinline__ float applyFluxLimiter(float r, int limiter_type) {
+    switch (limiter_type) {
+        case 0: return fluxLimiterMinmod(r);
+        case 1: return fluxLimiterVanLeer(r);
+        case 2: return fluxLimiterSuperbee(r);
+        case 3: return fluxLimiterMC(r);
+        default: return fluxLimiterVanLeer(r);  // Default to van Leer
+    }
+}
+
 /**
  * @brief FLUX-CONSERVATIVE upwind advection kernel with configurable boundaries
  * @note Guarantees mass conservation for divergence-free velocity fields
@@ -156,6 +212,427 @@ __global__ void advectFillLevelUpwindKernel(
     float f_new = fill_level[idx] - dt * div_flux;
 
     // Flush extremely tiny values to zero (reduced from 1e-6 to 1e-9 to minimize mass loss)
+    if (f_new < 1e-9f) f_new = 0.0f;
+
+    // Clamp to [0, 1] to maintain physical bounds
+    fill_level_new[idx] = fminf(1.0f, fmaxf(0.0f, f_new));
+}
+
+// ============================================================================
+// TVD (Total Variation Diminishing) Advection Kernel
+// ============================================================================
+
+/**
+ * @brief TVD advection kernel with flux limiter
+ * @note Second-order accurate in smooth regions, reduces to first-order near discontinuities
+ *
+ * PHYSICS & NUMERICS:
+ * ==================
+ * Conservative form: ∂f/∂t + ∇·(uf) = 0
+ * Discretized: f^{n+1} = f^n - dt/dx × (F_{i+1/2} - F_{i-1/2})
+ *
+ * TVD FLUX FORMULA:
+ * ================
+ * F_{i+1/2} = F_low + φ(r) × (F_high - F_low)
+ *
+ * Where:
+ *   F_low  = First-order upwind flux (stable, diffusive)
+ *   F_high = Second-order flux (accurate, oscillatory)
+ *   φ(r)   = Flux limiter function (0 ≤ φ ≤ 2)
+ *   r      = Gradient ratio = (f_i - f_{i-1}) / (f_{i+1} - f_i)  [for u > 0]
+ *
+ * FIRST-ORDER UPWIND FLUX:
+ * ========================
+ * F_low = u × f_upwind
+ *   where f_upwind = f_i if u > 0, f_{i+1} if u < 0
+ *
+ * SECOND-ORDER FLUX (Fromm scheme):
+ * ==================================
+ * F_high = u × (f_i + f_{i+1})/2 - (u²dt/2dx) × (f_{i+1} - f_i)
+ *        ≈ u × f_face_center  [for small CFL]
+ *
+ * FLUX LIMITER PROPERTIES:
+ * ========================
+ * - φ(r) = 0: Pure first-order upwind (most diffusive)
+ * - φ(r) = 1: Second-order central (accurate but oscillatory)
+ * - φ(r) transitions smoothly based on local gradient ratio
+ *
+ * TVD REGION: Limiter must satisfy φ(r)/r ∈ [0, 2] to preserve monotonicity
+ *
+ * GRADIENT RATIO 'r':
+ * ===================
+ * For u > 0 (left-to-right flow):
+ *   r = (f_i - f_{i-1}) / (f_{i+1} - f_i + ε)
+ *   Measures how gradient changes across the face
+ *
+ * Interpretation:
+ *   r ≈ 1: Smooth linear variation → use 2nd-order (φ ≈ 1)
+ *   r ≈ 0 or r < 0: Discontinuity or extremum → use 1st-order (φ ≈ 0)
+ *   r >> 1: Sharp gradient change → limit flux (φ < 1)
+ *
+ * MASS CONSERVATION:
+ * ==================
+ * Conservative flux formulation ensures Σf^{n+1} = Σf^n for periodic BC
+ * TVD property prevents spurious oscillations (no new maxima/minima)
+ *
+ * STABILITY:
+ * ==========
+ * CFL condition: |u| × dt/dx < 0.5 (same as first-order upwind)
+ * TVD limiter ensures stability even at discontinuities
+ *
+ * ADVANTAGES OVER FIRST-ORDER UPWIND:
+ * ====================================
+ * 1. Reduced numerical diffusion (2nd-order in smooth regions)
+ * 2. Sharp interface preservation (less mass loss)
+ * 3. Minimal spurious oscillations (TVD property)
+ * 4. Better accuracy for long-time simulations
+ *
+ * REFERENCE:
+ * ==========
+ * - Sweby, P.K. (1984). High resolution schemes using flux limiters for
+ *   hyperbolic conservation laws. SIAM Journal on Numerical Analysis, 21(5), 995-1011.
+ * - Hirt, C.W., & Nichols, B.D. (1981). Volume of fluid (VOF) method for
+ *   the dynamics of free boundaries. Journal of Computational Physics, 39(1), 201-225.
+ */
+__global__ void advectFillLevelTVDKernel(
+    const float* __restrict__ fill_level,
+    float* __restrict__ fill_level_new,
+    const float* __restrict__ ux,
+    const float* __restrict__ uy,
+    const float* __restrict__ uz,
+    float dt,
+    float dx,
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z,
+    int limiter_type)  // 0=minmod, 1=van Leer, 2=superbee, 3=MC
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + nx * (j + ny * k);
+
+    // ========================================================================
+    // Neighbor indices with boundary condition handling
+    // ========================================================================
+    // Need 2-layer stencil for TVD (upwind + upwind-upwind)
+
+    // X-direction: i-2, i-1, i, i+1, i+2
+    int imm, im, ip, ipp;
+    if (bc_x == 0) {  // PERIODIC
+        im  = (i > 0)       ? i - 1 : nx - 1;
+        imm = (i > 1)       ? i - 2 : (i > 0) ? nx - 1 : nx - 2;
+        ip  = (i < nx - 1)  ? i + 1 : 0;
+        ipp = (i < nx - 2)  ? i + 2 : (i < nx - 1) ? 0 : 1;
+    } else {  // WALL
+        im  = (i > 0)       ? i - 1 : i;
+        imm = (i > 1)       ? i - 2 : i;
+        ip  = (i < nx - 1)  ? i + 1 : i;
+        ipp = (i < nx - 2)  ? i + 2 : i;
+    }
+
+    // Y-direction: j-2, j-1, j, j+1, j+2
+    int jmm, jm, jp, jpp;
+    if (bc_y == 0) {  // PERIODIC
+        jm  = (j > 0)       ? j - 1 : ny - 1;
+        jmm = (j > 1)       ? j - 2 : (j > 0) ? ny - 1 : ny - 2;
+        jp  = (j < ny - 1)  ? j + 1 : 0;
+        jpp = (j < ny - 2)  ? j + 2 : (j < ny - 1) ? 0 : 1;
+    } else {  // WALL
+        jm  = (j > 0)       ? j - 1 : j;
+        jmm = (j > 1)       ? j - 2 : j;
+        jp  = (j < ny - 1)  ? j + 1 : j;
+        jpp = (j < ny - 2)  ? j + 2 : j;
+    }
+
+    // Z-direction: k-2, k-1, k, k+1, k+2
+    int kmm, km, kp, kpp;
+    if (bc_z == 0) {  // PERIODIC
+        km  = (k > 0)       ? k - 1 : nz - 1;
+        kmm = (k > 1)       ? k - 2 : (k > 0) ? nz - 1 : nz - 2;
+        kp  = (k < nz - 1)  ? k + 1 : 0;
+        kpp = (k < nz - 2)  ? k + 2 : (k < nz - 1) ? 0 : 1;
+    } else {  // WALL
+        km  = (k > 0)       ? k - 1 : k;
+        kmm = (k > 1)       ? k - 2 : k;
+        kp  = (k < nz - 1)  ? k + 1 : k;
+        kpp = (k < nz - 2)  ? k + 2 : k;
+    }
+
+    // Compute linear indices for all required neighbors
+    int idx_im   = im  + nx * (j   + ny * k);
+    int idx_imm  = imm + nx * (j   + ny * k);
+    int idx_ip   = ip  + nx * (j   + ny * k);
+    int idx_ipp  = ipp + nx * (j   + ny * k);
+
+    int idx_jm   = i   + nx * (jm  + ny * k);
+    int idx_jmm  = i   + nx * (jmm + ny * k);
+    int idx_jp   = i   + nx * (jp  + ny * k);
+    int idx_jpp  = i   + nx * (jpp + ny * k);
+
+    int idx_km   = i   + nx * (j   + ny * km);
+    int idx_kmm  = i   + nx * (j   + ny * kmm);
+    int idx_kp   = i   + nx * (j   + ny * kp);
+    int idx_kpp  = i   + nx * (j   + ny * kpp);
+
+    // ========================================================================
+    // Compute face velocities (interpolated to cell faces)
+    // ========================================================================
+    float u_face_xm = 0.5f * (ux[idx_im] + ux[idx]);
+    float u_face_xp = 0.5f * (ux[idx] + ux[idx_ip]);
+    float v_face_ym = 0.5f * (uy[idx_jm] + uy[idx]);
+    float v_face_yp = 0.5f * (uy[idx] + uy[idx_jp]);
+    float w_face_zm = 0.5f * (uz[idx_km] + uz[idx]);
+    float w_face_zp = 0.5f * (uz[idx] + uz[idx_kp]);
+
+    // ========================================================================
+    // X-DIRECTION FLUXES with TVD limiting
+    // ========================================================================
+    float flux_xm, flux_xp;
+    const float eps = 1e-10f;  // Small epsilon to prevent division by zero
+
+    // Face i-1/2 (between im and i)
+    if (u_face_xm >= 0.0f) {  // Flow from imm → im → i
+        float f_upwind = fill_level[idx_im];
+        float f_down   = fill_level[idx_imm];
+        float f_center = fill_level[idx];
+
+        // Gradient ratio: r = (f_upwind - f_down) / (f_center - f_upwind)
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+
+        // Flux limiter
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        // First-order upwind flux
+        float F_low = u_face_xm * f_upwind;
+
+        // Second-order correction: F_high ≈ u × f_face_center
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = u_face_xm * f_face_second;
+
+        flux_xm = F_low + phi * (F_high - F_low);
+    } else {  // Flow from i → im
+        float f_upwind = fill_level[idx];
+        float f_down   = fill_level[idx_ip];
+        float f_center = fill_level[idx_im];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = u_face_xm * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = u_face_xm * f_face_second;
+
+        flux_xm = F_low + phi * (F_high - F_low);
+    }
+
+    // Face i+1/2 (between i and ip)
+    if (u_face_xp >= 0.0f) {  // Flow from im → i → ip
+        float f_upwind = fill_level[idx];
+        float f_down   = fill_level[idx_im];
+        float f_center = fill_level[idx_ip];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = u_face_xp * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = u_face_xp * f_face_second;
+
+        flux_xp = F_low + phi * (F_high - F_low);
+    } else {  // Flow from ip → i
+        float f_upwind = fill_level[idx_ip];
+        float f_down   = fill_level[idx_ipp];
+        float f_center = fill_level[idx];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = u_face_xp * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = u_face_xp * f_face_second;
+
+        flux_xp = F_low + phi * (F_high - F_low);
+    }
+
+    // ========================================================================
+    // Y-DIRECTION FLUXES with TVD limiting
+    // ========================================================================
+    float flux_ym, flux_yp;
+
+    // Face j-1/2
+    if (v_face_ym >= 0.0f) {
+        float f_upwind = fill_level[idx_jm];
+        float f_down   = fill_level[idx_jmm];
+        float f_center = fill_level[idx];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = v_face_ym * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = v_face_ym * f_face_second;
+
+        flux_ym = F_low + phi * (F_high - F_low);
+    } else {
+        float f_upwind = fill_level[idx];
+        float f_down   = fill_level[idx_jp];
+        float f_center = fill_level[idx_jm];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = v_face_ym * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = v_face_ym * f_face_second;
+
+        flux_ym = F_low + phi * (F_high - F_low);
+    }
+
+    // Face j+1/2
+    if (v_face_yp >= 0.0f) {
+        float f_upwind = fill_level[idx];
+        float f_down   = fill_level[idx_jm];
+        float f_center = fill_level[idx_jp];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = v_face_yp * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = v_face_yp * f_face_second;
+
+        flux_yp = F_low + phi * (F_high - F_low);
+    } else {
+        float f_upwind = fill_level[idx_jp];
+        float f_down   = fill_level[idx_jpp];
+        float f_center = fill_level[idx];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = v_face_yp * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = v_face_yp * f_face_second;
+
+        flux_yp = F_low + phi * (F_high - F_low);
+    }
+
+    // ========================================================================
+    // Z-DIRECTION FLUXES with TVD limiting
+    // ========================================================================
+    float flux_zm, flux_zp;
+
+    // Face k-1/2
+    if (w_face_zm >= 0.0f) {
+        float f_upwind = fill_level[idx_km];
+        float f_down   = fill_level[idx_kmm];
+        float f_center = fill_level[idx];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = w_face_zm * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = w_face_zm * f_face_second;
+
+        flux_zm = F_low + phi * (F_high - F_low);
+    } else {
+        float f_upwind = fill_level[idx];
+        float f_down   = fill_level[idx_kp];
+        float f_center = fill_level[idx_km];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = w_face_zm * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = w_face_zm * f_face_second;
+
+        flux_zm = F_low + phi * (F_high - F_low);
+    }
+
+    // Face k+1/2
+    if (w_face_zp >= 0.0f) {
+        float f_upwind = fill_level[idx];
+        float f_down   = fill_level[idx_km];
+        float f_center = fill_level[idx_kp];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = w_face_zp * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = w_face_zp * f_face_second;
+
+        flux_zp = F_low + phi * (F_high - F_low);
+    } else {
+        float f_upwind = fill_level[idx_kp];
+        float f_down   = fill_level[idx_kpp];
+        float f_center = fill_level[idx];
+
+        float delta_upwind = f_upwind - f_down;
+        float delta_center = f_center - f_upwind;
+        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float phi = applyFluxLimiter(r, limiter_type);
+
+        float F_low = w_face_zp * f_upwind;
+        float f_face_second = f_upwind + 0.5f * phi * delta_center;
+        float F_high = w_face_zp * f_face_second;
+
+        flux_zp = F_low + phi * (F_high - F_low);
+    }
+
+    // ========================================================================
+    // ZERO-FLUX boundary conditions for WALL boundaries
+    // ========================================================================
+    if (bc_x != 0) {  // WALL
+        if (i == 0) flux_xm = 0.0f;
+        if (i == nx - 1) flux_xp = 0.0f;
+    }
+    if (bc_y != 0) {  // WALL
+        if (j == 0) flux_ym = 0.0f;
+        if (j == ny - 1) flux_yp = 0.0f;
+    }
+    if (bc_z != 0) {  // WALL
+        if (k == 0) flux_zm = 0.0f;
+        if (k == nz - 1) flux_zp = 0.0f;
+    }
+
+    // ========================================================================
+    // Conservative update: f^{n+1} = f^n - dt/dx × ∇·F
+    // ========================================================================
+    float div_flux = (flux_xp - flux_xm + flux_yp - flux_ym + flux_zp - flux_zm) / dx;
+    float f_new = fill_level[idx] - dt * div_flux;
+
+    // Flush extremely tiny values to zero
     if (f_new < 1e-9f) f_new = 0.0f;
 
     // Clamp to [0, 1] to maintain physical bounds
@@ -650,6 +1127,8 @@ VOFSolver::VOFSolver(int nx, int ny, int nz, float dx,
                      BoundaryType bc_x, BoundaryType bc_y, BoundaryType bc_z)
     : nx_(nx), ny_(ny), nz_(nz), num_cells_(nx * ny * nz), dx_(dx),
       bc_x_(bc_x), bc_y_(bc_y), bc_z_(bc_z),
+      advection_scheme_(VOFAdvectionScheme::UPWIND),  // Default: first-order upwind
+      tvd_limiter_(TVDLimiter::VAN_LEER),             // Default: van Leer limiter
       d_fill_level_(nullptr), d_cell_flags_(nullptr),
       d_interface_normal_(nullptr), d_curvature_(nullptr),
       d_fill_level_tmp_(nullptr)
@@ -841,11 +1320,26 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     static int call_count = 0;
     static float prev_mass = -1.0f;
     static int prev_substeps = 1;
+    static bool scheme_reported = false;
 
     if (call_count % 500 == 0 && call_count < 5000) {
         // Compute current mass
         float mass = computeTotalMass();
         float mass_change = (prev_mass > 0) ? (mass - prev_mass) : 0.0f;
+
+        // Report scheme on first call
+        if (!scheme_reported) {
+            const char* scheme_name = (advection_scheme_ == VOFAdvectionScheme::UPWIND) ? "UPWIND" : "TVD";
+            const char* limiter_names[] = {"MINMOD", "VAN_LEER", "SUPERBEE", "MC"};
+            const char* limiter_name = limiter_names[static_cast<int>(tvd_limiter_)];
+            printf("[VOF INIT] Advection scheme: %s", scheme_name);
+            if (advection_scheme_ == VOFAdvectionScheme::TVD) {
+                printf(" (limiter: %s)", limiter_name);
+            }
+            printf("\n");
+            scheme_reported = true;
+        }
+
         printf("[VOF ADVECT] Call %d: v_max=%.6f, CFL=%.6f, n_sub=%d, CFL_sub=%.3f, mass=%.1f (delta=%.3f)\n",
                call_count, v_max, vof_cfl, n_substeps, cfl_sub, mass, mass_change);
         prev_mass = mass;
@@ -871,13 +1365,24 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
                   (nz_ + blockSize.z - 1) / blockSize.z);
 
     // ========================================================================
-    // STEP 1: Upwind advection with CFL-adaptive subcycling
+    // STEP 1: Advection with CFL-adaptive subcycling
     // ========================================================================
+    // Dispatch to appropriate kernel based on advection scheme
     for (int substep = 0; substep < n_substeps; ++substep) {
-        advectFillLevelUpwindKernel<<<gridSize, blockSize>>>(
-            d_fill_level_, d_fill_level_tmp_, velocity_x, velocity_y, velocity_z,
-            dt_sub, dx_, nx_, ny_, nz_,
-            static_cast<int>(bc_x_), static_cast<int>(bc_y_), static_cast<int>(bc_z_));
+        if (advection_scheme_ == VOFAdvectionScheme::UPWIND) {
+            // First-order upwind (stable, diffusive)
+            advectFillLevelUpwindKernel<<<gridSize, blockSize>>>(
+                d_fill_level_, d_fill_level_tmp_, velocity_x, velocity_y, velocity_z,
+                dt_sub, dx_, nx_, ny_, nz_,
+                static_cast<int>(bc_x_), static_cast<int>(bc_y_), static_cast<int>(bc_z_));
+        } else {
+            // TVD scheme (2nd-order accurate, less diffusive)
+            advectFillLevelTVDKernel<<<gridSize, blockSize>>>(
+                d_fill_level_, d_fill_level_tmp_, velocity_x, velocity_y, velocity_z,
+                dt_sub, dx_, nx_, ny_, nz_,
+                static_cast<int>(bc_x_), static_cast<int>(bc_y_), static_cast<int>(bc_z_),
+                static_cast<int>(tvd_limiter_));
+        }
         CUDA_CHECK_KERNEL();
 
         CUDA_CHECK(cudaDeviceSynchronize());
