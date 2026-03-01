@@ -115,3 +115,4 @@ backups/
 # Build directories
 build_test/
 benchmark/
+build_check/

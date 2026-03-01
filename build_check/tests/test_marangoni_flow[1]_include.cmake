@@ -1,5 +1,0 @@
-if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_marangoni_flow[1]_tests.cmake")
-  include("/home/yzk/LBMProject/build_check/tests/test_marangoni_flow[1]_tests.cmake")
-else()
-  add_test(test_marangoni_flow_NOT_BUILT test_marangoni_flow_NOT_BUILT)
-endif()

@@ -1,5 +1,0 @@
-if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_multiphysics_step1[1]_tests.cmake")
-  include("/home/yzk/LBMProject/build_check/tests/test_multiphysics_step1[1]_tests.cmake")
-else()
-  add_test(test_multiphysics_step1_NOT_BUILT test_multiphysics_step1_NOT_BUILT)
-endif()

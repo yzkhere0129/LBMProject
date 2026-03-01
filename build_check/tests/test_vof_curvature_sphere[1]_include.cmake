@@ -1,5 +1,0 @@
-if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_vof_curvature_sphere[1]_tests.cmake")
-  include("/home/yzk/LBMProject/build_check/tests/test_vof_curvature_sphere[1]_tests.cmake")
-else()
-  add_test(test_vof_curvature_sphere_NOT_BUILT test_vof_curvature_sphere_NOT_BUILT)
-endif()

@@ -1,5 +1,0 @@
-if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_static_droplet[1]_tests.cmake")
-  include("/home/yzk/LBMProject/build_check/tests/test_static_droplet[1]_tests.cmake")
-else()
-  add_test(test_static_droplet_NOT_BUILT test_static_droplet_NOT_BUILT)
-endif()

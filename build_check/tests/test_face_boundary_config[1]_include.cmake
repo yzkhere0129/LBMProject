@@ -1,5 +1,0 @@
-if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_face_boundary_config[1]_tests.cmake")
-  include("/home/yzk/LBMProject/build_check/tests/test_face_boundary_config[1]_tests.cmake")
-else()
-  add_test(test_face_boundary_config_NOT_BUILT test_face_boundary_config_NOT_BUILT)
-endif()

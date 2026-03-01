@@ -1,5 +1,0 @@
-if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_timestep_omega_clamping[1]_tests.cmake")
-  include("/home/yzk/LBMProject/build_check/tests/test_timestep_omega_clamping[1]_tests.cmake")
-else()
-  add_test(test_timestep_omega_clamping_NOT_BUILT test_timestep_omega_clamping_NOT_BUILT)
-endif()

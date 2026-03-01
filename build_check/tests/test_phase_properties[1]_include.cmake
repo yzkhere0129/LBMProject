@@ -1,5 +1,0 @@
-if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_phase_properties[1]_tests.cmake")
-  include("/home/yzk/LBMProject/build_check/tests/test_phase_properties[1]_tests.cmake")
-else()
-  add_test(test_phase_properties_NOT_BUILT test_phase_properties_NOT_BUILT)
-endif()

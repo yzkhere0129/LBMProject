@@ -1,5 +1,0 @@
-if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_guo_force[1]_tests.cmake")
-  include("/home/yzk/LBMProject/build_check/tests/test_guo_force[1]_tests.cmake")
-else()
-  add_test(test_guo_force_NOT_BUILT test_guo_force_NOT_BUILT)
-endif()

@@ -1,5 +1,0 @@
-if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_force_diagnostic_integration[1]_tests.cmake")
-  include("/home/yzk/LBMProject/build_check/tests/test_force_diagnostic_integration[1]_tests.cmake")
-else()
-  add_test(test_force_diagnostic_integration_NOT_BUILT test_force_diagnostic_integration_NOT_BUILT)
-endif()
