@@ -204,9 +204,9 @@ struct MultiphysicsConfig {
         bool enable_vof                     = true;  ///< Enable VOF interface reconstruction
         bool enable_vof_advection           = false; ///< Enable VOF advection (requires vof+fluid)
         bool enable_surface_tension         = false; ///< Enable surface tension forces
-        bool enable_marangoni               = true;  ///< Enable Marangoni (thermocapillary) effect
+        bool enable_marangoni               = false; ///< Enable Marangoni (thermocapillary) effect
         bool enable_laser                   = false; ///< Enable laser heat source
-        bool enable_darcy                   = true;  ///< Enable Darcy damping for mushy/solid zones
+        bool enable_darcy                   = false; ///< Enable Darcy damping for mushy/solid zones
         bool enable_buoyancy                = false; ///< Enable Boussinesq buoyancy
         bool enable_evaporation_mass_loss   = false; ///< Enable evaporation VOF mass loss
         bool enable_recoil_pressure         = false; ///< Enable evaporation recoil pressure
@@ -217,7 +217,8 @@ struct MultiphysicsConfig {
         float dt                     = 1e-9f;   ///< Time step [s]
         int   vof_subcycles          = 10;      ///< VOF subcycles per LBM step
         bool  enable_vof_mass_correction = true; ///< Global VOF mass correction
-        float cfl_limit              = 0.5f;    ///< Hard CFL cap (LBM stable < 0.577)
+        float cfl_limit              = 0.5f;    ///< Advisory only -- used in validate() warning, not in actual CFL limiter.
+                                                   ///< Actual limiting uses cfl_velocity_target and cfl_force_ramp_factor.
         float cfl_velocity_target    = 0.15f;   ///< Target max lattice velocity
         bool  cfl_use_gradual_scaling = true;   ///< Gradual vs hard force cutoff
         float cfl_force_ramp_factor  = 0.9f;    ///< Ramp onset fraction of v_target
@@ -237,7 +238,7 @@ struct MultiphysicsConfig {
     };
 
     struct ThermalConfig {
-        float thermal_diffusivity    = 5.8e-6f; ///< α [m²/s]
+        float thermal_diffusivity    = 9.66e-6f; ///< α [m²/s] Ti6Al4V liquid: k/(rho*cp) = 33/(4110*831)
         bool  enable_radiation_bc    = false;   ///< Stefan-Boltzmann radiation BC
         float emissivity             = 0.3f;    ///< Surface emissivity [0-1]
         float ambient_temperature    = 300.0f;  ///< Ambient temperature [K]
@@ -252,6 +253,7 @@ struct MultiphysicsConfig {
         float recoil_coefficient     = 0.54f;    ///< C_r (Knight 1979)
         float recoil_smoothing_width = 2.0f;     ///< Interface smoothing [cells]
         float recoil_max_pressure    = 1e8f;     ///< Numerical pressure cap [Pa]
+        float molar_mass             = 0.0476f;  ///< Molar mass [kg/mol] (Ti6Al4V default)
     };
 
     struct BuoyancyConfig {

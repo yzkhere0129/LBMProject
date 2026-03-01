@@ -50,6 +50,7 @@ file(GLOB_RECURSE LBM_PHYSICS_SOURCES
     src/physics/vof/*.cu
     src/physics/multiphysics/*.cu
     src/physics/powder/*.cu
+    src/cuda/*.cu
 )
 
 file(GLOB_RECURSE LBM_DIAGNOSTICS_SOURCES

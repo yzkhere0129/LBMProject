@@ -96,11 +96,12 @@ __global__ void checkNaNKernel(const float* data, int* has_nan, int n) {
     }
 }
 
-// Note: zeroForceKernel and computeForceMagnitudeKernel are now defined in force_accumulator.cu
-// Use static local versions here to avoid linker conflicts
+// TODO: These local kernels duplicate functionality in force_accumulator.cu.
+// They exist because ForceAccumulator's versions are not linkable from this TU.
+// Remove once ForceAccumulator exposes these via public API or shared header.
 
 /**
- * @brief Zero out force array (local version for this file)
+ * @brief Zero out force array (local copy -- see force_accumulator.cu)
  */
 static __global__ void zeroForceKernelLocal(float* fx, float* fy, float* fz, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -112,7 +113,7 @@ static __global__ void zeroForceKernelLocal(float* fx, float* fy, float* fz, int
 }
 
 /**
- * @brief Compute force magnitude for diagnostics (local version)
+ * @brief Compute force magnitude for diagnostics (local copy -- see force_accumulator.cu)
  */
 static __global__ void computeForceMagnitudeKernelLocal(
     const float* fx, const float* fy, const float* fz,
@@ -602,6 +603,28 @@ void MultiphysicsConfig::validate() const {
             "(got " + std::to_string(vof_subcycles) + ")");
     }
 
+    // ---- Core parameter ranges ----
+    if (fluid.kinematic_viscosity <= 0.0f) {
+        throw std::runtime_error("MultiphysicsConfig: kinematic_viscosity must be positive "
+            "(got " + std::to_string(fluid.kinematic_viscosity) + ")");
+    }
+    if (physics.enable_thermal && thermal.thermal_diffusivity <= 0.0f) {
+        throw std::runtime_error("MultiphysicsConfig: thermal_diffusivity must be positive "
+            "when thermal enabled (got " + std::to_string(thermal.thermal_diffusivity) + ")");
+    }
+    if (physics.enable_laser && laser.spot_radius <= 0.0f) {
+        throw std::runtime_error("MultiphysicsConfig: laser spot_radius must be positive "
+            "(got " + std::to_string(laser.spot_radius) + ")");
+    }
+    if (physics.enable_laser && laser.penetration_depth <= 0.0f) {
+        throw std::runtime_error("MultiphysicsConfig: laser penetration_depth must be positive "
+            "(got " + std::to_string(laser.penetration_depth) + ")");
+    }
+    if (numerics.cfl_velocity_target <= 0.0f) {
+        throw std::runtime_error("MultiphysicsConfig: cfl_velocity_target must be positive "
+            "(got " + std::to_string(numerics.cfl_velocity_target) + ")");
+    }
+
     // ---- Material validation ----
     if (!material.validate()) {
         throw std::runtime_error("MultiphysicsConfig: material properties failed validation "
@@ -637,6 +660,9 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
       energy_output_interval_(default_energy_interval_),
       time_last_computed_(-1.0f)  // Initialize to negative to force first computation
 {
+    // Ensure density consistency: use material's liquid density
+    config_.fluid.density = config_.material.rho_liquid;
+
     // Validate configuration (comprehensive checks for stability, consistency, ranges)
     config_.validate();
 
@@ -1255,10 +1281,12 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
     // Update laser position based on scan velocity
     laser_->updatePosition(dt);
 
-    // Allocate temporary device memory for heat source
+    // Allocate temporary device memory for heat source (RAII guard for exception safety)
+    struct CudaFreeGuard { float* p; ~CudaFreeGuard() { if (p) cudaFree(p); } };
     int num_cells = config_.nx * config_.ny * config_.nz;
     float* d_heat_source = nullptr;
     CUDA_CHECK(cudaMalloc(&d_heat_source, num_cells * sizeof(float)));
+    CudaFreeGuard guard{d_heat_source};
 
     // Compute volumetric heat source from laser
     dim3 threads(8, 8, 8);
@@ -1286,9 +1314,7 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
 
     // Add heat source to thermal solver
     thermal_->addHeatSource(d_heat_source, dt);
-
-    // Free temporary memory
-    CUDA_CHECK(cudaFree(d_heat_source));
+    // d_heat_source freed automatically by CudaFreeGuard destructor
 }
 
 void MultiphysicsSolver::thermalStep(float dt) {
@@ -1950,11 +1976,11 @@ void MultiphysicsSolver::computeTotalForce() {
         const float3* normals = vof_->getInterfaceNormals();
 
         if (temperature && fill_level && normals) {
-            // Ti6Al4V material properties
-            const float T_boil = 3560.0f;  // K
-            const float L_v = 9.83e6f;     // J/kg
-            const float M = 0.0476f;       // kg/mol
-            const float P_atm = 101325.0f; // Pa
+            // Material properties from config (no hardcoded Ti6Al4V values)
+            const float T_boil = config_.material.T_vaporization;
+            const float L_v = config_.material.L_vaporization;
+            const float M = config_.surface.molar_mass;
+            const float P_atm = 101325.0f; // Pa (physical constant)
 
             force_accumulator_->addRecoilPressureForce(
                 temperature, fill_level, normals,
@@ -2107,13 +2133,64 @@ float MultiphysicsSolver::getMaxTemperature() const {
 }
 
 float MultiphysicsSolver::getMeltPoolDepth() const {
-    // TODO: Implement based on temperature threshold
-    return 0.0f;
+    if (!thermal_) return 0.0f;
+
+    int nx = config_.domain.nx;
+    int ny = config_.domain.ny;
+    int nz = config_.domain.nz;
+    int num_cells = nx * ny * nz;
+    std::vector<float> h_temp(num_cells);
+    cudaMemcpy(h_temp.data(), thermal_->getTemperature(),
+               num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+
+    float T_solidus = config_.material.T_solidus;
+    int surface_z = static_cast<int>(interface_z_);
+
+    // Scan downward from surface to find deepest molten cell
+    int deepest_molten_z = surface_z;
+    for (int z = surface_z; z >= 0; z--) {
+        bool any_molten = false;
+        for (int y = 0; y < ny && !any_molten; y++) {
+            for (int x = 0; x < nx && !any_molten; x++) {
+                int idx = x + y * nx + z * nx * ny;
+                if (h_temp[idx] > T_solidus) {
+                    any_molten = true;
+                    deepest_molten_z = z;
+                }
+            }
+        }
+        if (!any_molten) break;
+    }
+
+    return (interface_z_ - deepest_molten_z) * config_.dx;
 }
 
 float MultiphysicsSolver::getSurfaceProtrusion() const {
-    // TODO: Implement based on interface z-position
-    return 0.0f;
+    if (!vof_) return 0.0f;
+
+    int nx = config_.domain.nx;
+    int ny = config_.domain.ny;
+    int nz = config_.domain.nz;
+    int num_cells = nx * ny * nz;
+    std::vector<float> h_fill(num_cells);
+    cudaMemcpy(h_fill.data(), vof_->getFillLevel(),
+               num_cells * sizeof(float), cudaMemcpyDeviceToHost);
+
+    float max_z = 0.0f;
+    for (int z = nz - 1; z >= 0; z--) {
+        for (int y = 0; y < ny; y++) {
+            for (int x = 0; x < nx; x++) {
+                int idx = x + y * nx + z * nx * ny;
+                if (h_fill[idx] > 0.5f) {
+                    float z_pos = z * config_.dx;
+                    max_z = fmaxf(max_z, z_pos);
+                }
+            }
+        }
+    }
+
+    float surface_pos = interface_z_ * config_.dx;
+    return fmaxf(0.0f, max_z - surface_pos);
 }
 
 float MultiphysicsSolver::getTotalMass() const {
@@ -2196,10 +2273,12 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
     // This matches the actual energy entering the thermal solver.
     // ============================================================================
 
-    // Allocate temporary device memory for heat source
+    // Allocate temporary device memory for heat source (RAII guard for exception safety)
+    struct CudaFreeGuard { float* p; ~CudaFreeGuard() { if (p) cudaFree(p); } };
     int num_cells = config_.nx * config_.ny * config_.nz;
     float* d_heat_source = nullptr;
     CUDA_CHECK(cudaMalloc(&d_heat_source, num_cells * sizeof(float)));
+    CudaFreeGuard guard{d_heat_source};
 
     // Compute volumetric heat source from laser (same as applyLaserSource)
     dim3 threads(8, 8, 8);
@@ -2228,9 +2307,7 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
         config_.dx, config_.dx, config_.dx,
         config_.nx, config_.ny, config_.nz
     );
-
-    // Free temporary memory
-    CUDA_CHECK(cudaFree(d_heat_source));
+    // d_heat_source freed automatically by CudaFreeGuard destructor
 
     return total_power;
 }

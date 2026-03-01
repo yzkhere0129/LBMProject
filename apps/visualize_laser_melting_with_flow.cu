@@ -40,6 +40,7 @@
 #include "physics/laser_source.h"
 #include "physics/material_properties.h"
 #include "io/vtk_writer.h"
+#include "io/field_registry.h"
 #include "core/lattice_d3q19.h"
 
 using namespace lbm;
@@ -244,6 +245,16 @@ int main(int argc, char** argv) {
     system("mkdir -p visualization_output");
     std::cout << "Output directory: visualization_output/\n\n";
 
+    // ========== Field Registry (registered once, written every output step) ==========
+    // Device pointers stay stable across timesteps; registry holds refs not copies.
+    io::FieldRegistry field_registry;
+    field_registry.registerScalar("Temperature",     thermal.getTemperature());
+    field_registry.registerScalar("LiquidFraction",  thermal.getLiquidFraction());
+    // PhaseState is computed on the host from LiquidFraction — registered after first copy.
+    // Velocity vector registered from fluid solver device arrays.
+    field_registry.registerVector("Velocity",
+        fluid.getVelocityX(), fluid.getVelocityY(), fluid.getVelocityZ());
+
     // ========== Time Evolution Loop ==========
     std::cout << "Starting coupled thermal-fluid simulation...\n";
     std::cout << "Expected physics:\n";
@@ -435,20 +446,15 @@ int main(int argc, char** argv) {
                       << u_max * 1e3
                       << "\n";
 
-            // Write VTK file with velocity vectors
+            // Write VTK file via FieldRegistry — handles D2H copies internally.
+            // Temperature, LiquidFraction, and Velocity are written from device.
             std::string filename = io::VTKWriter::getTimeSeriesFilename(
                 "visualization_output/laser_melting_flow", step
             );
 
-            io::VTKWriter::writeStructuredGridWithVectors(
-                filename,
-                h_temperature,
-                h_liquid_fraction,
-                h_phase_state,
-                nullptr,  // fill_level not available in this simulation
-                h_ux, h_uy, h_uz,
-                nx, ny, nz,
-                dx, dy, dz
+            io::VTKWriter::writeFields(
+                filename, field_registry, {},
+                nx, ny, nz, dx
             );
         }
     }

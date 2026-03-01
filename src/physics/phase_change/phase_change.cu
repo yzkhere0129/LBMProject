@@ -309,15 +309,15 @@ void PhaseChangeSolver::allocateMemory() {
 }
 
 void PhaseChangeSolver::freeMemory() {
-    if (d_enthalpy) cudaFree(d_enthalpy);
-    if (d_liquid_fraction) cudaFree(d_liquid_fraction);
-    if (d_liquid_fraction_prev_) cudaFree(d_liquid_fraction_prev_);
-    if (d_dfl_dt_) cudaFree(d_dfl_dt_);
+    if (d_enthalpy) { CUDA_CHECK(cudaFree(d_enthalpy)); d_enthalpy = nullptr; }
+    if (d_liquid_fraction) { CUDA_CHECK(cudaFree(d_liquid_fraction)); d_liquid_fraction = nullptr; }
+    if (d_liquid_fraction_prev_) { CUDA_CHECK(cudaFree(d_liquid_fraction_prev_)); d_liquid_fraction_prev_ = nullptr; }
+    if (d_dfl_dt_) { CUDA_CHECK(cudaFree(d_dfl_dt_)); d_dfl_dt_ = nullptr; }
 }
 
 void PhaseChangeSolver::initializeFromTemperature(const float* temperature) {
     // Copy material to device constant memory
-    cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties)));
 
     // Compute initial enthalpy
     int threads = 256;
@@ -330,13 +330,13 @@ void PhaseChangeSolver::initializeFromTemperature(const float* temperature) {
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Store initial liquid fraction as "previous" for first time step
-    cudaMemcpy(d_liquid_fraction_prev_, d_liquid_fraction,
-               num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice);
+    CUDA_CHECK(cudaMemcpy(d_liquid_fraction_prev_, d_liquid_fraction,
+               num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice));
 }
 
 void PhaseChangeSolver::updateEnthalpyFromTemperature(const float* temperature) {
     // Ensure material is in device constant memory
-    cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties)));
 
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;
@@ -350,7 +350,7 @@ int PhaseChangeSolver::updateTemperatureFromEnthalpy(float* temperature,
                                                       float tolerance,
                                                       int max_iterations) {
     // Ensure material is in device constant memory
-    cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties)));
 
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;
@@ -368,8 +368,8 @@ int PhaseChangeSolver::updateTemperatureFromEnthalpy(float* temperature,
 
     // Count how many cells actually converged
     int* h_converged = new int[num_cells_];
-    cudaMemcpy(h_converged, d_converged, num_cells_ * sizeof(int),
-               cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_converged, d_converged, num_cells_ * sizeof(int),
+               cudaMemcpyDeviceToHost));
 
     int total_converged = 0;
     for (int i = 0; i < num_cells_; ++i) {
@@ -386,7 +386,7 @@ void PhaseChangeSolver::updateLiquidFraction(const float* temperature) {
     // CRITICAL FIX: Ensure material is in device constant memory
     // Without this, d_material.T_solidus and d_material.T_liquidus are uninitialized,
     // causing all temperatures to be classified as solid (f_l = 0.0)
-    cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties)));
 
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;
@@ -406,13 +406,13 @@ void PhaseChangeSolver::addEnthalpyChange(const float* dH) {
 }
 
 void PhaseChangeSolver::copyEnthalpyToHost(float* host_enthalpy) const {
-    cudaMemcpy(host_enthalpy, d_enthalpy, num_cells_ * sizeof(float),
-               cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(host_enthalpy, d_enthalpy, num_cells_ * sizeof(float),
+               cudaMemcpyDeviceToHost));
 }
 
 void PhaseChangeSolver::copyLiquidFractionToHost(float* host_fl) const {
-    cudaMemcpy(host_fl, d_liquid_fraction, num_cells_ * sizeof(float),
-               cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(host_fl, d_liquid_fraction, num_cells_ * sizeof(float),
+               cudaMemcpyDeviceToHost));
 }
 
 float PhaseChangeSolver::computeTotalEnergy() const {
@@ -432,8 +432,8 @@ float PhaseChangeSolver::computeTotalEnergy() const {
 
     // Copy partial sums to host and reduce
     float* h_partial_sums = new float[blocks];
-    cudaMemcpy(h_partial_sums, d_partial_sums, blocks * sizeof(float),
-               cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_partial_sums, d_partial_sums, blocks * sizeof(float),
+               cudaMemcpyDeviceToHost));
 
     float total_energy = 0.0f;
     for (int i = 0; i < blocks; ++i) {

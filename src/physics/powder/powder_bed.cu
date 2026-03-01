@@ -172,10 +172,10 @@ void PowderBed::allocateDeviceMemory(int num_particles) {
 }
 
 void PowderBed::freeDeviceMemory() {
-    if (d_particle_x_) { cudaFree(d_particle_x_); d_particle_x_ = nullptr; }
-    if (d_particle_y_) { cudaFree(d_particle_y_); d_particle_y_ = nullptr; }
-    if (d_particle_z_) { cudaFree(d_particle_z_); d_particle_z_ = nullptr; }
-    if (d_particle_radius_) { cudaFree(d_particle_radius_); d_particle_radius_ = nullptr; }
+    if (d_particle_x_) { CUDA_CHECK(cudaFree(d_particle_x_)); d_particle_x_ = nullptr; }
+    if (d_particle_y_) { CUDA_CHECK(cudaFree(d_particle_y_)); d_particle_y_ = nullptr; }
+    if (d_particle_z_) { CUDA_CHECK(cudaFree(d_particle_z_)); d_particle_z_ = nullptr; }
+    if (d_particle_radius_) { CUDA_CHECK(cudaFree(d_particle_radius_)); d_particle_radius_ = nullptr; }
     num_particles_device_ = 0;
 }
 

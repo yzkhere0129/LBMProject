@@ -443,8 +443,6 @@ __global__ void advectFillLevelTVDKernel(
     // X-DIRECTION FLUXES with TVD limiting
     // ========================================================================
     float flux_xm, flux_xp;
-    const float eps = 1e-10f;  // Small epsilon to prevent division by zero
-
     // Face i-1/2 (between im and i)
     if (u_face_xm >= 0.0f) {  // Flow from imm → im → i
         float f_upwind = fill_level[idx_im];
@@ -454,7 +452,7 @@ __global__ void advectFillLevelTVDKernel(
         // Gradient ratio: r = (f_upwind - f_down) / (f_center - f_upwind)
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
 
         // Flux limiter
         float phi = applyFluxLimiter(r, limiter_type);
@@ -475,7 +473,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
 
         float phi = applyFluxLimiter(r, limiter_type);
 
@@ -495,7 +493,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
 
         float phi = applyFluxLimiter(r, limiter_type);
 
@@ -512,7 +510,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
 
         float phi = applyFluxLimiter(r, limiter_type);
 
@@ -537,7 +535,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = v_face_ym * f_upwind;
@@ -552,7 +550,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = v_face_ym * f_upwind;
@@ -570,7 +568,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = v_face_yp * f_upwind;
@@ -585,7 +583,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = v_face_yp * f_upwind;
@@ -608,7 +606,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = w_face_zm * f_upwind;
@@ -623,7 +621,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = w_face_zm * f_upwind;
@@ -641,7 +639,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = w_face_zp * f_upwind;
@@ -656,7 +654,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (fabsf(delta_center) + eps);
+        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = w_face_zp * f_upwind;
@@ -729,10 +727,16 @@ __global__ void reconstructInterfaceKernel(
     int idx_zm = i + nx * (j + ny * k_m);
     int idx_zp = i + nx * (j + ny * k_p);
 
-    // Compute fill level gradient
-    float grad_x = (fill_level[idx_xp] - fill_level[idx_xm]) / (2.0f * dx);
-    float grad_y = (fill_level[idx_yp] - fill_level[idx_ym]) / (2.0f * dx);
-    float grad_z = (fill_level[idx_zp] - fill_level[idx_zm]) / (2.0f * dx);
+    // Compute fill level gradient with adaptive denominator at boundaries
+    // At boundaries, i_m==i or i_p==i, so the stencil span is 1*dx, not 2*dx.
+    // Using 2*dx at boundaries halves the gradient magnitude (incorrect).
+    float denom_x = (i > 0 && i < nx - 1) ? 2.0f * dx : dx;
+    float denom_y = (j > 0 && j < ny - 1) ? 2.0f * dx : dx;
+    float denom_z = (k > 0 && k < nz - 1) ? 2.0f * dx : dx;
+
+    float grad_x = (fill_level[idx_xp] - fill_level[idx_xm]) / denom_x;
+    float grad_y = (fill_level[idx_yp] - fill_level[idx_ym]) / denom_y;
+    float grad_z = (fill_level[idx_zp] - fill_level[idx_zm]) / denom_z;
 
     // Compute gradient magnitude
     float grad_mag = sqrtf(grad_x * grad_x + grad_y * grad_y + grad_z * grad_z);
@@ -802,9 +806,14 @@ __global__ void computeCurvatureKernel(
     }
 
     // Compute divergence of normal: κ = ∇·n
-    float dnx_dx = (interface_normal[idx_xp].x - interface_normal[idx_xm].x) / (2.0f * dx);
-    float dny_dy = (interface_normal[idx_yp].y - interface_normal[idx_ym].y) / (2.0f * dx);
-    float dnz_dz = (interface_normal[idx_zp].z - interface_normal[idx_zm].z) / (2.0f * dx);
+    // Use adaptive denominator at boundaries (same fix as reconstructInterfaceKernel)
+    float denom_x = (i > 0 && i < nx - 1) ? 2.0f * dx : dx;
+    float denom_y = (j > 0 && j < ny - 1) ? 2.0f * dx : dx;
+    float denom_z = (k > 0 && k < nz - 1) ? 2.0f * dx : dx;
+
+    float dnx_dx = (interface_normal[idx_xp].x - interface_normal[idx_xm].x) / denom_x;
+    float dny_dy = (interface_normal[idx_yp].y - interface_normal[idx_ym].y) / denom_y;
+    float dnz_dz = (interface_normal[idx_zp].z - interface_normal[idx_zm].z) / denom_z;
 
     float kappa = dnx_dx + dny_dy + dnz_dz;
 
@@ -1266,8 +1275,8 @@ void VOFSolver::freeMemory() {
 }
 
 void VOFSolver::initialize(const float* fill_level) {
-    cudaMemcpy(d_fill_level_, fill_level, num_cells_ * sizeof(float),
-               cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_fill_level_, fill_level, num_cells_ * sizeof(float),
+               cudaMemcpyHostToDevice));
 
     // Initialize cell flags based on fill level
     convertCells();
@@ -1469,8 +1478,8 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
         CUDA_CHECK(cudaDeviceSynchronize());
 
         // Copy result back to d_fill_level_ for next substep (or final result)
-        cudaMemcpy(d_fill_level_, d_fill_level_tmp_, num_cells_ * sizeof(float),
-                   cudaMemcpyDeviceToDevice);
+        CUDA_CHECK(cudaMemcpy(d_fill_level_, d_fill_level_tmp_, num_cells_ * sizeof(float),
+                   cudaMemcpyDeviceToDevice));
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -1525,7 +1534,7 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
 
             // Allocate temporary storage for reduction
             int* d_partial_counts;
-            cudaMalloc(&d_partial_counts, gridSize_1d * sizeof(int));
+            CUDA_CHECK(cudaMalloc(&d_partial_counts, gridSize_1d * sizeof(int)));
 
             // Count interface cells
             countInterfaceCellsKernel<<<gridSize_1d, blockSize_1d>>>(
@@ -1534,8 +1543,8 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
 
             // Copy partial counts to host and sum
             std::vector<int> h_partial_counts(gridSize_1d);
-            cudaMemcpy(h_partial_counts.data(), d_partial_counts,
-                      gridSize_1d * sizeof(int), cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpy(h_partial_counts.data(), d_partial_counts,
+                      gridSize_1d * sizeof(int), cudaMemcpyDeviceToHost));
             int interface_count = 0;
             for (int i = 0; i < gridSize_1d; ++i) {
                 interface_count += h_partial_counts[i];
@@ -1565,7 +1574,7 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
                 }
             }
 
-            cudaFree(d_partial_counts);
+            CUDA_CHECK(cudaFree(d_partial_counts));
         }
     }
 
@@ -1603,8 +1612,8 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
 
     if (C_compress > 0.0f) {
         // Copy current field to tmp buffer for compression kernel input
-        cudaMemcpy(d_fill_level_tmp_, d_fill_level_, num_cells_ * sizeof(float),
-                   cudaMemcpyDeviceToDevice);
+        CUDA_CHECK(cudaMemcpy(d_fill_level_tmp_, d_fill_level_, num_cells_ * sizeof(float),
+                   cudaMemcpyDeviceToDevice));
         CUDA_CHECK(cudaDeviceSynchronize());
 
         applyInterfaceCompressionKernel<<<gridSize, blockSize>>>(
@@ -1680,18 +1689,18 @@ void VOFSolver::applyBoundaryConditions(int boundary_type, float contact_angle) 
 }
 
 void VOFSolver::copyFillLevelToHost(float* host_fill) const {
-    cudaMemcpy(host_fill, d_fill_level_, num_cells_ * sizeof(float),
-               cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(host_fill, d_fill_level_, num_cells_ * sizeof(float),
+               cudaMemcpyDeviceToHost));
 }
 
 void VOFSolver::copyCellFlagsToHost(uint8_t* host_flags) const {
-    cudaMemcpy(host_flags, d_cell_flags_, num_cells_ * sizeof(uint8_t),
-               cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(host_flags, d_cell_flags_, num_cells_ * sizeof(uint8_t),
+               cudaMemcpyDeviceToHost));
 }
 
 void VOFSolver::copyCurvatureToHost(float* host_curvature) const {
-    cudaMemcpy(host_curvature, d_curvature_, num_cells_ * sizeof(float),
-               cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(host_curvature, d_curvature_, num_cells_ * sizeof(float),
+               cudaMemcpyDeviceToHost));
 }
 
 float VOFSolver::computeTotalMass() const {
@@ -1709,10 +1718,10 @@ float VOFSolver::computeTotalMass() const {
 
     // Copy partial sums to host and finish reduction on CPU
     std::vector<float> h_partial_sums(gridSize);
-    cudaMemcpy(h_partial_sums.data(), d_partial_sums, gridSize * sizeof(float),
-               cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_partial_sums.data(), d_partial_sums, gridSize * sizeof(float),
+               cudaMemcpyDeviceToHost));
 
-    cudaFree(d_partial_sums);
+    CUDA_CHECK(cudaFree(d_partial_sums));
 
     // Final reduction on CPU
     float total_mass = 0.0f;

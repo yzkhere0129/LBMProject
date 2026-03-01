@@ -1,0 +1,5 @@
+if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_lattice_d3q7[1]_tests.cmake")
+  include("/home/yzk/LBMProject/build_check/tests/test_lattice_d3q7[1]_tests.cmake")
+else()
+  add_test(test_lattice_d3q7_NOT_BUILT test_lattice_d3q7_NOT_BUILT)
+endif()

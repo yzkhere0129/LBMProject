@@ -45,7 +45,7 @@ TEST_F(FluidLBMTest, ConstructorAndInitialization) {
     float nu = 0.1f;
     float rho0 = 1.0f;
 
-    FluidLBM solver(nx, ny, nz, nu, rho0);
+    FluidLBM solver(nx, ny, nz, nu, rho0, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, 1.0f, 1.0f);
 
     EXPECT_EQ(solver.getNx(), nx);
     EXPECT_EQ(solver.getNy(), ny);
@@ -80,7 +80,7 @@ TEST_F(FluidLBMTest, UniformFlowPreservation) {
     float rho0 = 1.0f;
     float u0 = 0.05f;  // Small velocity for stability
 
-    FluidLBM solver(nx, ny, nz, nu, rho0);
+    FluidLBM solver(nx, ny, nz, nu, rho0, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, 1.0f, 1.0f);
     solver.initialize(rho0, u0, 0.0f, 0.0f);
 
     // Run simulation without forces
@@ -109,7 +109,7 @@ TEST_F(FluidLBMTest, PressureComputation) {
     float nu = 0.1f;
     float rho0 = 1.0f;
 
-    FluidLBM solver(nx, ny, nz, nu, rho0);
+    FluidLBM solver(nx, ny, nz, nu, rho0, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, 1.0f, 1.0f);
 
     // Initialize with varying density
     int n_cells = nx * ny * nz;
@@ -159,7 +159,7 @@ TEST_F(FluidLBMTest, UniformBodyForceResponse) {
     float rho0 = 1.0f;
     float force_x = 1e-4f;  // Small force
 
-    FluidLBM solver(nx, ny, nz, nu, rho0);
+    FluidLBM solver(nx, ny, nz, nu, rho0, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, 1.0f, 1.0f);
     solver.initialize(rho0, 0.0f, 0.0f, 0.0f);
 
     // Apply uniform force for several steps
@@ -199,7 +199,7 @@ TEST_F(FluidLBMTest, ShearFlowStability) {
     float nu = 0.1f;
     float rho0 = 1.0f;
 
-    FluidLBM solver(nx, ny, nz, nu, rho0);
+    FluidLBM solver(nx, ny, nz, nu, rho0, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, 1.0f, 1.0f);
 
     // Initialize with linear shear profile in y-direction
     int n_cells = nx * ny * nz;
@@ -263,7 +263,7 @@ TEST_F(FluidLBMTest, BuoyancyForceComputation) {
     float nu = 0.1f;
     float rho0 = 1000.0f;
 
-    FluidLBM solver(nx, ny, nz, nu, rho0);
+    FluidLBM solver(nx, ny, nz, nu, rho0, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, 1.0f, 1.0f);
     solver.initialize();
 
     // Create temperature field
@@ -329,7 +329,7 @@ TEST_F(FluidLBMTest, DarcyDampingApplication) {
     float nu = 0.1f;
     float rho0 = 1000.0f;
 
-    FluidLBM solver(nx, ny, nz, nu, rho0);
+    FluidLBM solver(nx, ny, nz, nu, rho0, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, 1.0f, 1.0f);
 
     // Initialize with uniform velocity
     solver.initialize(rho0, 0.1f, 0.0f, 0.0f);
@@ -396,7 +396,7 @@ TEST_F(FluidLBMTest, ReynoldsNumberComputation) {
     float nu = 0.1f;
     float rho0 = 1.0f;
 
-    FluidLBM solver(nx, ny, nz, nu, rho0);
+    FluidLBM solver(nx, ny, nz, nu, rho0, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, 1.0f, 1.0f);
 
     // Compute Re for typical values
     float U = 0.1f;
@@ -413,7 +413,7 @@ TEST_F(FluidLBMTest, MassConservation) {
     float nu = 0.1f;
     float rho0 = 1.0f;
 
-    FluidLBM solver(nx, ny, nz, nu, rho0);
+    FluidLBM solver(nx, ny, nz, nu, rho0, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, lbm::physics::BoundaryType::PERIODIC, 1.0f, 1.0f);
     solver.initialize(rho0, 0.01f, 0.0f, 0.0f);
 
     // Compute initial total mass

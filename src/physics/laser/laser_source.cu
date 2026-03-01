@@ -46,55 +46,6 @@ __global__ void computeLaserHeatSourceKernel(
 }
 
 /**
- * @brief Add heat source to thermal field
- *
- * Updates the equilibrium distribution (f0) to account for heat source.
- * In LBM thermal model, heat source appears as a source term in f0.
- *
- * Temperature change: ΔT = Q * dt / (ρ * cp)
- * Where Q is volumetric heat source [W/m³]
- */
-__global__ void addHeatSourceToThermalFieldKernel(
-    float* g_distributions,
-    const float* heat_source,
-    float dt,
-    float rho, float cp,
-    int nx, int ny, int nz)
-{
-    // Global thread indices
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int k = blockIdx.z * blockDim.z + threadIdx.z;
-
-    // Check bounds
-    if (i >= nx || j >= ny || k >= nz) return;
-
-    int idx = k * nx * ny + j * nx + i;
-
-    // Get heat source at this cell
-    float Q = heat_source[idx];
-
-    // Convert to temperature increment
-    // ΔT = Q * dt / (ρ * cp)
-    float deltaT = Q * dt / (rho * cp);
-
-    // In D3Q7 thermal model, temperature is sum of all distributions
-    // We add the temperature change to the equilibrium (f0) distribution
-    // Since w0 = 1/4 for D3Q7, we need to scale appropriately
-
-    // For D3Q7: f0 = w0 * T = (1/4) * T
-    // So we add (1/4) * deltaT to f0
-    float delta_f0 = 0.25f * deltaT;
-
-    // Index for f0 (q=0) in the distribution array
-    // Assuming memory layout: [q0, q1, q2, q3, q4, q5, q6] for each cell
-    int f0_idx = idx * 7;  // First component (q=0)
-
-    // Update the equilibrium distribution
-    g_distributions[f0_idx] += delta_f0;
-}
-
-/**
  * @brief Compute total laser energy in domain (host function)
  *
  * This function is called from host to verify energy conservation.
@@ -198,8 +149,8 @@ float computeTotalLaserEnergyNoCUB(
         CUDA_CHECK_KERNEL();
 
         float total_heat_rate;
-        cudaMemcpy(&total_heat_rate, d_final_sum, sizeof(float),
-                   cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(&total_heat_rate, d_final_sum, sizeof(float),
+                              cudaMemcpyDeviceToHost));
 
         CUDA_CHECK(cudaFree(d_final_sum));
         CUDA_CHECK(cudaFree(d_partial_sums));
@@ -207,8 +158,8 @@ float computeTotalLaserEnergyNoCUB(
         return total_heat_rate * dV;
     } else {
         float total_heat_rate;
-        cudaMemcpy(&total_heat_rate, d_partial_sums, sizeof(float),
-                   cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(&total_heat_rate, d_partial_sums, sizeof(float),
+                              cudaMemcpyDeviceToHost));
 
         CUDA_CHECK(cudaFree(d_partial_sums));
 
@@ -299,50 +250,6 @@ __global__ void computeMultipleLasersKernel(
     // Store result
     int idx = k * nx * ny + j * nx + i;
     heat_source[idx] = total_q;
-}
-
-/**
- * @brief Update thermal field with adaptive time stepping
- *
- * Adjusts the time step based on the maximum heat source to maintain stability
- */
-__global__ void addHeatSourceAdaptiveKernel(
-    float* g_distributions,
-    const float* heat_source,
-    float base_dt,
-    float rho, float cp,
-    float max_delta_T,  // Maximum allowed temperature change per step
-    int nx, int ny, int nz)
-{
-    // Global thread indices
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int k = blockIdx.z * blockDim.z + threadIdx.z;
-
-    // Check bounds
-    if (i >= nx || j >= ny || k >= nz) return;
-
-    int idx = k * nx * ny + j * nx + i;
-
-    // Get heat source at this cell
-    float Q = heat_source[idx];
-
-    // Calculate potential temperature change
-    float potential_deltaT = Q * base_dt / (rho * cp);
-
-    // Adaptive time step (local)
-    float dt = base_dt;
-    if (fabsf(potential_deltaT) > max_delta_T) {
-        dt = max_delta_T * (rho * cp) / fabsf(Q);
-    }
-
-    // Actual temperature increment
-    float deltaT = Q * dt / (rho * cp);
-
-    // Update distribution
-    float delta_f0 = 0.25f * deltaT;
-    int f0_idx = idx * 7;
-    g_distributions[f0_idx] += delta_f0;
 }
 
 } // namespace physics

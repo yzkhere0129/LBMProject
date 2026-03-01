@@ -1,0 +1,5 @@
+if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_vof_advection_shear[1]_tests.cmake")
+  include("/home/yzk/LBMProject/build_check/tests/test_vof_advection_shear[1]_tests.cmake")
+else()
+  add_test(test_vof_advection_shear_NOT_BUILT test_vof_advection_shear_NOT_BUILT)
+endif()

@@ -20,7 +20,7 @@ add_executable(test_evaporation_energy_balance
 
 set_target_properties(test_evaporation_energy_balance PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_evaporation_energy_balance PRIVATE
@@ -52,7 +52,7 @@ add_executable(test_substrate_temperature_reduction
 
 set_target_properties(test_substrate_temperature_reduction PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_substrate_temperature_reduction PRIVATE
@@ -94,7 +94,7 @@ add_executable(test_laser_heating_simplified
 # Set CUDA properties
 set_target_properties(test_laser_heating_simplified PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 # Include directories
@@ -131,7 +131,7 @@ add_executable(test_laser_melting
 
 set_target_properties(test_laser_melting PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_laser_melting PRIVATE
@@ -165,7 +165,7 @@ add_executable(test_stefan_1d
 
 set_target_properties(test_stefan_1d PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_stefan_1d PRIVATE
@@ -198,7 +198,7 @@ add_executable(test_poiseuille_flow_fluidlbm
 
 set_target_properties(test_poiseuille_flow_fluidlbm PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_poiseuille_flow_fluidlbm PRIVATE
@@ -231,7 +231,7 @@ add_executable(test_thermal_fluid_coupling
 
 set_target_properties(test_thermal_fluid_coupling PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_thermal_fluid_coupling PRIVATE
@@ -264,7 +264,7 @@ add_executable(test_laser_melting_convection
 
 set_target_properties(test_laser_melting_convection PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_laser_melting_convection PRIVATE
@@ -301,7 +301,7 @@ add_executable(test_recoil_surface_depression
 
 set_target_properties(test_recoil_surface_depression PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_recoil_surface_depression PRIVATE

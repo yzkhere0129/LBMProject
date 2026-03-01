@@ -1,0 +1,5 @@
+if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_darcy_damping_solid[1]_tests.cmake")
+  include("/home/yzk/LBMProject/build_check/tests/test_darcy_damping_solid[1]_tests.cmake")
+else()
+  add_test(test_darcy_damping_solid_NOT_BUILT test_darcy_damping_solid_NOT_BUILT)
+endif()

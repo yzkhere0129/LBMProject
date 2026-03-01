@@ -747,8 +747,12 @@ void FluidLBM::setMovingWall(unsigned int wall_direction,
             bool is_corner = false;
 
             // Check if node is at an x-boundary (when x walls are not periodic)
+            // Only counts as corner if this isn't the moving wall direction
             if (boundary_x_ == BoundaryType::WALL) {
-                if (node.x == 0 || node.x == nx_ - 1) {
+                if (!(wall_direction & Streaming::BOUNDARY_X_MIN) && node.x == 0) {
+                    is_corner = true;
+                }
+                if (!(wall_direction & Streaming::BOUNDARY_X_MAX) && node.x == nx_ - 1) {
                     is_corner = true;
                 }
             }
@@ -765,8 +769,12 @@ void FluidLBM::setMovingWall(unsigned int wall_direction,
                 }
             }
             // Check if node is at a z-boundary (when z walls are not periodic)
+            // Only counts as corner if this isn't the moving wall direction
             if (boundary_z_ == BoundaryType::WALL) {
-                if (node.z == 0 || node.z == nz_ - 1) {
+                if (!(wall_direction & Streaming::BOUNDARY_Z_MIN) && node.z == 0) {
+                    is_corner = true;
+                }
+                if (!(wall_direction & Streaming::BOUNDARY_Z_MAX) && node.z == nz_ - 1) {
                     is_corner = true;
                 }
             }

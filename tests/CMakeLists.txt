@@ -168,6 +168,11 @@ add_cuda_test(test_vof_advection_bulk_cells regression/test_vof_advection_bulk_c
 # Fix: Changed timesteps from {4,2,1,0.5}μs to {8,4,2,1}μs
 add_cuda_test(test_timestep_omega_clamping regression/test_timestep_omega_clamping.cu)
 
+# Regression test - Material database values
+# Tests that Ti6Al4V cp_liquid=831 (Mills 2002) and all material properties
+# remain at their validated values.
+add_cuda_test(test_material_database_values regression/materials/test_material_database_values.cu)
+
 # Integration test - Force Diagnostic (moved from debug, has real assertions)
 add_cuda_test(test_force_diagnostic_integration integration/test_force_diagnostic_integration.cu)
 

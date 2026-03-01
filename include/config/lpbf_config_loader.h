@@ -188,6 +188,11 @@ inline bool loadLPBFConfig(const std::string& filename,
     config.surface_tension_coeff = loader.get("surface_tension_coeff", config.surface_tension_coeff);
     config.dsigma_dT = loader.get("dsigma_dT", config.dsigma_dT);
 
+    // Load surface config
+    config.surface.molar_mass = loader.get("molar_mass", config.surface.molar_mass);
+    config.surface.recoil_coefficient = loader.get("recoil_coefficient", config.surface.recoil_coefficient);
+    config.surface.recoil_max_pressure = loader.get("recoil_max_pressure", config.surface.recoil_max_pressure);
+
     // Load physics enable flags (CRITICAL FIX: These were missing!)
     config.enable_thermal = (loader.get<std::string>("enable_thermal", "true") == "true");
     config.enable_thermal_advection = (loader.get<std::string>("enable_thermal_advection", "true") == "true");
@@ -196,9 +201,9 @@ inline bool loadLPBFConfig(const std::string& filename,
     config.enable_vof = (loader.get<std::string>("enable_vof", "true") == "true");
     config.enable_vof_advection = (loader.get<std::string>("enable_vof_advection", "false") == "true");
     config.enable_surface_tension = (loader.get<std::string>("enable_surface_tension", "false") == "true");
-    config.enable_marangoni = (loader.get<std::string>("enable_marangoni", "true") == "true");
+    config.enable_marangoni = (loader.get<std::string>("enable_marangoni", "false") == "true");
     config.enable_laser = (loader.get<std::string>("enable_laser", "true") == "true");
-    config.enable_darcy = (loader.get<std::string>("enable_darcy", "true") == "true");
+    config.enable_darcy = (loader.get<std::string>("enable_darcy", "false") == "true");
     config.enable_buoyancy = (loader.get<std::string>("enable_buoyancy", "true") == "true");
 
     // Load evaporation and solidification shrinkage flags (diagnostic test support)

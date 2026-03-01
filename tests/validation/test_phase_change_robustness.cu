@@ -209,7 +209,7 @@ TEST_F(PhaseChangeRobustnessTest, MushyZoneStability) {
 TEST_F(PhaseChangeRobustnessTest, EnergyConservation) {
     // Test: Total energy should not drift unrealistically
     // (Some drift is okay due to boundary conditions)
-    config_.laser_shutoff_time = 0.0f;  // No laser - pure diffusion test
+    config_.enable_laser = false;  // No laser - pure diffusion test
 
     MultiphysicsSolver solver(config_);
 

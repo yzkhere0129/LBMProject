@@ -316,25 +316,43 @@ __global__ void addMarangoniForceKernel(
         return;
     }
 
-    // Compute temperature gradient (central differences)
+    // Compute temperature gradient with one-sided differences at boundaries
     float grad_T_x = 0.0f, grad_T_y = 0.0f, grad_T_z = 0.0f;
 
     if (i > 0 && i < nx - 1) {
         int idx_xp = (i + 1) + nx * (j + ny * k);
         int idx_xm = (i - 1) + nx * (j + ny * k);
         grad_T_x = (temperature[idx_xp] - temperature[idx_xm]) / (2.0f * dx);
+    } else if (i == 0) {
+        int idx_xp = (i + 1) + nx * (j + ny * k);
+        grad_T_x = (temperature[idx_xp] - temperature[idx]) / dx;
+    } else { // i == nx - 1
+        int idx_xm = (i - 1) + nx * (j + ny * k);
+        grad_T_x = (temperature[idx] - temperature[idx_xm]) / dx;
     }
 
     if (j > 0 && j < ny - 1) {
         int idx_yp = i + nx * ((j + 1) + ny * k);
         int idx_ym = i + nx * ((j - 1) + ny * k);
         grad_T_y = (temperature[idx_yp] - temperature[idx_ym]) / (2.0f * dx);
+    } else if (j == 0) {
+        int idx_yp = i + nx * ((j + 1) + ny * k);
+        grad_T_y = (temperature[idx_yp] - temperature[idx]) / dx;
+    } else { // j == ny - 1
+        int idx_ym = i + nx * ((j - 1) + ny * k);
+        grad_T_y = (temperature[idx] - temperature[idx_ym]) / dx;
     }
 
     if (k > 0 && k < nz - 1) {
         int idx_zp = i + nx * (j + ny * (k + 1));
         int idx_zm = i + nx * (j + ny * (k - 1));
         grad_T_z = (temperature[idx_zp] - temperature[idx_zm]) / (2.0f * dx);
+    } else if (k == 0) {
+        int idx_zp = i + nx * (j + ny * (k + 1));
+        grad_T_z = (temperature[idx_zp] - temperature[idx]) / dx;
+    } else { // k == nz - 1
+        int idx_zm = i + nx * (j + ny * (k - 1));
+        grad_T_z = (temperature[idx] - temperature[idx_zm]) / dx;
     }
 
     // Compute surface-tangential gradient: ∇_s T = ∇T - (∇T · n) n
@@ -595,10 +613,17 @@ __global__ void applyCFLLimitingKernel(
     float scale = 1.0f;
 
     if (v_new > v_target) {
-        // Hard limit: scale to reach exactly v_target
-        float delta_v_allowed = fmaxf(0.0f, v_target - v_current);
-        scale = delta_v_allowed / (f_mag + 1e-12f);
-        scale = fminf(scale, 1.0f);
+        // Smooth exponential damping instead of hard cutoff
+        // Avoids discontinuous force jump at v_target boundary
+        float excess = v_current - v_target * ramp_factor;
+        if (excess > 0.0f) {
+            float damping = expf(-2.0f * excess / (v_target + 1e-12f));
+            scale = fminf(scale, damping);
+        } else {
+            float delta_v_allowed = fmaxf(0.0f, v_target - v_current);
+            scale = delta_v_allowed / (f_mag + 1e-12f);
+            scale = fminf(scale, 1.0f);
+        }
     }
     else if (v_new > v_ramp) {
         // Gradual scaling zone
@@ -691,9 +716,16 @@ __global__ void applyCFLLimitingAdaptiveKernel(
     float scale = 1.0f;
 
     if (v_new > v_target) {
-        float delta_v_allowed = fmaxf(0.0f, v_target - v_current);
-        scale = delta_v_allowed / (f_mag + 1e-12f);
-        scale = fminf(scale, 1.0f);
+        // Smooth exponential damping instead of hard cutoff
+        float excess = v_current - v_target * ramp_factor;
+        if (excess > 0.0f) {
+            float damping = expf(-2.0f * excess / (v_target + 1e-12f));
+            scale = fminf(scale, damping);
+        } else {
+            float delta_v_allowed = fmaxf(0.0f, v_target - v_current);
+            scale = delta_v_allowed / (f_mag + 1e-12f);
+            scale = fminf(scale, 1.0f);
+        }
     }
     else if (v_new > v_ramp) {
         float excess_ratio = (v_new - v_ramp) / (v_target - v_ramp + 1e-12f);
@@ -1077,8 +1109,8 @@ float ForceAccumulator::getMaxForceMagnitude() const {
 
     // Copy to host and find max
     std::vector<float> h_f_mag(num_cells_);
-    cudaMemcpy(h_f_mag.data(), d_f_mag, num_cells_ * sizeof(float),
-               cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_f_mag.data(), d_f_mag, num_cells_ * sizeof(float),
+               cudaMemcpyDeviceToHost));
 
     CUDA_CHECK(cudaFree(d_f_mag));
 

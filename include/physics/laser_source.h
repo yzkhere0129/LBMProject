@@ -288,23 +288,6 @@ __global__ void computeLaserHeatSourceKernel(
 );
 
 /**
- * @brief Add heat source to thermal field
- * @param g_distributions Temperature distribution functions
- * @param heat_source Volumetric heat source [W/m³]
- * @param dt Time step [s]
- * @param rho Density [kg/m³]
- * @param cp Specific heat [J/(kg·K)]
- * @param nx,ny,nz Grid dimensions
- */
-__global__ void addHeatSourceToThermalFieldKernel(
-    float* g_distributions,
-    const float* heat_source,
-    float dt,
-    float rho, float cp,
-    int nx, int ny, int nz
-);
-
-/**
  * @brief Compute total laser energy in domain (for conservation check)
  * @param heat_source Heat source array [W/m³]
  * @param dx,dy,dz Grid spacing [m]

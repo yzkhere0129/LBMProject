@@ -2,6 +2,10 @@
  * @file simulation_config.h
  * @brief 仿真配置数据结构 - 支持从配置文件加载参数
  *
+ * @deprecated This configuration system is NOT connected to MultiphysicsSolver.
+ * Use MultiphysicsConfig in multiphysics_solver.h instead.
+ * This file is retained only for apps/run_simulation.cu compatibility.
+ *
  * 设计目标:
  * - 统一管理所有仿真参数
  * - 支持YAML/JSON配置文件

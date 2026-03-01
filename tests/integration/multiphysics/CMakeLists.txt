@@ -10,7 +10,7 @@ function(add_multiphysics_test test_name test_source)
 
     set_target_properties(${test_name} PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
-        CUDA_ARCHITECTURES "70;75;80;86"
+        CUDA_ARCHITECTURES "86"
     )
 
     target_include_directories(${test_name} PRIVATE

@@ -1,0 +1,5 @@
+if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_recoil_pressure[1]_tests.cmake")
+  include("/home/yzk/LBMProject/build_check/tests/test_recoil_pressure[1]_tests.cmake")
+else()
+  add_test(test_recoil_pressure_NOT_BUILT test_recoil_pressure_NOT_BUILT)
+endif()

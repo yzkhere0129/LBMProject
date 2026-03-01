@@ -1,0 +1,5 @@
+if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_streaming[1]_tests.cmake")
+  include("/home/yzk/LBMProject/build_check/tests/test_streaming[1]_tests.cmake")
+else()
+  add_test(test_streaming_NOT_BUILT test_streaming_NOT_BUILT)
+endif()

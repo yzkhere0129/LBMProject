@@ -22,8 +22,7 @@
  * Requiring iterative solution for T from H since fl = fl(T) is nonlinear.
  */
 
-#ifndef PHASE_CHANGE_H
-#define PHASE_CHANGE_H
+#pragma once
 
 #include <cuda_runtime.h>
 #include "physics/material_properties.h"
@@ -319,5 +318,3 @@ __global__ void computeTotalEnergyKernel(
 
 } // namespace physics
 } // namespace lbm
-
-#endif // PHASE_CHANGE_H

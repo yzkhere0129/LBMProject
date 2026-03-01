@@ -1,0 +1,5 @@
+if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_laser_surface_deformation[1]_tests.cmake")
+  include("/home/yzk/LBMProject/build_check/tests/test_laser_surface_deformation[1]_tests.cmake")
+else()
+  add_test(test_laser_surface_deformation_NOT_BUILT test_laser_surface_deformation_NOT_BUILT)
+endif()

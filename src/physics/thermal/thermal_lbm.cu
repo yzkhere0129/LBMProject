@@ -705,9 +705,9 @@ __global__ void applyEvaporationCoolingKernel(
     }
 
     // Apply temperature change to all distributions (maintains isotropy)
-    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
     int num_cells = nx * ny * nz;
-    for (int q = 0; q < 7; ++q) {
+    for (int q = 0; q < D3Q7::Q; ++q) {
         g[q * num_cells + idx] += weights[q] * dT;
     }
 }
@@ -753,9 +753,9 @@ __global__ void applyTemperatureCapKernel(
         float dT = T_max_allowed - T;
 
         // Apply temperature correction to all distributions
-        const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+        const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
         int num_cells = nx * ny * nz;
-        for (int q = 0; q < 7; ++q) {
+        for (int q = 0; q < D3Q7::Q; ++q) {
             g[q * num_cells + idx] += weights[q] * dT;
         }
     }
@@ -1300,12 +1300,12 @@ __global__ void addHeatSourceKernel(
     float source_correction = 1.0f;  // FIX: No correction for thermal sources
 
     // D3Q7 weights: w0 = 1/4, w1-6 = 1/8
-    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
 
     // Add temperature increase equally to all distributions
     // This preserves the temperature increase while maintaining isotropy
     // Apply correction factor to ensure correct energy deposition
-    for (int q = 0; q < 7; ++q) {
+    for (int q = 0; q < D3Q7::Q; ++q) {
         g[q * num_cells + idx] += weights[q] * dT * source_correction;
     }
 }
@@ -1483,7 +1483,7 @@ __global__ void applyRadiationBoundaryCondition(
     }
 
     // Apply temperature change to all distributions (maintains isotropy)
-    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
     int num_cells = nx * ny * nz;
     for (int q = 0; q < D3Q7::Q; ++q) {
         g[q * num_cells + idx] += weights[q] * dT;
@@ -1569,7 +1569,7 @@ __global__ void applySubstrateCoolingKernel(
     }
 
     // Apply to all distribution functions (isotropic cooling)
-    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
     int num_cells = nx * ny * nz;
     for (int q = 0; q < D3Q7::Q; ++q) {
         g[q * num_cells + idx] += weights[q] * dT;
@@ -1662,7 +1662,7 @@ __global__ void applyConvectiveBCKernel(
     }
 
     // Apply to all distribution functions (isotropic cooling)
-    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
     int num_cells = nx * ny * nz;
     for (int q = 0; q < D3Q7::Q; ++q) {
         g[q * num_cells + idx] += weights[q] * dT;
@@ -1718,7 +1718,7 @@ __global__ void applyRadiationBCFaceKernel(
     }
 
     // Apply to all distribution functions
-    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
     int num_cells = nx * ny * nz;
     for (int q = 0; q < D3Q7::Q; ++q) {
         g[q * num_cells + idx] += weights[q] * dT;
@@ -2337,8 +2337,8 @@ __global__ void applyPhaseChangeCorrectionKernel(
 
     // Update distribution functions to maintain equilibrium at new temperature
     // D3Q7 weights: w0 = 1/4, w1-6 = 1/8
-    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
-    for (int q = 0; q < 7; ++q) {
+    const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    for (int q = 0; q < D3Q7::Q; ++q) {
         g[q * num_cells + idx] += weights[q] * dT;
     }
 }

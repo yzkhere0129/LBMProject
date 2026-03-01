@@ -1,0 +1,5 @@
+if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_high_pe_stability[1]_tests.cmake")
+  include("/home/yzk/LBMProject/build_check/tests/test_high_pe_stability[1]_tests.cmake")
+else()
+  add_test(test_high_pe_stability_NOT_BUILT test_high_pe_stability_NOT_BUILT)
+endif()

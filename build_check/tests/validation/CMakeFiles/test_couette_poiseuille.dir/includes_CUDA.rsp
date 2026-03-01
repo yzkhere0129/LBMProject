@@ -1,0 +1,1 @@
+-I/home/yzk/LBMProject/include -I/home/yzk/LBMProject/src -I/home/yzk/LBMProject/tests -isystem "/usr/local/cuda/targets/x86_64-linux/include" -isystem "/home/yzk/LBMProject/build_check/_deps/googletest-src/googletest/include" -isystem "/home/yzk/LBMProject/build_check/_deps/googletest-src/googletest"

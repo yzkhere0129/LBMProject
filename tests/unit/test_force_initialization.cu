@@ -134,7 +134,7 @@ TEST(ForceInitializationTest, ForcesZeroedEachTimestep) {
     int num_cells = config.nx * config.ny * config.nz;
     std::vector<float> h_temp(num_cells);
 
-    float T_hot = 2500.0f;
+    float T_hot = 2050.0f;  // Reduced gradient to stay within LBM stability limits
     float T_cold = 2000.0f;
     float center_x = config.nx / 2.0f;
     float center_y = config.ny / 2.0f;

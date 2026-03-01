@@ -250,11 +250,13 @@ TEST_F(TemperatureBoundsTest, BoundsWithPhaseChange) {
     std::vector<float> h_temp(num_cells);
     thermal.copyTemperatureToHost(h_temp.data());
 
+    // T_MAX was updated from 7000K to 50000K to support high-amplitude validation tests
+    // (see thermal_lbm.cu: "FIX: Increased T_MAX from 7000K to 50000K")
     for (int i = 0; i < num_cells; ++i) {
         EXPECT_GE(h_temp[i], 0.0f)
             << "Negative temperature with phase change at cell " << i;
-        EXPECT_LE(h_temp[i], 7000.0f)
-            << "Temperature exceeded max with phase change at cell " << i;
+        EXPECT_LE(h_temp[i], 50000.0f)
+            << "Temperature exceeded max (50000K) with phase change at cell " << i;
     }
 }
 

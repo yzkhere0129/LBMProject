@@ -42,10 +42,9 @@ TEST_F(MaterialPropertiesTest, Ti6Al4VBasicProperties) {
     EXPECT_FLOAT_EQ(ti64.cp_solid, 526.0f);   // J/(kg·K) (walberla)
     EXPECT_FLOAT_EQ(ti64.k_solid, 6.7f);      // W/(m·K) (walberla)
 
-    // Check liquid properties
-    // Note: cp_liquid uses solid value (526) for walberla validation consistency
+    // Check liquid properties (cp_liquid uses Mills 2002 value)
     EXPECT_FLOAT_EQ(ti64.rho_liquid, 4110.0f);
-    EXPECT_FLOAT_EQ(ti64.cp_liquid, 526.0f);  // Same as solid for walberla match
+    EXPECT_FLOAT_EQ(ti64.cp_liquid, 831.0f);  // J/(kg·K) - Mills 2002
     EXPECT_FLOAT_EQ(ti64.k_liquid, 33.0f);
 
     // Check phase change parameters
@@ -517,9 +516,9 @@ TEST_F(MaterialPropertiesTest, GPUDeviceMemoryCopy) {
     cudaMemcpy(h_results, d_results, 5 * sizeof(float), cudaMemcpyDeviceToHost);
 
     // Verify results match CPU calculations
-    EXPECT_NEAR(h_results[0], ti64.getDensity(T), 1e-5f);
-    EXPECT_NEAR(h_results[1], ti64.getThermalConductivity(T), 1e-5f);
-    EXPECT_NEAR(h_results[2], ti64.getSpecificHeat(T), 1e-5f);
+    EXPECT_NEAR(h_results[0], ti64.getDensity(T), 1e-3f);
+    EXPECT_NEAR(h_results[1], ti64.getThermalConductivity(T), 1e-3f);
+    EXPECT_NEAR(h_results[2], ti64.getSpecificHeat(T), 1e-1f);  // float precision between CPU/GPU
     EXPECT_NEAR(h_results[3], ti64.getThermalDiffusivity(T), 1e-9f);
     EXPECT_NEAR(h_results[4], ti64.liquidFraction(T), 1e-5f);
 
@@ -667,10 +666,10 @@ TEST_F(MaterialPropertiesTest, SteelBasicProperties) {
     EXPECT_FLOAT_EQ(steel.T_liquidus, 1723.0f);   // K (melting point)
     EXPECT_FLOAT_EQ(steel.T_vaporization, 3090.0f); // K (boiling point)
 
-    // Check that mushy zone is very small (pure element has minimal mushy zone)
-    // Note: We use 1K mushy zone to satisfy validation requirement T_liquidus > T_solidus
-    EXPECT_FLOAT_EQ(steel.T_solidus, 1722.0f);
-    EXPECT_LT(steel.T_liquidus - steel.T_solidus, 2.0f); // Very narrow mushy zone
+    // Check phase change temperatures (200K mushy zone for numerical stability)
+    // Widened from 50K to 200K (2026-01-27) to slow solidification and reduce positive feedback
+    EXPECT_FLOAT_EQ(steel.T_solidus, 1523.0f);
+    EXPECT_FLOAT_EQ(steel.T_liquidus - steel.T_solidus, 200.0f); // 200K mushy zone
 
     // Verify all properties are positive (basic validation)
     EXPECT_GT(steel.cp_solid, 0.0f);

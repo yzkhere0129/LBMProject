@@ -1,0 +1,5 @@
+if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_moving_wall_bc[1]_tests.cmake")
+  include("/home/yzk/LBMProject/build_check/tests/test_moving_wall_bc[1]_tests.cmake")
+else()
+  add_test(test_moving_wall_bc_NOT_BUILT test_moving_wall_bc_NOT_BUILT)
+endif()

@@ -20,8 +20,7 @@
  * Week 3 P1: Essential for validating energy conservation in LPBF simulations
  */
 
-#ifndef ENERGY_BALANCE_H
-#define ENERGY_BALANCE_H
+#pragma once
 
 #include <cuda_runtime.h>
 #include <vector>
@@ -334,5 +333,3 @@ void computeLatentEnergy(
 
 } // namespace diagnostics
 } // namespace lbm
-
-#endif // ENERGY_BALANCE_H

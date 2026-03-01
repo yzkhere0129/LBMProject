@@ -28,7 +28,7 @@ MaterialProperties MaterialDatabase::getTi6Al4V() {
 
     // Liquid state properties
     mat.rho_liquid = 4110.0f;          // kg/m³ (Mills 2002)
-    mat.cp_liquid = 526.0f;            // J/(kg·K) - SET TO SOLID VALUE for walberla validation
+    mat.cp_liquid = 831.0f;            // J/(kg·K) - Mills 2002 (was 526 for walberla validation)
     mat.k_liquid = 33.0f;              // W/(m·K)
     mat.mu_liquid = 5.0e-3f;           // Pa·s (Valencia & Quested 2008)
 

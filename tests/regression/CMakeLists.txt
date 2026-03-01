@@ -19,7 +19,7 @@ add_executable(test_substrate_bc_stability
 
 set_target_properties(test_substrate_bc_stability PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_substrate_bc_stability PRIVATE
@@ -60,7 +60,7 @@ add_executable(test_vof_advection_bulk_cells
 
 set_target_properties(test_vof_advection_bulk_cells PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_vof_advection_bulk_cells PRIVATE
@@ -92,7 +92,7 @@ add_executable(test_timestep_omega_clamping
 
 set_target_properties(test_timestep_omega_clamping PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_timestep_omega_clamping PRIVATE
@@ -122,7 +122,7 @@ add_executable(test_material_database_values
 
 set_target_properties(test_material_database_values PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_material_database_values PRIVATE
@@ -164,7 +164,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_realistic_temperature.cu)
 
     set_target_properties(test_realistic_temperature PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
-        CUDA_ARCHITECTURES "70;75;80;86"
+        CUDA_ARCHITECTURES "86"
     )
 
     target_include_directories(test_realistic_temperature PRIVATE

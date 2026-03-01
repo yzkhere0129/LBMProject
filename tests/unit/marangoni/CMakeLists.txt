@@ -17,7 +17,7 @@ function(add_marangoni_test test_name)
     target_link_libraries(${test_name} PRIVATE lbm_marangoni CUDA::cudart)
     set_target_properties(${test_name} PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
-        CUDA_ARCHITECTURES "70;75;80;86"
+        CUDA_ARCHITECTURES "86"
     )
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()

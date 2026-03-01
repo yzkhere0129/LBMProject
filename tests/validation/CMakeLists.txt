@@ -22,7 +22,7 @@ add_executable(test_marangoni_velocity
 
 set_target_properties(test_marangoni_velocity PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_marangoni_velocity PRIVATE
@@ -59,7 +59,7 @@ add_executable(test_realistic_lpbf_initial_conditions
 
 set_target_properties(test_realistic_lpbf_initial_conditions PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_realistic_lpbf_initial_conditions PRIVATE
@@ -96,7 +96,7 @@ add_executable(test_divergence_free
 
 set_target_properties(test_divergence_free PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_divergence_free PRIVATE
@@ -131,7 +131,7 @@ add_executable(test_phase_change_robustness
 
 set_target_properties(test_phase_change_robustness PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_phase_change_robustness PRIVATE
@@ -168,7 +168,7 @@ add_executable(test_laser_shutoff_configurable
 
 set_target_properties(test_laser_shutoff_configurable PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_laser_shutoff_configurable PRIVATE
@@ -206,7 +206,7 @@ add_executable(test_evaporation_hertz_knudsen
 
 set_target_properties(test_evaporation_hertz_knudsen PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_evaporation_hertz_knudsen PRIVATE
@@ -239,7 +239,7 @@ add_executable(test_substrate_cooling_bc
 
 set_target_properties(test_substrate_cooling_bc PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_substrate_cooling_bc PRIVATE
@@ -276,7 +276,7 @@ add_executable(test_pure_conduction
 
 set_target_properties(test_pure_conduction PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_pure_conduction PRIVATE
@@ -309,7 +309,7 @@ add_executable(test_stefan_problem
 
 set_target_properties(test_stefan_problem PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_stefan_problem PRIVATE
@@ -342,7 +342,7 @@ add_executable(test_evaporation_rate
 
 set_target_properties(test_evaporation_rate PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_evaporation_rate PRIVATE
@@ -377,7 +377,7 @@ add_executable(test_grid_convergence
 
 set_target_properties(test_grid_convergence PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_grid_convergence PRIVATE
@@ -409,7 +409,7 @@ add_executable(test_timestep_convergence
 
 set_target_properties(test_timestep_convergence PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_timestep_convergence PRIVATE
@@ -443,7 +443,7 @@ add_executable(test_energy_conservation_timestep
 
 set_target_properties(test_energy_conservation_timestep PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_energy_conservation_timestep PRIVATE
@@ -471,7 +471,7 @@ add_executable(test_regression_50W
 
 set_target_properties(test_regression_50W PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_regression_50W PRIVATE
@@ -499,7 +499,7 @@ add_executable(test_cfl_stability
 
 set_target_properties(test_cfl_stability PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_cfl_stability PRIVATE
@@ -527,7 +527,7 @@ add_executable(test_config_parser
 
 set_target_properties(test_config_parser PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_config_parser PRIVATE
@@ -559,7 +559,7 @@ add_executable(test_3d_heat_diffusion_senior
 
 set_target_properties(test_3d_heat_diffusion_senior PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_3d_heat_diffusion_senior PRIVATE
@@ -594,7 +594,7 @@ add_executable(test_3d_heat_diffusion_fixed
 
 set_target_properties(test_3d_heat_diffusion_fixed PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_3d_heat_diffusion_fixed PRIVATE
@@ -632,7 +632,7 @@ add_executable(test_laser_melting_senior
 
 set_target_properties(test_laser_melting_senior PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_laser_melting_senior PRIVATE
@@ -670,7 +670,7 @@ add_executable(test_laser_melting_iron
 
 set_target_properties(test_laser_melting_iron PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_laser_melting_iron PRIVATE
@@ -708,7 +708,7 @@ add_executable(test_energy_budget
 
 set_target_properties(test_energy_budget PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_energy_budget PRIVATE
@@ -745,7 +745,7 @@ add_executable(thermal_source_energy_test
 
 set_target_properties(thermal_source_energy_test PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(thermal_source_energy_test PRIVATE
@@ -780,7 +780,7 @@ add_executable(test_thermal_walberla_match
 
 set_target_properties(test_thermal_walberla_match PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_thermal_walberla_match PRIVATE
@@ -817,7 +817,7 @@ add_executable(test_fd_thermal_reference
 
 set_target_properties(test_fd_thermal_reference PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_fd_thermal_reference PRIVATE
@@ -852,7 +852,7 @@ add_executable(test_gaussian_diffusion
 
 set_target_properties(test_gaussian_diffusion PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_gaussian_diffusion PRIVATE
@@ -889,7 +889,7 @@ add_executable(test_energy_conservation
 
 set_target_properties(test_energy_conservation PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_energy_conservation PRIVATE
@@ -927,7 +927,7 @@ add_executable(test_lid_driven_cavity_re100
 
 set_target_properties(test_lid_driven_cavity_re100 PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_lid_driven_cavity_re100 PRIVATE
@@ -962,7 +962,7 @@ add_executable(test_lid_driven_cavity_re400
 
 set_target_properties(test_lid_driven_cavity_re400 PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_lid_driven_cavity_re400 PRIVATE
@@ -997,7 +997,7 @@ add_executable(test_fluid_grid_convergence
 
 set_target_properties(test_fluid_grid_convergence PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_fluid_grid_convergence PRIVATE
@@ -1032,7 +1032,7 @@ add_executable(test_natural_convection
 
 set_target_properties(test_natural_convection PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_natural_convection PRIVATE
@@ -1080,7 +1080,7 @@ add_executable(test_couette_poiseuille
 
 set_target_properties(test_couette_poiseuille PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_couette_poiseuille PRIVATE
@@ -1115,7 +1115,7 @@ add_executable(test_trt_couette_poiseuille
 
 set_target_properties(test_trt_couette_poiseuille PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_trt_couette_poiseuille PRIVATE
@@ -1155,7 +1155,7 @@ add_executable(test_oscillating_droplet
 
 set_target_properties(test_oscillating_droplet PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_oscillating_droplet PRIVATE
@@ -1190,7 +1190,7 @@ add_executable(test_vof_buoyancy
 
 set_target_properties(test_vof_buoyancy PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_vof_buoyancy PRIVATE
@@ -1221,7 +1221,7 @@ add_executable(test_rising_bubble_2d
 
 set_target_properties(test_rising_bubble_2d PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_rising_bubble_2d PRIVATE
@@ -1254,7 +1254,7 @@ add_executable(test_rayleigh_taylor_gerris_exact
 
 set_target_properties(test_rayleigh_taylor_gerris_exact PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_rayleigh_taylor_gerris_exact PRIVATE
@@ -1282,7 +1282,7 @@ add_executable(test_rayleigh_taylor_validation
 
 set_target_properties(test_rayleigh_taylor_validation PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_rayleigh_taylor_validation PRIVATE
@@ -1315,7 +1315,7 @@ add_executable(test_rt_trt_validation
 
 set_target_properties(test_rt_trt_validation PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_rt_trt_validation PRIVATE
@@ -1348,7 +1348,7 @@ add_executable(test_phase_inversion
 
 set_target_properties(test_phase_inversion PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_phase_inversion PRIVATE
@@ -1381,7 +1381,7 @@ add_executable(test_vof_mass_conservation_tvd
 
 set_target_properties(test_vof_mass_conservation_tvd PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_vof_mass_conservation_tvd PRIVATE
@@ -1414,7 +1414,7 @@ add_executable(test_vof_mass_correction
 
 set_target_properties(test_vof_mass_correction PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_vof_mass_correction PRIVATE
@@ -1445,7 +1445,7 @@ add_executable(test_marangoni_velocity_scale
 
 set_target_properties(test_marangoni_velocity_scale PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_marangoni_velocity_scale PRIVATE
@@ -1482,7 +1482,7 @@ add_executable(test_taylor_green_2d
 
 set_target_properties(test_taylor_green_2d PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_taylor_green_2d PRIVATE
@@ -1519,7 +1519,7 @@ add_executable(test_thermal_timestep_convergence
 
 set_target_properties(test_thermal_timestep_convergence PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_thermal_timestep_convergence PRIVATE
@@ -1557,7 +1557,7 @@ add_executable(test_newton_bisection_fallback
 
 set_target_properties(test_newton_bisection_fallback PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_newton_bisection_fallback PRIVATE
@@ -1591,7 +1591,7 @@ add_executable(test_powder_bed_generation
 
 set_target_properties(test_powder_bed_generation PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_powder_bed_generation PRIVATE
@@ -1625,7 +1625,7 @@ add_executable(test_khairallah_melt_pool
 
 set_target_properties(test_khairallah_melt_pool PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_khairallah_melt_pool PRIVATE
@@ -1660,7 +1660,7 @@ add_executable(test_tvd_vof_advection
 
 set_target_properties(test_tvd_vof_advection PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "70;75;80;86"
+    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_tvd_vof_advection PRIVATE

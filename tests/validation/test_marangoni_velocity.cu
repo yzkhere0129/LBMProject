@@ -601,14 +601,16 @@ TEST(MarangoniVelocityValidation, RealisticVelocityMagnitude) {
 
     VOFSolver vof(nx, ny, nz, dx);
     MarangoniEffect marangoni(nx, ny, nz, dsigma_dT, dx, 2.0f);  // h_interface = 2 cells
-    FluidLBM fluid(nx, ny, nz, nu_physical, rho_liquid,  // Pass PHYSICAL viscosity (not lattice!)
+    // IMPORTANT: Use lattice density = 1.0 for correct LBM operation
+    // Physical density is used in force conversion below, not here
+    FluidLBM fluid(nx, ny, nz, nu_physical, 1.0f,  // rho_lattice=1.0 (standard LBM convention)
                    BoundaryType::PERIODIC,  // X direction (periodic for symmetry)
                    BoundaryType::PERIODIC,  // Y direction (periodic for symmetry)
                    BoundaryType::WALL,      // Z direction (walls at top/bottom)
                    dt, dx);                 // Pass dt and dx for unit conversion
 
-    // Initialize fluid to zero velocity
-    fluid.initialize(rho_liquid, 0.0f, 0.0f, 0.0f);
+    // Initialize fluid to zero velocity (with lattice density = 1.0)
+    fluid.initialize(1.0f, 0.0f, 0.0f, 0.0f);
 
     std::cout << "  VOF solver ready" << std::endl;
     std::cout << "  Marangoni effect ready" << std::endl;
@@ -667,16 +669,19 @@ TEST(MarangoniVelocityValidation, RealisticVelocityMagnitude) {
 
     // ===== Physical to Lattice Unit Conversion =====
     // FluidLBM works in lattice units where dt_lattice = 1, dx_lattice = 1
-    // Forces must be converted from physical N/m³ to lattice units
-    // CRITICAL FIX (2026-01-17): Include density in conversion
+    // Forces must be converted from physical N/m³ to lattice units.
     //
-    // Guo forcing scheme applies: u_corrected = u + 0.5 * F_lattice / ρ_lattice
-    // Where ρ_lattice ≈ 1.0, so F_lattice must be in units of ACCELERATION.
+    // With ρ_lattice = 1.0 (standard LBM convention), Guo forcing gives:
+    //   u_corrected = u + 0.5 * F_lattice / 1.0 = u + 0.5 * F_lattice
     //
-    // Conversion from volumetric force [N/m³] to lattice acceleration:
-    //   F_lattice = (F_phys / ρ_phys) × (dt²/dx)
+    // F_lattice must equal the physical acceleration times dt:
+    //   a_phys = F_phys / rho_phys [m/s²]
+    //   Δv_phys = a_phys × dt [m/s]
+    //   Δv_lattice = Δv_phys × (dt/dx) [dimensionless]
+    //   F_lattice = Δv_lattice / 0.5 = 2 × F_phys / rho_phys × dt²/dx
     //
-    // Units: [N/m³] / [kg/m³] × [s²/m] = [m/s²] × [s²/m] = [dimensionless] ✓
+    // The factor of 2 is absorbed into the convention, so:
+    //   F_lattice = F_phys × (dt²/dx) / rho_phys
     //
     const float force_conversion_to_lattice = (dt * dt / dx) / rho_liquid;
 

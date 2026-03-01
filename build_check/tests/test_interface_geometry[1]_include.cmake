@@ -1,0 +1,5 @@
+if(EXISTS "/home/yzk/LBMProject/build_check/tests/test_interface_geometry[1]_tests.cmake")
+  include("/home/yzk/LBMProject/build_check/tests/test_interface_geometry[1]_tests.cmake")
+else()
+  add_test(test_interface_geometry_NOT_BUILT test_interface_geometry_NOT_BUILT)
+endif()
