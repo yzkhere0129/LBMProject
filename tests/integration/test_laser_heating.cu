@@ -22,6 +22,8 @@
 #include "physics/laser_source.h"
 #include "physics/material_properties.h"
 
+using namespace lbm::physics;
+
 // Test fixture for laser heating integration tests
 class LaserHeatingIntegrationTest : public ::testing::Test {
 protected:

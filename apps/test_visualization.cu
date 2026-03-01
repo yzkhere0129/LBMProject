@@ -11,6 +11,7 @@
 #include "io/vtk_writer.h"
 
 using namespace lbm;
+using namespace lbm::physics;
 
 int main() {
     std::cout << "\n=== Quick Visualization Test ===\n\n";
@@ -27,13 +28,13 @@ int main() {
               << " x " << nz*dz*1e6 << " micrometers\n\n";
 
     // Material
-    physics::MaterialProperties ti64 = physics::MaterialDatabase::getTi6Al4V();
+    MaterialProperties ti64 = MaterialDatabase::getTi6Al4V();
     float thermal_diffusivity = ti64.getThermalDiffusivity(300.0f);
 
     // Initialize thermal solver
     // CRITICAL FIX: Pass dt and dx for proper tau scaling
-    physics::ThermalLBM thermal(nx, ny, nz, thermal_diffusivity,
-                               ti64.rho_solid, ti64.cp_solid, dt, dx);
+    ThermalLBM thermal(nx, ny, nz, thermal_diffusivity,
+                       ti64.rho_solid, ti64.cp_solid, dt, dx);
     thermal.initialize(300.0f);
 
     // Laser
@@ -59,7 +60,7 @@ int main() {
                  (ny + block.y - 1) / block.y,
                  (nz + block.z - 1) / block.z);
 
-        computeLaserHeatSourceKernel<<<grid, block>>>(
+        lbm::physics::computeLaserHeatSourceKernel<<<grid, block>>>(
             d_heat_source, laser, dx, dy, dz, nx, ny, nz
         );
 

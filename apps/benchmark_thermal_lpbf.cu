@@ -36,6 +36,7 @@
 #include "utils/benchmark_timer.h"
 
 using namespace lbm;
+using namespace lbm::physics;
 
 // ============================================================================
 // Configuration structures

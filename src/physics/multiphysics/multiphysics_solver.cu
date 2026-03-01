@@ -498,6 +498,118 @@ __global__ void limitForcesByCFL_AdaptiveKernel(
 }
 
 // ============================================================================
+// MultiphysicsConfig::validate()
+// ============================================================================
+
+void MultiphysicsConfig::validate() const {
+    // ---- Grid validation ----
+    if (nx <= 0 || ny <= 0 || nz <= 0) {
+        throw std::runtime_error("MultiphysicsConfig: grid dimensions must be positive "
+            "(nx=" + std::to_string(nx) + ", ny=" + std::to_string(ny) +
+            ", nz=" + std::to_string(nz) + ")");
+    }
+    if (dx <= 0.0f) {
+        throw std::runtime_error("MultiphysicsConfig: dx must be positive (dx=" +
+            std::to_string(dx) + ")");
+    }
+    if (dt <= 0.0f) {
+        throw std::runtime_error("MultiphysicsConfig: dt must be positive (dt=" +
+            std::to_string(dt) + ")");
+    }
+
+    // ---- LBM stability: fluid tau ----
+    // kinematic_viscosity is in LATTICE units (historical convention)
+    float tau_fluid = kinematic_viscosity / (1.0f / 3.0f) + 0.5f;
+    if (tau_fluid < 0.51f) {
+        fprintf(stderr, "WARNING: tau_fluid=%.4f < 0.51 -- LBM is likely UNSTABLE "
+                "(nu_lattice=%.4f)\n", tau_fluid, kinematic_viscosity);
+    }
+    if (tau_fluid > 5.0f) {
+        fprintf(stderr, "WARNING: tau_fluid=%.2f > 5.0 -- very diffusive, "
+                "accuracy may be poor\n", tau_fluid);
+    }
+
+    // ---- LBM stability: thermal tau ----
+    if (enable_thermal && dx > 0.0f && dt > 0.0f) {
+        float alpha_lattice = thermal_diffusivity * dt / (dx * dx);
+        // D3Q7 thermal LBM: tau_T = alpha_lattice / (1/4) + 0.5
+        float tau_thermal = alpha_lattice / 0.25f + 0.5f;
+        if (tau_thermal < 0.51f) {
+            fprintf(stderr, "WARNING: tau_thermal=%.4f < 0.51 -- thermal LBM may be UNSTABLE "
+                    "(alpha_lattice=%.4e)\n", tau_thermal, alpha_lattice);
+        }
+    }
+
+    // ---- CFL limit ----
+    if (cfl_limit > 0.577f) {
+        fprintf(stderr, "WARNING: cfl_limit=%.3f exceeds LBM stability bound 1/sqrt(3)=0.577\n",
+                cfl_limit);
+    }
+
+    // ---- Physics consistency ----
+    if (enable_phase_change && !enable_thermal) {
+        throw std::runtime_error("MultiphysicsConfig: enable_phase_change requires enable_thermal");
+    }
+    if (enable_evaporation_mass_loss && (!enable_vof || !enable_thermal)) {
+        throw std::runtime_error("MultiphysicsConfig: enable_evaporation_mass_loss "
+                "requires both enable_vof and enable_thermal");
+    }
+    if (enable_marangoni && !enable_vof) {
+        throw std::runtime_error("MultiphysicsConfig: enable_marangoni requires "
+                "enable_vof (needs interface normals)");
+    }
+    if (enable_recoil_pressure && (!enable_vof || !enable_thermal)) {
+        throw std::runtime_error("MultiphysicsConfig: enable_recoil_pressure "
+                "requires both enable_vof and enable_thermal");
+    }
+    if (enable_solidification_shrinkage && !enable_phase_change) {
+        throw std::runtime_error("MultiphysicsConfig: enable_solidification_shrinkage "
+                "requires enable_phase_change");
+    }
+    if (enable_thermal_advection && (!enable_thermal || !enable_fluid)) {
+        throw std::runtime_error("MultiphysicsConfig: enable_thermal_advection "
+                "requires both enable_thermal and enable_fluid");
+    }
+    if (enable_vof_advection && (!enable_vof || !enable_fluid)) {
+        throw std::runtime_error("MultiphysicsConfig: enable_vof_advection "
+                "requires both enable_vof and enable_fluid");
+    }
+    if (enable_surface_tension && !enable_vof) {
+        throw std::runtime_error("MultiphysicsConfig: enable_surface_tension "
+                "requires enable_vof");
+    }
+
+    // ---- Parameter ranges ----
+    if (laser_absorptivity < 0.0f || laser_absorptivity > 1.0f) {
+        throw std::runtime_error("MultiphysicsConfig: laser_absorptivity must be in [0,1] "
+            "(got " + std::to_string(laser_absorptivity) + ")");
+    }
+    if (emissivity < 0.0f || emissivity > 1.0f) {
+        throw std::runtime_error("MultiphysicsConfig: emissivity must be in [0,1] "
+            "(got " + std::to_string(emissivity) + ")");
+    }
+    if (enable_surface_tension && surface_tension_coeff <= 0.0f) {
+        throw std::runtime_error("MultiphysicsConfig: surface_tension_coeff must be > 0 "
+            "when surface tension is enabled (got " +
+            std::to_string(surface_tension_coeff) + ")");
+    }
+    if (density <= 0.0f) {
+        throw std::runtime_error("MultiphysicsConfig: density must be positive "
+            "(got " + std::to_string(density) + ")");
+    }
+    if (vof_subcycles < 1) {
+        throw std::runtime_error("MultiphysicsConfig: vof_subcycles must be >= 1 "
+            "(got " + std::to_string(vof_subcycles) + ")");
+    }
+
+    // ---- Material validation ----
+    if (!material.validate()) {
+        throw std::runtime_error("MultiphysicsConfig: material properties failed validation "
+                "(check densities, specific heats, and temperatures)");
+    }
+}
+
+// ============================================================================
 // Constructor / Destructor
 // ============================================================================
 
@@ -525,12 +637,19 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
       energy_output_interval_(default_energy_interval_),
       time_last_computed_(-1.0f)  // Initialize to negative to force first computation
 {
-    // Validate configuration
-    if (config_.nx <= 0 || config_.ny <= 0 || config_.nz <= 0) {
-        throw std::invalid_argument("Grid dimensions must be positive");
-    }
-    if (config_.dx <= 0.0f) {
-        throw std::invalid_argument("Lattice spacing must be positive");
+    // Validate configuration (comprehensive checks for stability, consistency, ranges)
+    config_.validate();
+
+    // Print derived lattice parameters for unit-conversion verification
+    {
+        float tau_fluid = config_.kinematic_viscosity / (1.0f / 3.0f) + 0.5f;
+        float tau_thermal = 0.0f;
+        if (config_.enable_thermal && config_.dx > 0.0f && config_.dt > 0.0f) {
+            float alpha_lattice = config_.thermal_diffusivity * config_.dt / (config_.dx * config_.dx);
+            tau_thermal = alpha_lattice / 0.25f + 0.5f;
+        }
+        printf("LBM Parameters: tau_fluid=%.3f, tau_thermal=%.3f, dx=%.2e m, dt=%.2e s\n",
+               tau_fluid, tau_thermal, config_.dx, config_.dt);
     }
 
     // ============================================================
@@ -580,18 +699,31 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
 
     // Fluid solver (required)
     if (config_.enable_fluid) {
-        // CRITICAL FIX: Compute kinematic viscosity from material properties
-        // nu = mu / rho (kinematic viscosity from dynamic viscosity and density)
-        // This ensures consistency with material database
-        float nu_physical = config_.material.mu_liquid / config_.material.rho_liquid;
+        // BUG FIX (2026-01-25): Use config.kinematic_viscosity, not material property
+        // config.kinematic_viscosity is in LATTICE UNITS (dimensionless)
+        // FluidLBM expects PHYSICAL viscosity [m²/s]
+        // Conversion: nu_physical = nu_lattice * dx² / dt
+        //
+        // Previous bug: Was computing nu_physical from material properties, which gave
+        // tau=0.512 (UNSTABLE). Config allowed overriding to tau=0.65 (STABLE), but
+        // this override was being ignored!
+        float nu_lattice = config_.kinematic_viscosity;  // Lattice units (dimensionless)
+        float nu_physical = nu_lattice * (config_.dx * config_.dx) / config_.dt;  // Convert to m²/s
+
+        // Verify tau for stability
+        float tau_check = 0.5f + 3.0f * nu_lattice;
+        if (tau_check < 0.55f) {
+            std::cerr << "WARNING: FluidLBM tau=" << tau_check << " < 0.55 (UNSTABLE!)\n";
+            std::cerr << "         Config kinematic_viscosity=" << nu_lattice << " (lattice)\n";
+        }
 
         fluid_ = std::make_unique<FluidLBM>(
             config_.nx, config_.ny, config_.nz,
-            nu_physical,             // Physical kinematic viscosity [m²/s]
+            nu_physical,             // Physical kinematic viscosity [m²/s] converted from config
             config_.material.rho_liquid,  // Liquid density [kg/m³]
-            BoundaryType::PERIODIC,  // Default to periodic
-            BoundaryType::PERIODIC,
-            BoundaryType::PERIODIC,
+            config_.boundaries.fluidBCX(),  // Per-face -> per-axis fluid BC
+            config_.boundaries.fluidBCY(),
+            config_.boundaries.fluidBCZ(),
             config_.dt,              // Time step for unit conversion
             config_.dx               // Lattice spacing for unit conversion
         );
@@ -601,8 +733,18 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
     if (config_.enable_vof) {
         vof_ = std::make_unique<VOFSolver>(
             config_.nx, config_.ny, config_.nz,
-            config_.dx
+            config_.dx,
+            config_.boundaries.vofBCX(),
+            config_.boundaries.vofBCY(),
+            config_.boundaries.vofBCZ()
         );
+
+        // Enable mass conservation correction to prevent 90% mass loss
+        // This redistributes numerical mass loss back to interface cells
+        if (config_.enable_vof_mass_correction) {
+            vof_->setMassConservationCorrection(true, 0.7f);  // damping=0.7 (moderate)
+            std::cout << "  VOF mass correction: ENABLED (damping=0.7)" << std::endl;
+        }
     }
 
     // Surface tension (optional - add in Step 3)
@@ -853,12 +995,26 @@ void MultiphysicsSolver::initialize(float initial_temperature,
 
     // Store interface z position for laser surface detection
     // interface_z_ is in lattice units (cell index)
-    interface_z_ = static_cast<float>(interface_height * config_.nz);
+    // CRITICAL FIX: Clamp to valid range [0, nz-1] to prevent out-of-bounds
+    // When VOF is disabled, interface_height may be 1.0, which maps to z=nz (out of bounds)
+    // For laser melting from top, we want z = nz-1 (top cell)
+    float z_interface_unclamped = interface_height * config_.nz;
+    interface_z_ = fminf(z_interface_unclamped, static_cast<float>(config_.nz - 1));
+
+    // Warn if clamping occurred
+    if (z_interface_unclamped > config_.nz - 1) {
+        std::cout << "  [WARNING] interface_height=" << interface_height
+                  << " maps to z=" << z_interface_unclamped << " > nz-1=" << (config_.nz-1)
+                  << ". Clamping to z=" << interface_z_ << " (top surface).\n";
+    }
+
+    // Register output fields now that all sub-solvers are initialized
+    registerOutputFields();
 
     std::cout << "Multiphysics solver initialized:" << std::endl;
     std::cout << "  Initial temperature: " << initial_temperature << " K" << std::endl;
     std::cout << "  Interface height: " << interface_height << " (z = "
-              << static_cast<int>(interface_height * config_.nz) << ")" << std::endl;
+              << static_cast<int>(interface_z_) << ")" << std::endl;
     if (vof_) {
         std::cout << "  Initial mass: " << initial_mass_ << std::endl;
     }
@@ -898,6 +1054,54 @@ void MultiphysicsSolver::initialize(const float* temperature_field,
     }
 
     current_time_ = 0.0f;
+
+    // Register output fields now that all sub-solvers are initialized
+    registerOutputFields();
+}
+
+void MultiphysicsSolver::registerOutputFields() {
+    field_registry_.clear();
+
+    // Temperature (from thermal solver or static field)
+    const float* temp_ptr = getTemperature();
+    if (temp_ptr) {
+        field_registry_.registerScalar("temperature", temp_ptr);
+    }
+
+    // Liquid fraction (requires thermal solver with phase change)
+    const float* lf_ptr = getLiquidFraction();
+    if (lf_ptr) {
+        field_registry_.registerScalar("liquid_fraction", lf_ptr);
+    }
+
+    // Velocity vector field (requires fluid solver)
+    if (fluid_) {
+        field_registry_.registerVector("velocity",
+                                       fluid_->getVelocityX(),
+                                       fluid_->getVelocityY(),
+                                       fluid_->getVelocityZ());
+        // Pressure
+        const float* p_ptr = fluid_->getPressure();
+        if (p_ptr) {
+            field_registry_.registerScalar("pressure", p_ptr);
+        }
+    }
+
+    // VOF fields (requires VOF solver)
+    if (vof_) {
+        field_registry_.registerScalar("fill_level", vof_->getFillLevel());
+        const float* curv_ptr = vof_->getCurvature();
+        if (curv_ptr) {
+            field_registry_.registerScalar("curvature", curv_ptr);
+        }
+    }
+
+    auto names = field_registry_.getFieldNames();
+    std::cout << "  Registered " << names.size() << " output fields:";
+    for (const auto& n : names) {
+        std::cout << " " << n;
+    }
+    std::cout << std::endl;
 }
 
 void MultiphysicsSolver::setStaticTemperature(const float* temperature_field) {
@@ -981,6 +1185,12 @@ void MultiphysicsSolver::step(float dt) {
         // Compute evaporation mass flux from thermal solver
         // Pass VOF fill_level to compute evaporation only at actual interface
         thermal_->computeEvaporationMassFlux(d_evap_mass_flux_, vof_->getFillLevel());
+
+        // CRITICAL FIX (2026-01-25): Apply evaporation COOLING to thermal field
+        // Previously, mass was removed but latent heat wasn't - causing T > 3000K
+        // Physics: Q_cool = J_evap * L_vap [W/m²] removes heat at interface
+        thermal_->applyEvaporationCooling(d_evap_mass_flux_, vof_->getFillLevel(),
+                                          dt, config_.dx);
 
         // Apply mass loss to VOF fill_level
         vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
@@ -1084,128 +1294,129 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
 void MultiphysicsSolver::thermalStep(float dt) {
     if (!thermal_) return;
 
-    // PHYSICS-BASED COUPLING FIX (v5):
-    // Re-enable thermal-fluid coupling with proper physics
-    //
-    // Previous issue (v4): Disabled to prevent positive feedback loop:
-    //   Marangoni → flow → advection → stronger ∇T → stronger Marangoni → instability
-    //
-    // Solution: Enable coupling with CFL-limited forces (already implemented in fluidStep)
-    //   - CFL limiter in limitForcesByCFL_kernel prevents velocity explosion
-    //   - Radiation BC prevents thermal runaway
-    //   - Gradient limiter in Marangoni (MAX_PHYSICAL_GRAD_T = 5e8 K/m) caps forces
-    //
-    // Expected physics:
-    //   - Convective cooling: v·∇T reduces peak temperature vs v4 (pure diffusion)
-    //   - Realistic melt pool dynamics: heat transport follows fluid motion
-    //   - Energy conservation: total energy = laser input - radiation - convection
+    // Thermal-fluid coupling: pass velocity for advection term v*nabla(T)
     const float* ux = config_.enable_thermal_advection && fluid_ ? fluid_->getVelocityX() : nullptr;
     const float* uy = config_.enable_thermal_advection && fluid_ ? fluid_->getVelocityY() : nullptr;
     const float* uz = config_.enable_thermal_advection && fluid_ ? fluid_->getVelocityZ() : nullptr;
 
     // ============================================================
-    // CRITICAL BUFFER MANAGEMENT FIX: Apply BCs BEFORE streaming
+    // CRITICAL BUFFER MANAGEMENT: Apply BCs BEFORE streaming
     // ============================================================
-    // BUG DIAGNOSIS:
-    // - Previous order: collision → streaming (SWAPS buffers) → applyBC → LOST!
-    // - BC writes went to OLD buffer, got overwritten by next collision
-    // - Result: All cooling effects lost, cumulative cooling = 0 K
-    //
-    // FIXED ORDER:
-    // 1. Apply BCs to d_g_src (modifications will persist through swap)
-    // 2. Collision processes BC effects into d_g_src
-    // 3. Streaming reads d_g_src, writes d_g_dst, then SWAPS
-    // 4. Next step: d_g_src now has BC effects propagated
+    // Order: BCs -> collision -> streaming -> computeTemperature
+    // BCs modify d_g_src; collision processes those modifications;
+    // streaming propagates them. Applying BCs AFTER streaming would
+    // write to the wrong buffer and the effects would be lost.
     // ============================================================
 
     if (current_step_ == 0) {
-        printf("[SOLVER ORDER FIX] Execution order:\n");
-        printf("  1. Apply BCs (radiation, substrate) BEFORE streaming\n");
-        printf("  2. Collision (processes BC effects)\n");
-        printf("  3. Streaming (propagates with BC)\n");
-        printf("  4. Compute temperature\n");
+        printf("[THERMAL BC] Per-face boundary conditions:\n");
+        const char* bc_names[] = {"PERIODIC", "ADIABATIC", "DIRICHLET", "CONVECTIVE", "RADIATION"};
+        for (int f = 0; f < 6; ++f) {
+            const char* face_names[] = {"x_min", "x_max", "y_min", "y_max", "z_min", "z_max"};
+            int bc = static_cast<int>(config_.boundaries.thermalBCForFace(f));
+            printf("  %s: %s\n", face_names[f], bc_names[bc]);
+        }
     }
 
     // ============================================================
-    // DIRICHLET BOUNDARY CONDITIONS: Apply fixed temperature BCs
+    // PER-FACE THERMAL BOUNDARY CONDITIONS
     // ============================================================
-    // This implements Dirichlet (fixed temperature) BCs on domain faces
-    // to match walberla's T=300K boundary conditions.
+    // Dispatch the correct BC type to each of the 6 faces using the
+    // FaceBoundaryConfig. This replaces the old monolithic approach
+    // where boundary_type was a single integer for all faces, and
+    // radiation/convection were separate boolean flags.
     //
-    // Boundary types:
-    //   0 = Periodic (handled automatically in streaming)
-    //   1 = Dirichlet (constant T) - set g_i = g_i^eq(T_boundary)
-    //   2 = Adiabatic (zero flux) - copy from interior cell
-    //
-    // CRITICAL: This must be called BEFORE collision to ensure BC values
-    // are incorporated into the LBM step.
+    // Legacy path: if boundary_type != 0 and no face has non-PERIODIC
+    // thermal BC, fall back to legacy applyBoundaryConditions() call.
     // ============================================================
-    if (config_.boundary_type == 1 || config_.boundary_type == 2) {
+
+    bool use_per_face = config_.boundaries.hasAnyThermalBC(ThermalBCType::ADIABATIC) ||
+                        config_.boundaries.hasAnyThermalBC(ThermalBCType::DIRICHLET) ||
+                        config_.boundaries.hasAnyThermalBC(ThermalBCType::CONVECTIVE) ||
+                        config_.boundaries.hasAnyThermalBC(ThermalBCType::RADIATION);
+
+    if (use_per_face) {
+        // New per-face thermal BC path
+        for (int face = 0; face < 6; ++face) {
+            ThermalBCType bc = config_.boundaries.thermalBCForFace(face);
+            thermal_->applyFaceThermalBC(
+                face,
+                static_cast<int>(bc),
+                dt,
+                config_.dx,
+                config_.boundaries.dirichlet_temperature,
+                config_.boundaries.convective_h,
+                config_.boundaries.convective_T_inf,
+                config_.boundaries.radiation_emissivity,
+                config_.boundaries.radiation_T_ambient
+            );
+        }
+    } else if (config_.boundary_type == 1 || config_.boundary_type == 2) {
+        // Legacy path: uniform BC on all 6 faces
         thermal_->applyBoundaryConditions(
             config_.boundary_type,
-            config_.substrate_temperature  // Use this as the Dirichlet BC value
-        );
-    }
-
-    // ============================================================
-    // v4 FIX: Apply radiation boundary condition to prevent thermal runaway
-    // Stefan-Boltzmann radiation: q_rad = ε·σ·(T⁴ - T_amb⁴)
-    // This is CRITICAL to balance laser input and prevent T → ∞
-    // NOW APPLIED BEFORE STREAMING TO PRESERVE BC EFFECTS
-    //
-    // NOTE: This is applied AFTER Dirichlet BCs so radiation can modify
-    // the top surface while other faces remain at fixed temperature.
-    // ============================================================
-    if (config_.enable_radiation_bc) {
-        thermal_->applyRadiationBC(
-            dt,
-            config_.dx,
-            config_.emissivity,
-            config_.ambient_temperature
-        );
-    }
-
-    // ============================================================
-    // Week 1 Tuesday FIX: Apply substrate cooling boundary condition
-    // Convective cooling: q_substrate = h_conv * (T_cell - T_substrate)
-    // This addresses the 33% energy imbalance by allowing heat to
-    // exit through the water-cooled substrate (bottom boundary)
-    // NOW APPLIED BEFORE STREAMING TO PRESERVE BC EFFECTS
-    //
-    // NOTE: This is applied AFTER Dirichlet BCs. If both are enabled,
-    // substrate cooling will override the Dirichlet BC on the bottom face.
-    // ============================================================
-    if (config_.enable_substrate_cooling) {
-        thermal_->applySubstrateCoolingBC(
-            dt,
-            config_.dx,
-            config_.substrate_h_conv,
             config_.substrate_temperature
         );
     }
 
-    // BGK collision (now processes BC modifications from above)
+    // ============================================================
+    // Legacy radiation/convection flags (backward compatibility)
+    // ============================================================
+    // If the user set enable_radiation_bc or enable_substrate_cooling
+    // but did NOT configure per-face boundaries, apply the old-style
+    // top-surface radiation and bottom-surface convection.
+    // When per-face BCs are active, these flags are redundant because
+    // the same physics is expressed through FaceBoundaryConfig.
+    // ============================================================
+    if (!use_per_face) {
+        if (config_.enable_radiation_bc) {
+            thermal_->applyRadiationBC(
+                dt,
+                config_.dx,
+                config_.emissivity,
+                config_.ambient_temperature
+            );
+        }
+
+        if (config_.enable_substrate_cooling) {
+            thermal_->applySubstrateCoolingBC(
+                dt,
+                config_.dx,
+                config_.substrate_h_conv,
+                config_.substrate_temperature
+            );
+        }
+    }
+
+    // BGK collision (processes BC modifications from above)
     thermal_->collisionBGK(ux, uy, uz);
 
-    // Streaming (propagates distributions WITH BC effects)
+    // Streaming (propagates distributions with BC effects)
     thermal_->streaming();
 
-    // Compute temperature (note: applyRadiationBC and applySubstrateCoolingBC already call this)
+    // Compute temperature from distribution functions
     thermal_->computeTemperature();
 
     // ============================================================
-    // RE-APPLY DIRICHLET BOUNDARY CONDITIONS AFTER STREAMING
+    // RE-APPLY DIRICHLET BCs AFTER STREAMING
     // ============================================================
-    // The streaming kernel applies bounce-back on all boundaries,
-    // which can slightly perturb the Dirichlet BC values.
-    // Re-applying ensures exact enforcement of T_boundary.
-    //
-    // This is the standard LBM pattern for Dirichlet BC:
-    // 1. Set BC before collision
-    // 2. Stream (may perturb BC via bounce-back)
-    // 3. Re-set BC to enforce exact value
+    // Streaming can perturb Dirichlet values via bounce-back.
+    // Re-applying ensures exact enforcement (standard LBM pattern).
     // ============================================================
-    if (config_.boundary_type == 1 || config_.boundary_type == 2) {
+    if (use_per_face) {
+        for (int face = 0; face < 6; ++face) {
+            ThermalBCType bc = config_.boundaries.thermalBCForFace(face);
+            if (bc == ThermalBCType::DIRICHLET) {
+                thermal_->applyFaceThermalBC(
+                    face,
+                    static_cast<int>(ThermalBCType::DIRICHLET),
+                    dt, config_.dx,
+                    config_.boundaries.dirichlet_temperature,
+                    0.0f, 0.0f, 0.0f, 0.0f  // unused params
+                );
+            }
+        }
+    } else if (config_.boundary_type == 1 || config_.boundary_type == 2) {
         thermal_->applyBoundaryConditions(
             config_.boundary_type,
             config_.substrate_temperature
@@ -2055,9 +2266,11 @@ float MultiphysicsSolver::getEvaporationPower() const {
 float MultiphysicsSolver::getRadiationPower() const {
     if (!config_.enable_thermal || !thermal_) return 0.0f;
     if (!config_.enable_radiation_bc) return 0.0f;
-    if (!vof_) return 0.0f;
+    // BUG FIX (2026-01-26): Remove VOF requirement
+    // Radiation power diagnostic works without VOF (fill_level not used in kernel)
+    // Previously returned 0W for thermal-only simulations
 
-    const float* fill_level = vof_->getFillLevel();
+    const float* fill_level = vof_ ? vof_->getFillLevel() : nullptr;
     return thermal_->computeRadiationPower(fill_level, config_.dx,
                                             config_.emissivity, config_.ambient_temperature);
 }

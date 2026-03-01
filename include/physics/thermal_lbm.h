@@ -102,6 +102,26 @@ public:
     void applyBoundaryConditions(int boundary_type, float boundary_value = 0.0f);
 
     /**
+     * @brief Apply thermal boundary condition to a single face
+     * @param face Face index (0=x_min, 1=x_max, 2=y_min, 3=y_max, 4=z_min, 5=z_max)
+     * @param bc_type Type of boundary condition (PERIODIC, ADIABATIC, DIRICHLET, CONVECTIVE, RADIATION)
+     * @param dt Time step [s]
+     * @param dx Grid spacing [m]
+     * @param dirichlet_T Temperature for DIRICHLET faces [K]
+     * @param h_conv Convective coefficient for CONVECTIVE faces [W/(m^2*K)]
+     * @param T_inf Far-field temperature for CONVECTIVE faces [K]
+     * @param emissivity Emissivity for RADIATION faces [0-1]
+     * @param T_ambient Ambient temperature for RADIATION faces [K]
+     */
+    void applyFaceThermalBC(int face, int bc_type,
+                            float dt, float dx,
+                            float dirichlet_T = 300.0f,
+                            float h_conv = 1000.0f,
+                            float T_inf = 300.0f,
+                            float emissivity = 0.3f,
+                            float T_ambient = 300.0f);
+
+    /**
      * @brief Add heat source term
      * @param heat_source Device array of heat source values (W/m³)
      * @param dt Time step
@@ -126,6 +146,17 @@ public:
      * @note Implements convective BC: q = h_conv * (T_cell - T_substrate)
      */
     void applySubstrateCoolingBC(float dt, float dx, float h_conv, float T_substrate);
+
+    /**
+     * @brief Apply evaporation cooling at VOF interface cells
+     * @param J_evap Evaporation mass flux field [kg/(m²·s)]
+     * @param fill_level VOF fill level field (0-1)
+     * @param dt Time step [s]
+     * @param dx Grid spacing [m]
+     * @note Removes latent heat Q = J_evap * L_vap from interface cells
+     * @note This provides temperature capping at boiling point through physics
+     */
+    void applyEvaporationCooling(const float* J_evap, const float* fill_level, float dt, float dx);
 
     /**
      * @brief Compute total substrate cooling power
@@ -317,6 +348,9 @@ private:
     bool has_material_;                 ///< Flag indicating if material properties are set
 
     // Device memory for thermal distribution functions
+    // Layout: SoA (Structure of Arrays) — index as g[q * num_cells + cell_idx]
+    // This matches the D3Q19 fluid solver layout and enables coalesced GPU access:
+    // consecutive threads read g[q * num_cells + 0], g[q * num_cells + 1], ...
     float* d_g_src;         ///< Source distribution (before streaming)
     float* d_g_dst;         ///< Destination distribution (after streaming)
     float* d_temperature;   ///< Temperature field
@@ -328,9 +362,23 @@ private:
 };
 
 // CUDA kernels for thermal LBM
+//
+// Distribution function memory layout: SoA — g[q * num_cells + cell_idx]
+// where num_cells = nx * ny * nz and cell_idx = x + y*nx + z*nx*ny.
+// This enables coalesced memory access: threads in a warp read
+// g[q * num_cells + idx], g[q * num_cells + idx+1], ... (stride-1).
 
 /**
- * @brief CUDA kernel for thermal BGK collision
+ * @brief CUDA kernel for thermal BGK collision with apparent heat capacity
+ * @param g_src Distribution functions (SoA layout: g_src[q * num_cells + idx])
+ * @param temperature Temperature field
+ * @param ux, uy, uz Velocity components (can be nullptr)
+ * @param omega_T Base thermal relaxation frequency
+ * @param nx, ny, nz Grid dimensions
+ * @param material Material properties (for apparent heat capacity)
+ * @param dt Time step [s]
+ * @param dx Grid spacing [m]
+ * @param use_apparent_cp If true, compute omega_T per-cell using apparent heat capacity
  */
 __global__ void thermalBGKCollisionKernel(
     float* g_src,
@@ -339,7 +387,11 @@ __global__ void thermalBGKCollisionKernel(
     const float* uy,
     const float* uz,
     float omega_T,
-    int nx, int ny, int nz);
+    int nx, int ny, int nz,
+    MaterialProperties material,
+    float dt,
+    float dx,
+    bool use_apparent_cp);
 
 /**
  * @brief CUDA kernel for thermal streaming
@@ -423,6 +475,54 @@ __global__ void applySubstrateCoolingKernel(
     float T_substrate,
     float rho,
     float cp);
+
+/**
+ * @brief CUDA kernel for convective cooling on an arbitrary face
+ * @param g Temperature distribution functions [device]
+ * @param temperature Current temperature field [device]
+ * @param nx, ny, nz Grid dimensions
+ * @param dx Lattice spacing [m]
+ * @param dt Time step [s]
+ * @param h_conv Convective heat transfer coefficient [W/(m^2*K)]
+ * @param T_inf Far-field temperature [K]
+ * @param rho Density [kg/m^3]
+ * @param cp Specific heat [J/(kg*K)]
+ * @param boundary_face Face index (0=x_min, 1=x_max, 2=y_min, 3=y_max, 4=z_min, 5=z_max)
+ */
+__global__ void applyConvectiveBCKernel(
+    float* g,
+    const float* temperature,
+    int nx, int ny, int nz,
+    float dx,
+    float dt,
+    float h_conv,
+    float T_inf,
+    float rho,
+    float cp,
+    int boundary_face);
+
+/**
+ * @brief CUDA kernel for radiation cooling on an arbitrary face
+ * @param g Temperature distribution functions [device]
+ * @param temperature Current temperature field [device]
+ * @param nx, ny, nz Grid dimensions
+ * @param dx Lattice spacing [m]
+ * @param dt Time step [s]
+ * @param epsilon Emissivity [0-1]
+ * @param material Material properties (for rho, cp)
+ * @param T_ambient Ambient temperature [K]
+ * @param boundary_face Face index (0=x_min, 1=x_max, 2=y_min, 3=y_max, 4=z_min, 5=z_max)
+ */
+__global__ void applyRadiationBCFaceKernel(
+    float* g,
+    const float* temperature,
+    int nx, int ny, int nz,
+    float dx,
+    float dt,
+    float epsilon,
+    MaterialProperties material,
+    float T_ambient,
+    int boundary_face);
 
 /**
  * @brief CUDA kernel for computing evaporation mass flux at VOF interface

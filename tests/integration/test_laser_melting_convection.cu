@@ -33,6 +33,7 @@
 #include "core/lattice_d3q19.h"
 
 using namespace lbm;
+using namespace lbm::physics;
 
 /**
  * @brief CUDA kernel to convert force from physical to lattice units

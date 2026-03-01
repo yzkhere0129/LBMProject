@@ -1,0 +1,209 @@
+{
+  "test_name": "Case 2: Couette-Poiseuille Flow",
+  "description": "Fluid mechanics validation - combined shear-driven and pressure-driven flow",
+  "reference": "Classical fluid mechanics, Bruus (2008) Theoretical Microfluidics",
+  "test_category": "fluid_solver",
+  "difficulty": "intermediate",
+  "runtime_estimate": "5-10 minutes",
+
+  "domain": {
+    "description": "2D channel flow (3D domain with periodic in z)",
+    "dimensions": {
+      "x": 1.0,
+      "y": 1.0,
+      "z": 0.015625,
+      "unit": "m",
+      "comment": "1×1 m channel, thin in z for quasi-2D"
+    },
+    "grid": {
+      "nx": 64,
+      "ny": 128,
+      "nz": 1,
+      "dx": 0.015625,
+      "dy": 0.0078125,
+      "dz": 0.015625,
+      "unit": "m",
+      "comment": "64×128 grid, refined in y (flow direction)"
+    }
+  },
+
+  "initial_conditions": {
+    "type": "zero_velocity",
+    "parameters": {
+      "velocity": [0.0, 0.0, 0.0],
+      "velocity_unit": "m/s",
+      "pressure": 0.0,
+      "pressure_unit": "Pa (gauge)",
+      "comment": "Start from rest, let flow develop"
+    }
+  },
+
+  "boundary_conditions": {
+    "top": {
+      "type": "moving_wall",
+      "velocity": [1.0, 0.0, 0.0],
+      "velocity_unit": "m/s",
+      "comment": "Top plate moves at U_top = 1 m/s"
+    },
+    "bottom": {
+      "type": "no_slip",
+      "velocity": [0.0, 0.0, 0.0],
+      "velocity_unit": "m/s",
+      "comment": "Bottom plate stationary"
+    },
+    "left_right": {
+      "type": "periodic",
+      "comment": "Periodic in x to simulate infinite channel"
+    },
+    "front_back": {
+      "type": "periodic",
+      "comment": "Periodic in z for quasi-2D"
+    }
+  },
+
+  "flow_parameters": {
+    "reynolds_number": 100,
+    "reynolds_comment": "Re = ρ*U*H/μ where U=1 m/s, H=1 m",
+    "body_force": {
+      "fx": -6.0e-2,
+      "fy": 0.0,
+      "fz": 0.0,
+      "unit": "m/s² (normalized by Re)",
+      "formula": "f_x = -6/Re = -0.06",
+      "comment": "Pressure gradient driving Poiseuille component"
+    },
+    "characteristic_velocity": 1.0,
+    "characteristic_velocity_unit": "m/s",
+    "characteristic_length": 1.0,
+    "characteristic_length_unit": "m"
+  },
+
+  "material_properties": {
+    "name": "Generic fluid (normalized)",
+    "fluid": {
+      "density": 1.0,
+      "density_unit": "kg/m³",
+      "kinematic_viscosity": 0.01,
+      "kinematic_viscosity_unit": "m²/s",
+      "dynamic_viscosity": 0.01,
+      "dynamic_viscosity_unit": "Pa·s",
+      "viscosity_comment": "ν = μ/ρ = U*H/Re = 1*1/100 = 0.01"
+    }
+  },
+
+  "time_parameters": {
+    "final_time": 10.0,
+    "final_time_unit": "s",
+    "final_time_comment": "Allow flow to reach steady state",
+    "dt": null,
+    "dt_comment": "Auto-computed from CFL condition",
+    "cfl_fluid": 0.1,
+    "steady_state_check": {
+      "enabled": true,
+      "criterion": "max|u(t+Δt) - u(t)| < 1e-6",
+      "check_interval": 100
+    },
+    "output_interval": 500,
+    "output_interval_comment": "Output every 500 steps for flow evolution"
+  },
+
+  "physics_flags": {
+    "enable_thermal": false,
+    "enable_fluid": true,
+    "enable_vof": false,
+    "enable_phase_change": false,
+    "enable_laser": false,
+    "enable_surface_tension": false,
+    "enable_marangoni": false,
+    "enable_buoyancy": false,
+    "enable_body_force": true,
+    "comment": "Pure fluid dynamics with body force"
+  },
+
+  "validation": {
+    "analytical_solution": {
+      "type": "couette_poiseuille_superposition",
+      "formula": "u(y) = U_top * y + (f_x/(2ν)) * y * (H - y)",
+      "simplified": "u(y) = 3*y² - 2*y for normalized coordinates y ∈ [0,1]",
+      "derivation": "Combines linear Couette profile with parabolic Poiseuille profile",
+      "dimensionless_form": "u*(y*) = y* + (f*/(2)) * y* * (1 - y*) where f* = -6"
+    },
+    "success_criteria": {
+      "L2_error": {
+        "threshold": 0.05,
+        "unit": "dimensionless",
+        "comment": "< 5% L2 error against analytical u(y)"
+      },
+      "centerline_velocity": {
+        "expected": 0.5,
+        "tolerance": 0.05,
+        "unit": "m/s",
+        "comment": "At y=0.5: u = 3*(0.5)² - 2*(0.5) = 0.75 - 1.0 = -0.25 + top_velocity contribution"
+      },
+      "wall_velocity_top": {
+        "expected": 1.0,
+        "tolerance": 0.01,
+        "unit": "m/s"
+      },
+      "wall_velocity_bottom": {
+        "expected": 0.0,
+        "tolerance": 0.01,
+        "unit": "m/s"
+      },
+      "mass_conservation": {
+        "threshold": 1e-6,
+        "comment": "Divergence-free to machine precision"
+      }
+    },
+    "expected_behavior": {
+      "profile_shape": "Asymmetric parabola with offset due to moving top wall",
+      "max_velocity": "~1.0-1.2 m/s near top wall",
+      "flow_reversal": "Possible near bottom if body force strong enough",
+      "steady_state_time": "~5-10 convective time scales (H/U)"
+    }
+  },
+
+  "output": {
+    "directory": "validation/case2_couette_poiseuille",
+    "vtk_format": true,
+    "csv_format": true,
+    "save_fields": ["velocity_x", "velocity_y", "velocity_z", "velocity_analytical", "error", "pressure"],
+    "save_profiles": {
+      "enabled": true,
+      "location": "centerline (x=0.5)",
+      "variable": "u_x(y)",
+      "format": "csv"
+    },
+    "save_diagnostics": ["L2_error", "max_velocity", "mass_conservation_error", "steady_state_residual"]
+  },
+
+  "notes": [
+    "This is Case 2 from the group meeting validation suite",
+    "Tests pure fluid solver (D3Q19 LBM) without thermal coupling",
+    "Combines two classical flows: Couette (shear-driven) + Poiseuille (pressure-driven)",
+    "Analytical solution available for direct comparison",
+    "Tests LBM ability to handle: moving boundaries, body forces, steady state convergence",
+    "Expected runtime: 5-10 minutes on RTX 3050"
+  ],
+
+  "implementation_notes": {
+    "lbm_scheme": "D3Q19 fluid LBM",
+    "collision_operator": "BGK with relaxation parameter from kinematic viscosity",
+    "boundary_scheme_walls": "Zou-He or bounce-back for no-slip/moving wall",
+    "boundary_scheme_periodic": "Periodic BC in x and z",
+    "body_force_scheme": "Guo forcing scheme for better accuracy",
+    "convergence_acceleration": "Start with high relaxation parameter, gradually approach target",
+    "diagnostics": "Monitor L2 norm of velocity change for steady state detection"
+  },
+
+  "parameter_study": {
+    "description": "Optional parameter sweep for extended validation",
+    "reynolds_sweep": [10, 50, 100, 200, 500],
+    "body_force_sweep": [-12.0, -6.0, -3.0, 0.0, 3.0, 6.0],
+    "grid_refinement": [
+      {"nx": 32, "ny": 64, "label": "coarse"},
+      {"nx": 64, "ny": 128, "label": "medium"},
+      {"nx": 128, "ny": 256, "label": "fine"}
+    ]
+  }
+}

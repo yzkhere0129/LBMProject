@@ -17,6 +17,7 @@
 #include "physics/material_properties.h"
 
 using namespace lbm;
+using namespace lbm::physics;
 
 // ANSI color codes for temperature visualization
 namespace colors {

@@ -651,6 +651,151 @@ TEST_F(MaterialPropertiesTest, Ti6Al4V_LiteratureCorrectProperties) {
     }
 }
 
+/**
+ * Test: Steel material properties validation
+ * Validates that Steel (Fe) material matches validation case parameters
+ */
+TEST_F(MaterialPropertiesTest, SteelBasicProperties) {
+    MaterialProperties steel = MaterialDatabase::getSteel();
+
+    // Check material name
+    EXPECT_STREQ(steel.name, "Steel");
+
+    // Validation case parameters (from test specification)
+    EXPECT_FLOAT_EQ(steel.rho_solid, 7900.0f);    // kg/m³
+    EXPECT_FLOAT_EQ(steel.rho_liquid, 7433.0f);   // kg/m³
+    EXPECT_FLOAT_EQ(steel.T_liquidus, 1723.0f);   // K (melting point)
+    EXPECT_FLOAT_EQ(steel.T_vaporization, 3090.0f); // K (boiling point)
+
+    // Check that mushy zone is very small (pure element has minimal mushy zone)
+    // Note: We use 1K mushy zone to satisfy validation requirement T_liquidus > T_solidus
+    EXPECT_FLOAT_EQ(steel.T_solidus, 1722.0f);
+    EXPECT_LT(steel.T_liquidus - steel.T_solidus, 2.0f); // Very narrow mushy zone
+
+    // Verify all properties are positive (basic validation)
+    EXPECT_GT(steel.cp_solid, 0.0f);
+    EXPECT_GT(steel.cp_liquid, 0.0f);
+    EXPECT_GT(steel.k_solid, 0.0f);
+    EXPECT_GT(steel.k_liquid, 0.0f);
+    EXPECT_GT(steel.mu_liquid, 0.0f);
+    EXPECT_GT(steel.L_fusion, 0.0f);
+    EXPECT_GT(steel.L_vaporization, 0.0f);
+    EXPECT_GT(steel.surface_tension, 0.0f);
+
+    // Check surface tension temperature coefficient is negative (typical for metals)
+    EXPECT_LT(steel.dsigma_dT, 0.0f);
+
+    // Check optical properties are in valid range [0, 1]
+    EXPECT_GE(steel.absorptivity_solid, 0.0f);
+    EXPECT_LE(steel.absorptivity_solid, 1.0f);
+    EXPECT_GE(steel.absorptivity_liquid, 0.0f);
+    EXPECT_LE(steel.absorptivity_liquid, 1.0f);
+    EXPECT_GE(steel.emissivity, 0.0f);
+    EXPECT_LE(steel.emissivity, 1.0f);
+}
+
+/**
+ * Test: Steel temperature-dependent properties
+ */
+TEST_F(MaterialPropertiesTest, SteelTemperatureDependence) {
+    MaterialProperties steel = MaterialDatabase::getSteel();
+
+    // Test at room temperature (solid state)
+    float T_room = 300.0f;
+    EXPECT_FLOAT_EQ(steel.getDensity(T_room), steel.rho_solid);
+    EXPECT_FLOAT_EQ(steel.getSpecificHeat(T_room), steel.cp_solid);
+    EXPECT_FLOAT_EQ(steel.getThermalConductivity(T_room), steel.k_solid);
+    EXPECT_GT(steel.getDynamicViscosity(T_room), 1e9f); // Very high for solid
+
+    // Test at liquid temperature (above melting point)
+    float T_liquid = 2000.0f;
+    EXPECT_FLOAT_EQ(steel.getDensity(T_liquid), steel.rho_liquid);
+    EXPECT_FLOAT_EQ(steel.getSpecificHeat(T_liquid), steel.cp_liquid);
+    EXPECT_FLOAT_EQ(steel.getThermalConductivity(T_liquid), steel.k_liquid);
+    EXPECT_FLOAT_EQ(steel.getDynamicViscosity(T_liquid), steel.mu_liquid);
+
+    // Test at melting point (pure element - no mushy zone in this case)
+    float T_melt = steel.T_liquidus;
+    EXPECT_FLOAT_EQ(steel.getDensity(T_melt), steel.rho_liquid);
+    EXPECT_FLOAT_EQ(steel.liquidFraction(T_melt), 1.0f);
+}
+
+/**
+ * Test: Steel material validation
+ */
+TEST_F(MaterialPropertiesTest, SteelValidation) {
+    MaterialProperties steel = MaterialDatabase::getSteel();
+
+    // Call validation function
+    EXPECT_TRUE(steel.validate()) << "Steel material properties failed validation";
+
+    // Verify temperature ordering
+    EXPECT_LT(steel.T_solidus, steel.T_vaporization);
+    EXPECT_LE(steel.T_solidus, steel.T_liquidus);
+    EXPECT_LT(steel.T_liquidus, steel.T_vaporization);
+
+    // Check density ratio (liquid should be less dense than solid)
+    EXPECT_LT(steel.rho_liquid, steel.rho_solid);
+    float shrinkage = steel.getShrinkageFactor();
+    EXPECT_GT(shrinkage, 0.0f);
+    EXPECT_LT(shrinkage, 0.2f); // Reasonable range for metals (<20% volume change)
+}
+
+/**
+ * Test: Steel material lookup by name
+ */
+TEST_F(MaterialPropertiesTest, SteelNameLookup) {
+    // Test various name variations
+    std::vector<std::string> valid_names = {"Steel", "steel", "Fe", "fe", "Iron", "iron"};
+
+    for (const auto& name : valid_names) {
+        MaterialProperties mat = MaterialDatabase::getMaterialByName(name);
+        EXPECT_STREQ(mat.name, "Steel") << "Name lookup failed for: " << name;
+        EXPECT_FLOAT_EQ(mat.rho_solid, 7900.0f);
+    }
+}
+
+/**
+ * Test: Steel surface tension temperature dependence
+ */
+TEST_F(MaterialPropertiesTest, SteelSurfaceTension) {
+    MaterialProperties steel = MaterialDatabase::getSteel();
+
+    // At melting point, should equal base surface tension
+    float sigma_melt = steel.getSurfaceTension(steel.T_liquidus);
+    EXPECT_FLOAT_EQ(sigma_melt, steel.surface_tension);
+
+    // At higher temperature, should decrease (negative dsigma_dT)
+    float T_high = steel.T_liquidus + 100.0f;
+    float sigma_high = steel.getSurfaceTension(T_high);
+    EXPECT_LT(sigma_high, steel.surface_tension);
+
+    // Verify linear relationship: σ(T) = σ₀ + (dσ/dT) * (T - T_m)
+    float expected_sigma = steel.surface_tension + steel.dsigma_dT * 100.0f;
+    EXPECT_FLOAT_EQ(sigma_high, expected_sigma);
+}
+
+/**
+ * Test: Steel thermal diffusivity calculation
+ */
+TEST_F(MaterialPropertiesTest, SteelThermalDiffusivity) {
+    MaterialProperties steel = MaterialDatabase::getSteel();
+
+    // Calculate thermal diffusivity at room temperature
+    // α = k / (ρ * cp)
+    float alpha_expected = steel.k_solid / (steel.rho_solid * steel.cp_solid);
+    float alpha_calculated = steel.getThermalDiffusivity(300.0f);
+
+    EXPECT_NEAR(alpha_calculated, alpha_expected, 1e-6f);
+
+    // Verify positive diffusivity
+    EXPECT_GT(alpha_calculated, 0.0f);
+
+    // Typical range for steel thermal diffusivity: 1e-5 to 3e-5 m²/s
+    EXPECT_GT(alpha_calculated, 1e-6f);
+    EXPECT_LT(alpha_calculated, 1e-4f);
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

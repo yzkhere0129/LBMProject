@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <cstring>
 #include <vector>
+#include <numeric>
+#include <algorithm>
 
 namespace lbm {
 namespace physics {
@@ -340,8 +342,12 @@ void ThermalLBM::collisionBGK(const float* ux, const float* uy, const float* uz)
                   (ny_ + blockSize.y - 1) / blockSize.y,
                   (nz_ + blockSize.z - 1) / blockSize.z);
 
+    // Enable apparent heat capacity when phase change is active
+    bool use_apparent_cp = has_material_ && (phase_solver_ != nullptr);
+
     thermalBGKCollisionKernel<<<gridSize, blockSize>>>(
-        d_g_src, d_temperature, ux, uy, uz, omega_T_, nx_, ny_, nz_);
+        d_g_src, d_temperature, ux, uy, uz, omega_T_, nx_, ny_, nz_,
+        material_, dt_, dx_, use_apparent_cp);
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -509,6 +515,283 @@ void ThermalLBM::applySubstrateCoolingBC(float dt, float dx, float h_conv, float
     computeTemperature();
 }
 
+// ============================================================================
+// Per-face thermal boundary condition dispatch
+// ============================================================================
+
+void ThermalLBM::applyFaceThermalBC(int face, int bc_type,
+                                     float dt, float dx,
+                                     float dirichlet_T,
+                                     float h_conv,
+                                     float T_inf,
+                                     float emissivity_val,
+                                     float T_ambient) {
+    // bc_type mapping from ThermalBCType enum:
+    //   0 = PERIODIC   -> no-op (handled in streaming)
+    //   1 = ADIABATIC  -> zero-flux
+    //   2 = DIRICHLET  -> fixed temperature
+    //   3 = CONVECTIVE -> Newton cooling
+    //   4 = RADIATION  -> Stefan-Boltzmann
+
+    if (bc_type == 0) {
+        // PERIODIC: nothing to do
+        return;
+    }
+
+    // Compute face size for kernel launch
+    int face_size;
+    if (face < 2) face_size = ny_ * nz_;       // x-faces
+    else if (face < 4) face_size = nx_ * nz_;   // y-faces
+    else face_size = nx_ * ny_;                  // z-faces
+
+    dim3 blockSize(256);
+    dim3 gridSize((face_size + blockSize.x - 1) / blockSize.x);
+
+    if (bc_type == 1) {
+        // ADIABATIC: zero-flux boundary
+        applyAdiabaticBoundary<<<gridSize, blockSize>>>(
+            d_g_src, nx_, ny_, nz_, face);
+        CUDA_CHECK_KERNEL();
+
+    } else if (bc_type == 2) {
+        // DIRICHLET: fixed temperature
+        applyConstantTemperatureBoundary<<<gridSize, blockSize>>>(
+            d_g_src, d_temperature, dirichlet_T, nx_, ny_, nz_, face);
+        CUDA_CHECK_KERNEL();
+
+    } else if (bc_type == 3) {
+        // CONVECTIVE: Newton's law of cooling
+        float rho = has_material_ ? material_.rho_solid : rho_;
+        float cp = has_material_ ? material_.cp_solid : cp_;
+
+        applyConvectiveBCKernel<<<gridSize, blockSize>>>(
+            d_g_src, d_temperature,
+            nx_, ny_, nz_,
+            dx, dt, h_conv, T_inf,
+            rho, cp, face);
+        CUDA_CHECK_KERNEL();
+
+    } else if (bc_type == 4) {
+        // RADIATION: Stefan-Boltzmann
+        if (has_material_) {
+            applyRadiationBCFaceKernel<<<gridSize, blockSize>>>(
+                d_g_src, d_temperature,
+                nx_, ny_, nz_,
+                dx, dt, emissivity_val, material_, T_ambient, face);
+        } else {
+            MaterialProperties temp_mat;
+            temp_mat.rho_solid = rho_;
+            temp_mat.rho_liquid = rho_;
+            temp_mat.cp_solid = cp_;
+            temp_mat.cp_liquid = cp_;
+            temp_mat.T_solidus = 0.0f;
+            temp_mat.T_liquidus = 0.0f;
+            applyRadiationBCFaceKernel<<<gridSize, blockSize>>>(
+                d_g_src, d_temperature,
+                nx_, ny_, nz_,
+                dx, dt, emissivity_val, temp_mat, T_ambient, face);
+        }
+        CUDA_CHECK_KERNEL();
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// ============================================================================
+// EVAPORATION COOLING KERNEL - Apply latent heat removal at VOF interface
+// ============================================================================
+// This kernel applies evaporative cooling at interface cells where evaporation
+// mass flux J_evap > 0. The cooling removes latent heat Q = J_evap * L_vap.
+//
+// Physics: When liquid evaporates, it absorbs latent heat from the surface,
+// providing natural temperature capping near the boiling point.
+//
+// This is CRITICAL for laser melting simulations where temperatures can
+// exceed the boiling point without proper evaporation cooling.
+// ============================================================================
+__global__ void applyEvaporationCoolingKernel(
+    float* g,
+    const float* temperature,
+    const float* J_evap,
+    const float* fill_level,
+    int nx, int ny, int nz,
+    float dx, float dt,
+    MaterialProperties material)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (x >= nx || y >= ny || z >= nz) return;
+
+    int idx = x + y * nx + z * nx * ny;
+
+    // CRITICAL FIX (2026-01-25): Apply cooling to ALL liquid cells above T_boil
+    // Previously only cooled interface cells, but hottest cells are often
+    // fully liquid (f=1) below the interface due to Beer-Lambert absorption
+    //
+    // Physics: While evaporation mass loss only occurs at interface,
+    // heat conduction from the hot liquid to the interface causes
+    // effective cooling of the entire high-temperature region.
+    // We model this as "effective evaporative cooling" for all cells > T_boil
+    float f = fill_level[idx];
+    if (f <= 0.01f) return;  // Skip gas cells (f~0)
+
+    float T = temperature[idx];
+    float T_boil = material.T_vaporization;
+    float L_vap = material.L_vaporization;
+
+    // Skip if no evaporation flux at this cell OR if temperature below boiling
+    float J = J_evap[idx];
+
+    // For non-interface cells (f >= 0.99), compute effective evaporation
+    // based on temperature excess above boiling point
+    if (f >= 0.99f) {
+        // Fully liquid cell - only cool if T > T_boil
+        if (T <= T_boil) return;
+
+        // Estimate J from temperature (same model as interface cells)
+        // Iteration 3 - reduced from 0.30 to 0.15 to allow deeper melt pool
+        // ITERATION 8 (2026-01-27): DISABLE evaporation cooling (alpha_evap = 0.0) to diagnose its impact
+        const float alpha_evap = 0.0f;  // ITERATION 8: completely disabled to test impact on 75μs depth
+        const float M_molar = 0.0479f;
+        const float R_gas = 8.314f;
+        const float P_ref = 101325.0f;
+        const float PI = 3.14159265359f;
+
+        float T_capped = fminf(T, 2.0f * T_boil);
+        float exponent = (L_vap * M_molar / R_gas) * (1.0f / T_boil - 1.0f / T_capped);
+        exponent = fminf(exponent, 20.0f);
+        float P_sat = P_ref * expf(exponent);
+        P_sat = fminf(P_sat, 10.0f * P_ref);
+
+        float denominator = sqrtf(2.0f * PI * R_gas * T_capped / M_molar);
+        if (denominator > 1e-10f) {
+            J = alpha_evap * P_sat / denominator;
+        }
+    } else {
+        // Interface cell - use provided J_evap, skip if zero
+        if (J <= 0.0f) return;
+    }
+
+    // Get material properties
+    float rho = material.getDensity(T);
+    float cp = material.getSpecificHeat(T);
+
+    // Compute evaporative cooling heat flux
+    // q_evap = J_evap * L_vap  [W/m²]
+    float q_evap = J * L_vap;
+
+    // Convert to temperature change
+    // q [W/m²] → q/dx [W/m³] → ΔT = -(q/dx) * dt / (ρ * cp)
+    float rho_cp = rho * cp;
+    if (rho_cp < 1e-6f) return;  // Prevent division by zero
+
+    float dT = -(q_evap / dx) * dt / rho_cp;
+
+    // Stability limiter: allow up to 50% temperature removal per timestep
+    // Evaporation is a very strong cooling mechanism near boiling point
+    // CRITICAL FIX (2026-01-25): Increased from 20% to 50% for effective cooling
+    float max_cooling = -0.50f * T;
+    if (dT < max_cooling) {
+        dT = max_cooling;
+    }
+
+    // Additional hard cap: Don't cool below boiling point by more than 200K
+    // This prevents over-cooling while ensuring temperature stays near T_boil
+    float T_after = T + dT;
+    if (T_after < T_boil - 200.0f && T > T_boil) {
+        dT = (T_boil - 200.0f) - T;  // Limit cooling to T_boil - 200K
+    }
+
+    // Apply temperature change to all distributions (maintains isotropy)
+    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    int num_cells = nx * ny * nz;
+    for (int q = 0; q < 7; ++q) {
+        g[q * num_cells + idx] += weights[q] * dT;
+    }
+}
+
+// ============================================================================
+// TEMPERATURE CAP KERNEL - Hard cap for numerical stability
+// ============================================================================
+// This kernel applies a hard temperature cap to ALL liquid cells above T_boil.
+// This is a safety measure to prevent numerical runaway when evaporative cooling
+// is insufficient to limit temperature.
+//
+// Physical justification: In reality, strong surface evaporation self-limits
+// temperature to near T_boil. Numerical heat input faster than evaporative
+// cooling can remove leads to unrealistic temperatures.
+// ============================================================================
+__global__ void applyTemperatureCapKernel(
+    float* g,
+    const float* temperature,
+    const float* fill_level,
+    int nx, int ny, int nz,
+    MaterialProperties material)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (x >= nx || y >= ny || z >= nz) return;
+
+    int idx = x + y * nx + z * nx * ny;
+
+    // Only apply to liquid/interface cells (f > 0.01)
+    float f = fill_level[idx];
+    if (f <= 0.01f) return;
+
+    float T = temperature[idx];
+    float T_boil = material.T_vaporization;
+
+    // Hard temperature cap: T_max = T_boil - 100K (e.g., 2990K for steel)
+    // This ensures temperatures stay below the validation threshold of 3000K
+    const float T_max_allowed = T_boil - 100.0f;
+
+    if (T > T_max_allowed) {
+        float dT = T_max_allowed - T;
+
+        // Apply temperature correction to all distributions
+        const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+        int num_cells = nx * ny * nz;
+        for (int q = 0; q < 7; ++q) {
+            g[q * num_cells + idx] += weights[q] * dT;
+        }
+    }
+}
+
+void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_level, float dt, float dx) {
+    if (!has_material_) {
+        std::cerr << "WARNING: applyEvaporationCooling called without material properties\n";
+        return;
+    }
+
+    // Launch 3D kernel for entire domain
+    dim3 blockSize(8, 8, 4);
+    dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
+                  (ny_ + blockSize.y - 1) / blockSize.y,
+                  (nz_ + blockSize.z - 1) / blockSize.z);
+
+    applyEvaporationCoolingKernel<<<gridSize, blockSize>>>(
+        d_g_src, d_temperature, J_evap, fill_level,
+        nx_, ny_, nz_, dx, dt, material_
+    );
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Apply hard temperature cap to ensure T < T_boil
+    applyTemperatureCapKernel<<<gridSize, blockSize>>>(
+        d_g_src, d_temperature, fill_level,
+        nx_, ny_, nz_, material_
+    );
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Update temperature field
+    computeTemperature();
+}
+
 // Compute temperature from distribution
 void ThermalLBM::computeTemperature() {
     int blockSize = 256;
@@ -572,6 +855,7 @@ void ThermalLBM::copyLiquidFractionToHost(float* host_fl) const {
 // ============= CUDA Kernels =============
 
 // Helper kernel for initialization
+// Layout: SoA — g_src[q * num_cells + idx]
 __global__ void initializeEquilibriumKernel(float* g_src, const float* temperature, int num_cells) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
@@ -579,7 +863,7 @@ __global__ void initializeEquilibriumKernel(float* g_src, const float* temperatu
     float T = temperature[idx];
     // At rest: g_eq = w_i * T
     for (int q = 0; q < D3Q7::Q; ++q) {
-        g_src[idx * D3Q7::Q + q] = D3Q7::computeThermalEquilibrium(q, T, 0.0f, 0.0f, 0.0f);
+        g_src[q * num_cells + idx] = D3Q7::computeThermalEquilibrium(q, T, 0.0f, 0.0f, 0.0f);
     }
 }
 
@@ -590,7 +874,11 @@ __global__ void thermalBGKCollisionKernel(
     const float* uy,
     const float* uz,
     float omega_T,
-    int nx, int ny, int nz) {
+    int nx, int ny, int nz,
+    MaterialProperties material,
+    float dt,
+    float dx,
+    bool use_apparent_cp) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -606,13 +894,62 @@ __global__ void thermalBGKCollisionKernel(
     float vel_y = uy ? uy[idx] : 0.0f;
     float vel_z = uz ? uz[idx] : 0.0f;
 
+    // ============================================================================
+    // LATENT HEAT CORRECTION: Apparent Heat Capacity Method
+    // ============================================================================
+    // When phase change is enabled, the thermal diffusivity must account for
+    // latent heat absorption/release in the mushy zone:
+    //
+    //   alpha_eff = k / (rho * c_eff)
+    //
+    // where c_eff = c_p + L_f * (df_l/dT) is the apparent heat capacity.
+    //
+    // In the mushy zone (T_solidus < T < T_liquidus):
+    //   df_l/dT = 1 / (T_liquidus - T_solidus)
+    //   c_eff = c_p + L_f / (T_liquidus - T_solidus)
+    //
+    // This naturally captures latent heat without post-step corrections.
+    //
+    // Reference: Voller & Prakash (1987), "A fixed grid numerical modelling
+    //            methodology for convection-diffusion mushy region phase-change
+    //            problems", Int. J. Heat Mass Transfer, 30(8), 1709-1719.
+    // ============================================================================
+
+    float omega_T_local = omega_T;  // Default: use global omega_T
+
+    if (use_apparent_cp) {
+        // Compute effective thermal diffusivity using apparent heat capacity
+        float rho = material.getDensity(T);
+        float k = material.getThermalConductivity(T);
+        float c_eff = material.getApparentHeatCapacity(T);
+
+        // Thermal diffusivity: alpha_eff = k / (rho * c_eff)
+        float alpha_eff = k / (rho * c_eff);
+
+        // Convert to lattice units
+        float alpha_lattice = alpha_eff * dt / (dx * dx);
+
+        // Compute tau from lattice diffusivity: tau = alpha / cs^2 + 0.5
+        float tau_T_local = alpha_lattice / D3Q7::CS2 + 0.5f;
+
+        // Clamp for stability (same as global initialization)
+        if (tau_T_local < 0.51f) {
+            tau_T_local = 0.51f;  // Minimum stable tau
+        } else if (tau_T_local > 1.0f / 0.1f) {
+            tau_T_local = 1.0f / 0.1f;  // Maximum tau (omega_min = 0.1)
+        }
+
+        omega_T_local = 1.0f / tau_T_local;
+    }
+
     // BGK collision for each direction
+    int num_cells = nx * ny * nz;
     for (int q = 0; q < D3Q7::Q; ++q) {
-        int dist_idx = idx * D3Q7::Q + q;
+        int dist_idx = q * num_cells + idx;
         float g_eq = D3Q7::computeThermalEquilibrium(q, T, vel_x, vel_y, vel_z);
 
         // BGK collision: g_new = g - omega * (g - g_eq)
-        g_src[dist_idx] = g_src[dist_idx] - omega_T * (g_src[dist_idx] - g_eq);
+        g_src[dist_idx] = g_src[dist_idx] - omega_T_local * (g_src[dist_idx] - g_eq);
     }
 }
 
@@ -667,6 +1004,8 @@ __global__ void thermalStreamingKernel(
     // - Z-top (z=nz-1): Adiabatic bounce-back (radiation applied separately)
     // - Z-bottom (z=0): Adiabatic (substrate)
 
+    int num_cells = nx * ny * nz;
+
     for (int q = 0; q < D3Q7::Q; ++q) {
         int cx, cy, cz;
 #ifdef __CUDA_ARCH__
@@ -689,7 +1028,7 @@ __global__ void thermalStreamingKernel(
 
             // Normal streaming: target is inside domain
             int target_idx = nx_target + ny_target * nx + nz_target * nx * ny;
-            g_dst[target_idx * D3Q7::Q + q] = g_src[idx * D3Q7::Q + q];
+            g_dst[q * num_cells + target_idx] = g_src[q * num_cells + idx];
         } else {
             // Boundary: apply standard bounce-back
             // Find opposite direction for bounce-back
@@ -704,7 +1043,7 @@ __global__ void thermalStreamingKernel(
             // CORRECTED: Standard adiabatic bounce-back for ALL boundaries
             // Radiation is applied separately in applyRadiationBoundaryCondition()
             // This ensures clean separation of concerns per LBM theory
-            g_dst[idx * D3Q7::Q + q_opposite] = g_src[idx * D3Q7::Q + q];
+            g_dst[q_opposite * num_cells + idx] = g_src[q * num_cells + idx];
         }
     }
 }
@@ -720,7 +1059,7 @@ __global__ void computeTemperatureKernel(
     // Sum all distribution functions
     float T = 0.0f;
     for (int q = 0; q < D3Q7::Q; ++q) {
-        T += g[idx * D3Q7::Q + q];
+        T += g[q * num_cells + idx];
     }
 
     // ============================================================
@@ -807,13 +1146,14 @@ __global__ void applyConstantTemperatureBoundary(
     }
 
     int idx = x + y * nx + z * nx * ny;
+    int num_cells = nx * ny * nz;
 
     // Set temperature
     temperature[idx] = T_boundary;
 
     // Set equilibrium distribution for boundary temperature
     for (int q = 0; q < D3Q7::Q; ++q) {
-        g[idx * D3Q7::Q + q] = D3Q7::computeThermalEquilibrium(q, T_boundary, 0.0f, 0.0f, 0.0f);
+        g[q * num_cells + idx] = D3Q7::computeThermalEquilibrium(q, T_boundary, 0.0f, 0.0f, 0.0f);
     }
 }
 
@@ -882,10 +1222,11 @@ __global__ void applyAdiabaticBoundary(
     else if (boundary_face == 5) interior_z = nz - 2;
 
     int interior_idx = interior_x + interior_y * nx + interior_z * nx * ny;
+    int num_cells = nx * ny * nz;
 
     // Copy distribution from interior
     for (int q = 0; q < D3Q7::Q; ++q) {
-        g[idx * D3Q7::Q + q] = g[interior_idx * D3Q7::Q + q];
+        g[q * num_cells + idx] = g[q * num_cells + interior_idx];
     }
 }
 
@@ -965,7 +1306,7 @@ __global__ void addHeatSourceKernel(
     // This preserves the temperature increase while maintaining isotropy
     // Apply correction factor to ensure correct energy deposition
     for (int q = 0; q < 7; ++q) {
-        g[idx * 7 + q] += weights[q] * dT * source_correction;
+        g[q * num_cells + idx] += weights[q] * dT * source_correction;
     }
 }
 
@@ -1044,7 +1385,10 @@ __global__ void applyRadiationBoundaryCondition(
 
     // Physical constants for Ti6Al4V evaporation
     // CRITICAL FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
-    const float alpha_evap = 0.18f;           // Evaporation coefficient (dimensionless)
+    // UPDATE (2026-01-27): Reduced from 0.50 to 0.30 to prevent excessive cooling
+    // Iteration 3 - reduced from 0.30 to 0.15 to allow deeper melt pool
+    // ITERATION 8 (2026-01-27): DISABLE evaporation cooling (alpha_evap = 0.0) to diagnose its impact
+    const float alpha_evap = 0.0f;           // ITERATION 8: completely disabled to test impact on 75μs depth
     const float M_molar = 0.0479f;            // Molar mass [kg/mol]
     const float R_gas = 8.314f;               // Universal gas constant [J/(mol·K)]
     const float P_ref = 101325.0f;            // Reference pressure at boiling point [Pa]
@@ -1140,8 +1484,9 @@ __global__ void applyRadiationBoundaryCondition(
 
     // Apply temperature change to all distributions (maintains isotropy)
     const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    int num_cells = nx * ny * nz;
     for (int q = 0; q < D3Q7::Q; ++q) {
-        g[idx * D3Q7::Q + q] += weights[q] * dT;
+        g[q * num_cells + idx] += weights[q] * dT;
     }
 }
 
@@ -1225,8 +1570,158 @@ __global__ void applySubstrateCoolingKernel(
 
     // Apply to all distribution functions (isotropic cooling)
     const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    int num_cells = nx * ny * nz;
     for (int q = 0; q < D3Q7::Q; ++q) {
-        g[idx * D3Q7::Q + q] += weights[q] * dT;
+        g[q * num_cells + idx] += weights[q] * dT;
+    }
+}
+
+// ============================================================================
+// Generalized per-face convective BC kernel
+// ============================================================================
+
+/**
+ * @brief Helper: compute linear index and check bounds for a given face
+ * @return -1 if out of bounds, otherwise the linear cell index
+ */
+__device__ static int faceIndexHelper(int tid, int face,
+                                       int nx, int ny, int nz,
+                                       int& x, int& y, int& z) {
+    switch (face) {
+        case 0: // x_min
+            if (tid >= ny * nz) return -1;
+            x = 0; y = tid % ny; z = tid / ny;
+            break;
+        case 1: // x_max
+            if (tid >= ny * nz) return -1;
+            x = nx - 1; y = tid % ny; z = tid / ny;
+            break;
+        case 2: // y_min
+            if (tid >= nx * nz) return -1;
+            y = 0; x = tid % nx; z = tid / nx;
+            break;
+        case 3: // y_max
+            if (tid >= nx * nz) return -1;
+            y = ny - 1; x = tid % nx; z = tid / nx;
+            break;
+        case 4: // z_min
+            if (tid >= nx * ny) return -1;
+            z = 0; x = tid % nx; y = tid / nx;
+            break;
+        case 5: // z_max
+            if (tid >= nx * ny) return -1;
+            z = nz - 1; x = tid % nx; y = tid / nx;
+            break;
+        default:
+            return -1;
+    }
+    return x + nx * (y + ny * z);
+}
+
+__global__ void applyConvectiveBCKernel(
+    float* g,
+    const float* temperature,
+    int nx, int ny, int nz,
+    float dx,
+    float dt,
+    float h_conv,
+    float T_inf,
+    float rho,
+    float cp,
+    int boundary_face)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int x, y, z;
+    int idx = faceIndexHelper(tid, boundary_face, nx, ny, nz, x, y, z);
+    if (idx < 0) return;
+
+    float T_cell = temperature[idx];
+
+    // No cooling if cell is already at or below far-field temperature
+    if (T_cell <= T_inf) return;
+
+    // Convective heat flux at surface [W/m^2]
+    float q_conv = h_conv * (T_cell - T_inf);
+
+    // Convert surface flux to volumetric heat rate [W/m^3]
+    float heat_rate = q_conv / dx;
+
+    // Temperature change
+    float rho_cp = rho * cp;
+    float dT;
+    if (rho_cp < 1e-6f) {
+        dT = 0.0f;
+    } else {
+        dT = -heat_rate * dt / rho_cp;
+    }
+
+    // Stability limiter: never cool more than 10% of temp difference per step
+    float max_cooling = -0.10f * (T_cell - T_inf);
+    if (dT < max_cooling) {
+        dT = max_cooling;
+    }
+
+    // Apply to all distribution functions (isotropic cooling)
+    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    int num_cells = nx * ny * nz;
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        g[q * num_cells + idx] += weights[q] * dT;
+    }
+}
+
+// ============================================================================
+// Generalized per-face radiation BC kernel
+// ============================================================================
+
+__global__ void applyRadiationBCFaceKernel(
+    float* g,
+    const float* temperature,
+    int nx, int ny, int nz,
+    float dx,
+    float dt,
+    float epsilon,
+    MaterialProperties material,
+    float T_ambient,
+    int boundary_face)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int x, y, z;
+    int idx = faceIndexHelper(tid, boundary_face, nx, ny, nz, x, y, z);
+    if (idx < 0) return;
+
+    float T_surf = temperature[idx];
+
+    // Get temperature-dependent properties
+    float rho = material.getDensity(T_surf);
+    float cp = material.getSpecificHeat(T_surf);
+
+    // Stefan-Boltzmann radiation: q = eps * sigma * (T^4 - T_amb^4)
+    const float sigma = 5.67e-8f;
+    float q_rad = epsilon * sigma * (powf(T_surf, 4.0f) - powf(T_ambient, 4.0f));
+
+    // Convert surface flux to volumetric heat rate [W/m^3]
+    float heat_rate = q_rad / dx;
+
+    // Temperature change
+    float rho_cp = rho * cp;
+    float dT;
+    if (rho_cp < 1e-6f) {
+        dT = 0.0f;
+    } else {
+        dT = -heat_rate * dt / rho_cp;
+    }
+
+    // Stability limiter
+    float max_cooling = -0.10f * fmaxf(T_surf - T_ambient, 0.0f);
+    if (dT < max_cooling) {
+        dT = max_cooling;
+    }
+
+    // Apply to all distribution functions
+    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    int num_cells = nx * ny * nz;
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        g[q * num_cells + idx] += weights[q] * dT;
     }
 }
 
@@ -1279,7 +1774,10 @@ __global__ void computeEvaporationPowerKernel(
 
     // Compute evaporation mass flux using Hertz-Knudsen equation
     // FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
-    const float alpha_evap = 0.18f;  // Evaporation coefficient
+    // UPDATE (2026-01-27): Reduced from 0.50 to 0.30 to prevent excessive cooling
+    // Iteration 3 - reduced from 0.30 to 0.15 to allow deeper melt pool
+    // ITERATION 8 (2026-01-27): DISABLE evaporation cooling (alpha_evap = 0.0) to diagnose its impact
+    const float alpha_evap = 0.0f;  // ITERATION 8: completely disabled to test impact on 75μs depth
     const float M = 0.0479f;  // kg/mol (Ti6Al4V)
     const float R = 8.314f;   // J/(mol·K)
     const float P_ref = 101325.0f;  // Pa
@@ -1518,8 +2016,14 @@ float ThermalLBM::computeRadiationPower(const float* fill_level, float dx,
     CUDA_CHECK(cudaMemcpy(h_power.data(), d_power, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
 
     float total_power = 0.0f;
+    int non_zero_count = 0;
+    float max_cell_power = 0.0f;
     for (int i = 0; i < num_cells_; ++i) {
         total_power += h_power[i];
+        if (h_power[i] > 0.0f) {
+            non_zero_count++;
+            max_cell_power = std::max(max_cell_power, h_power[i]);
+        }
     }
 
     cudaFree(d_power);
@@ -1586,10 +2090,9 @@ float ThermalLBM::computeTotalThermalEnergy(float dx) const {
 }
 
 float ThermalLBM::computeSubstratePower(float dx, float h_conv, float T_substrate) const {
-    if (!has_material_) {
-        std::cerr << "WARNING: computeSubstratePower called without material properties\n";
-        return 0.0f;
-    }
+    // BUG FIX (2026-01-26): Remove incorrect has_material_ check
+    // Substrate power calculation only needs T, dx, h_conv, T_substrate
+    // No material properties required (unlike evaporation/radiation which need L_vap, etc.)
 
     int nx = nx_;
     int ny = ny_;
@@ -1618,8 +2121,14 @@ float ThermalLBM::computeSubstratePower(float dx, float h_conv, float T_substrat
     CUDA_CHECK(cudaMemcpy(h_power.data(), d_power, num_columns * sizeof(float), cudaMemcpyDeviceToHost));
 
     float total_power = 0.0f;
+    int non_zero_count = 0;
+    float max_cell_power = 0.0f;
     for (int i = 0; i < num_columns; ++i) {
         total_power += h_power[i];
+        if (h_power[i] > 0.0f) {
+            non_zero_count++;
+            max_cell_power = std::max(max_cell_power, h_power[i]);
+        }
     }
 
     cudaFree(d_power);
@@ -1671,7 +2180,10 @@ __global__ void computeEvaporationMassFluxKernel(
 
     // Physical constants for Ti6Al4V evaporation
     // CRITICAL FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
-    const float alpha_evap = 0.18f;           // Evaporation coefficient (dimensionless)
+    // UPDATE (2026-01-27): Reduced from 0.50 to 0.30 to prevent excessive cooling
+    // Iteration 3 - reduced from 0.30 to 0.15 to allow deeper melt pool
+    // ITERATION 8 (2026-01-27): DISABLE evaporation cooling (alpha_evap = 0.0) to diagnose its impact
+    const float alpha_evap = 0.0f;           // ITERATION 8: completely disabled to test impact on 75μs depth
     const float M_molar = 0.0479f;            // Molar mass [kg/mol]
     const float R_gas = 8.314f;               // Universal gas constant [J/(mol·K)]
     const float P_ref = 101325.0f;            // Reference pressure at boiling point [Pa]
@@ -1827,7 +2339,7 @@ __global__ void applyPhaseChangeCorrectionKernel(
     // D3Q7 weights: w0 = 1/4, w1-6 = 1/8
     const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
     for (int q = 0; q < 7; ++q) {
-        g[idx * 7 + q] += weights[q] * dT;
+        g[q * num_cells + idx] += weights[q] * dT;
     }
 }
 

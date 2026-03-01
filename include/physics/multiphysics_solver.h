@@ -50,176 +50,445 @@
 #include "physics/force_accumulator.h"
 #include "diagnostics/energy_balance.h"
 #include "core/unit_converter.h"
+#include "io/field_registry.h"
 
 namespace lbm {
 namespace physics {
 
 /**
- * @brief Configuration for MultiphysicsSolver
- *
- * This structure holds all configuration parameters for the multiphysics
- * simulation, including physics flags, numerical parameters, and material
- * properties.
+ * @brief Thermal boundary condition types for per-face specification
  */
-struct MultiphysicsConfig {
-    // Domain parameters
-    int nx, ny, nz;           ///< Grid dimensions
-    float dx;                 ///< Lattice spacing [m]
+enum class ThermalBCType {
+    PERIODIC,     ///< Periodic (handled automatically in streaming)
+    ADIABATIC,    ///< Zero heat flux (dT/dn = 0)
+    DIRICHLET,    ///< Fixed temperature
+    CONVECTIVE,   ///< Newton's law of cooling: q = h*(T - T_inf)
+    RADIATION     ///< Stefan-Boltzmann: q = eps*sigma*(T^4 - T_amb^4)
+};
 
-    // Physics enable flags
-    bool enable_thermal;      ///< Enable thermal diffusion
-    bool enable_thermal_advection; ///< Enable thermal advection (v·∇T coupling, requires enable_thermal=true)
-    bool enable_phase_change; ///< Enable phase change (melting/solidification)
-    bool enable_fluid;        ///< Enable fluid flow
-    bool enable_vof;          ///< Enable VOF interface reconstruction
-    bool enable_vof_advection; ///< Enable VOF advection (requires enable_vof=true)
-    bool enable_surface_tension;  ///< Enable surface tension forces
-    bool enable_marangoni;    ///< Enable Marangoni effect
-    bool enable_laser;        ///< Enable laser heat source
-    bool enable_darcy;        ///< Enable Darcy damping for mushy/solid zones
-    bool enable_buoyancy;     ///< Enable buoyancy force (Boussinesq approximation)
-    bool enable_evaporation_mass_loss;  ///< Enable evaporation mass loss from VOF (requires thermal + VOF)
-    bool enable_recoil_pressure;  ///< Enable recoil pressure for keyhole formation (requires thermal + VOF)
-    bool enable_solidification_shrinkage;  ///< Enable solidification volume shrinkage
+/**
+ * @brief Per-face boundary condition specification
+ *
+ * Supports different boundary types on each of the 6 domain faces.
+ * This replaces the old single `boundary_type` integer with a richer
+ * configuration that LPBF simulations need (e.g., no-slip substrate
+ * at z=0, periodic sides, open top).
+ *
+ * For axes where min and max have different fluid BC types, the axis
+ * is treated as WALL (the more restrictive choice) for the streaming
+ * kernel, which already handles per-axis periodicity.
+ */
+struct FaceBoundaryConfig {
+    // Fluid boundary types per face
+    BoundaryType x_min = BoundaryType::PERIODIC;
+    BoundaryType x_max = BoundaryType::PERIODIC;
+    BoundaryType y_min = BoundaryType::PERIODIC;
+    BoundaryType y_max = BoundaryType::PERIODIC;
+    BoundaryType z_min = BoundaryType::WALL;      ///< Default: substrate (no-slip)
+    BoundaryType z_max = BoundaryType::PERIODIC;   ///< Default: open top
 
-    // Recoil pressure parameters
-    float recoil_coefficient;     ///< C_r coefficient (0.54 typical, Knight 1979)
-    float recoil_smoothing_width; ///< Interface smoothing width [cells]
-    float recoil_max_pressure;    ///< Numerical pressure limiter [Pa]
+    // Thermal boundary types per face
+    ThermalBCType thermal_x_min = ThermalBCType::PERIODIC;
+    ThermalBCType thermal_x_max = ThermalBCType::PERIODIC;
+    ThermalBCType thermal_y_min = ThermalBCType::PERIODIC;
+    ThermalBCType thermal_y_max = ThermalBCType::PERIODIC;
+    ThermalBCType thermal_z_min = ThermalBCType::CONVECTIVE;  ///< Substrate cooling
+    ThermalBCType thermal_z_max = ThermalBCType::ADIABATIC;   ///< Open top
 
-    // CFL limiter parameters (force limiting for numerical stability)
-    float cfl_limit;              ///< Maximum CFL number (default: 0.5, LBM stability requires < 0.577)
-    float cfl_velocity_target;    ///< Target maximum lattice velocity (default: 0.1, safe LBM range)
-    bool cfl_use_gradual_scaling; ///< Use gradual scaling instead of hard cutoff (default: true)
-    float cfl_force_ramp_factor;  ///< Gradual force ramp-up factor (default: 0.8, lower = more gradual)
+    // Thermal BC parameters (apply to faces with matching type)
+    float dirichlet_temperature = 300.0f;  ///< For DIRICHLET faces [K]
+    float convective_h = 1000.0f;          ///< For CONVECTIVE faces [W/(m^2*K)]
+    float convective_T_inf = 300.0f;       ///< For CONVECTIVE faces [K]
+    float radiation_emissivity = 0.3f;     ///< For RADIATION faces
+    float radiation_T_ambient = 300.0f;    ///< For RADIATION faces [K]
 
-    // Adaptive CFL parameters for keyhole simulation (region-based limiting)
-    bool cfl_use_adaptive;             ///< Enable adaptive region-based CFL limiting (default: false)
-    float cfl_v_target_interface;      ///< Target velocity for interface cells [lattice] (0.5 = 10 m/s)
-    float cfl_v_target_bulk;           ///< Target velocity for bulk liquid cells [lattice] (0.3 = 6 m/s)
-    float cfl_interface_threshold_lo;  ///< Fill level lower bound for interface detection (default: 0.01)
-    float cfl_interface_threshold_hi;  ///< Fill level upper bound for interface detection (default: 0.99)
-    float cfl_recoil_boost_factor;     ///< Extra velocity allowance for z-dominant forces (default: 1.5)
+    /// Axis is periodic only if BOTH faces are periodic
+    bool isPeriodicX() const { return x_min == BoundaryType::PERIODIC && x_max == BoundaryType::PERIODIC; }
+    bool isPeriodicY() const { return y_min == BoundaryType::PERIODIC && y_max == BoundaryType::PERIODIC; }
+    bool isPeriodicZ() const { return z_min == BoundaryType::PERIODIC && z_max == BoundaryType::PERIODIC; }
 
-    // Numerical parameters
-    int vof_subcycles;        ///< Number of VOF subcycles per time step
-    float dt;                 ///< Time step [s]
+    /// Derive per-axis fluid BC: WALL if either face is WALL, else PERIODIC
+    BoundaryType fluidBCX() const { return isPeriodicX() ? BoundaryType::PERIODIC : BoundaryType::WALL; }
+    BoundaryType fluidBCY() const { return isPeriodicY() ? BoundaryType::PERIODIC : BoundaryType::WALL; }
+    BoundaryType fluidBCZ() const { return isPeriodicZ() ? BoundaryType::PERIODIC : BoundaryType::WALL; }
 
-    // Material properties
-    MaterialProperties material;  ///< Material properties (Ti6Al4V, etc.)
+    /// Derive per-axis VOF BC
+    VOFSolver::BoundaryType vofBCX() const {
+        return isPeriodicX() ? VOFSolver::BoundaryType::PERIODIC : VOFSolver::BoundaryType::WALL;
+    }
+    VOFSolver::BoundaryType vofBCY() const {
+        return isPeriodicY() ? VOFSolver::BoundaryType::PERIODIC : VOFSolver::BoundaryType::WALL;
+    }
+    VOFSolver::BoundaryType vofBCZ() const {
+        return isPeriodicZ() ? VOFSolver::BoundaryType::PERIODIC : VOFSolver::BoundaryType::WALL;
+    }
 
-    // Thermal properties
-    float thermal_diffusivity;    ///< Thermal diffusivity α [m²/s]
+    /// Check if any face has a given thermal BC type
+    bool hasAnyThermalBC(ThermalBCType type) const {
+        return thermal_x_min == type || thermal_x_max == type ||
+               thermal_y_min == type || thermal_y_max == type ||
+               thermal_z_min == type || thermal_z_max == type;
+    }
 
-    // Fluid properties
-    float kinematic_viscosity;    ///< Kinematic viscosity ν [m²/s]
-    float density;                ///< Liquid density [kg/m³]
-    float darcy_coefficient;      ///< Darcy damping constant C [dimensionless]
-
-    // Surface properties
-    float surface_tension_coeff;  ///< Surface tension σ [N/m]
-    float dsigma_dT;              ///< Temperature coefficient dσ/dT [N/(m·K)]
-
-    // Buoyancy properties (Boussinesq approximation)
-    float thermal_expansion_coeff; ///< Thermal expansion coefficient β [1/K]
-    float gravity_x;               ///< Gravity vector x-component [m/s²]
-    float gravity_y;               ///< Gravity vector y-component [m/s²]
-    float gravity_z;               ///< Gravity vector z-component [m/s²]
-    float reference_temperature;   ///< Reference temperature T_ref for buoyancy [K]
-
-    // Laser properties (optional)
-    float laser_power;            ///< Laser power [W]
-    float laser_spot_radius;      ///< Beam radius [m]
-    float laser_absorptivity;     ///< Absorptivity [0-1]
-    float laser_penetration_depth;///< Penetration depth [m]
-    float laser_shutoff_time;     ///< Time to turn off laser [s] (negative = never)
-
-    // Laser scanning parameters
-    float laser_start_x;          ///< Initial laser X position [m] (negative = auto center)
-    float laser_start_y;          ///< Initial laser Y position [m] (negative = auto center)
-    float laser_scan_vx;          ///< Scan velocity X [m/s]
-    float laser_scan_vy;          ///< Scan velocity Y [m/s]
-
-    // Boundary conditions
-    int boundary_type;            ///< Boundary type (0=periodic, 1=wall)
-
-    // Radiation boundary condition (v4 fix for thermal runaway)
-    bool enable_radiation_bc;     ///< Enable Stefan-Boltzmann radiation BC
-    float emissivity;             ///< Surface emissivity [0-1] (0.3 for Ti6Al4V)
-    float ambient_temperature;    ///< Ambient temperature [K] (typically 300 K)
-
-    // Substrate cooling boundary condition (Week 1 Tuesday: energy balance fix)
-    bool enable_substrate_cooling;  ///< Enable convective cooling at bottom surface (z=0)
-    float substrate_h_conv;         ///< Convective heat transfer coefficient [W/(m²·K)]
-    float substrate_temperature;    ///< Substrate temperature [K]
+    /// Get thermal BC for a specific face (0=x_min, 1=x_max, 2=y_min, 3=y_max, 4=z_min, 5=z_max)
+    ThermalBCType thermalBCForFace(int face) const {
+        switch (face) {
+            case 0: return thermal_x_min;
+            case 1: return thermal_x_max;
+            case 2: return thermal_y_min;
+            case 3: return thermal_y_max;
+            case 4: return thermal_z_min;
+            case 5: return thermal_z_max;
+            default: return ThermalBCType::PERIODIC;
+        }
+    }
 
     /**
-     * @brief Default constructor with Ti6Al4V LPBF parameters
-     * @note kinematic_viscosity is in LATTICE UNITS for LBM stability
+     * @brief Set all faces to uniform boundary types (convenience)
+     * @param fluid_bc Fluid boundary type for all 6 faces
+     * @param thermal_bc Thermal boundary type for all 6 faces
+     */
+    void setUniform(BoundaryType fluid_bc, ThermalBCType thermal_bc) {
+        x_min = x_max = y_min = y_max = z_min = z_max = fluid_bc;
+        thermal_x_min = thermal_x_max = thermal_y_min = thermal_y_max =
+            thermal_z_min = thermal_z_max = thermal_bc;
+    }
+
+    /**
+     * @brief Initialize from legacy boundary_type integer
+     * @param bt 0=all periodic, 1=all walls with Dirichlet thermal, 2=all walls with adiabatic thermal
+     */
+    static FaceBoundaryConfig fromLegacy(int bt) {
+        FaceBoundaryConfig cfg;
+        if (bt == 0) {
+            cfg.setUniform(BoundaryType::PERIODIC, ThermalBCType::PERIODIC);
+        } else if (bt == 1) {
+            cfg.setUniform(BoundaryType::WALL, ThermalBCType::DIRICHLET);
+        } else if (bt == 2) {
+            cfg.setUniform(BoundaryType::WALL, ThermalBCType::ADIABATIC);
+        }
+        return cfg;
+    }
+};
+
+/**
+ * @brief Configuration for MultiphysicsSolver
+ *
+ * Parameters are grouped into named sub-structs for maintainability.
+ * Direct field access is preserved via forwarding members so existing
+ * code that does  config.nx, config.enable_thermal, etc. still compiles.
+ *
+ * UNIT CONVENTION:
+ * - All dimensional parameters are in SI physical units EXCEPT:
+ *   - fluid.kinematic_viscosity: in LATTICE units (historical)
+ *     TODO: Convert to physical units [m^2/s] in future refactor
+ * - The solver uses UnitConverter internally to convert to lattice units.
+ */
+struct MultiphysicsConfig {
+    // ------------------------------------------------------------------ //
+    // Sub-config structs (nested types)
+    // ------------------------------------------------------------------ //
+
+    struct DomainConfig {
+        int nx = 100;      ///< Grid dimension X
+        int ny = 100;      ///< Grid dimension Y
+        int nz = 50;       ///< Grid dimension Z
+        float dx = 1e-6f;  ///< Lattice spacing [m]
+    };
+
+    struct PhysicsFlags {
+        bool enable_thermal                 = false; ///< Enable thermal diffusion
+        bool enable_thermal_advection       = false; ///< Enable v·∇T coupling (requires thermal+fluid)
+        bool enable_phase_change            = false; ///< Enable melting/solidification
+        bool enable_fluid                   = true;  ///< Enable fluid flow
+        bool enable_vof                     = true;  ///< Enable VOF interface reconstruction
+        bool enable_vof_advection           = false; ///< Enable VOF advection (requires vof+fluid)
+        bool enable_surface_tension         = false; ///< Enable surface tension forces
+        bool enable_marangoni               = true;  ///< Enable Marangoni (thermocapillary) effect
+        bool enable_laser                   = false; ///< Enable laser heat source
+        bool enable_darcy                   = true;  ///< Enable Darcy damping for mushy/solid zones
+        bool enable_buoyancy                = false; ///< Enable Boussinesq buoyancy
+        bool enable_evaporation_mass_loss   = false; ///< Enable evaporation VOF mass loss
+        bool enable_recoil_pressure         = false; ///< Enable evaporation recoil pressure
+        bool enable_solidification_shrinkage = false; ///< Enable solidification volume shrinkage
+    };
+
+    struct NumericalConfig {
+        float dt                     = 1e-9f;   ///< Time step [s]
+        int   vof_subcycles          = 10;      ///< VOF subcycles per LBM step
+        bool  enable_vof_mass_correction = true; ///< Global VOF mass correction
+        float cfl_limit              = 0.5f;    ///< Hard CFL cap (LBM stable < 0.577)
+        float cfl_velocity_target    = 0.15f;   ///< Target max lattice velocity
+        bool  cfl_use_gradual_scaling = true;   ///< Gradual vs hard force cutoff
+        float cfl_force_ramp_factor  = 0.9f;    ///< Ramp onset fraction of v_target
+        bool  cfl_use_adaptive       = false;   ///< Region-based adaptive CFL
+        float cfl_v_target_interface = 0.5f;    ///< Interface cell velocity target [lattice]
+        float cfl_v_target_bulk      = 0.3f;    ///< Bulk liquid velocity target [lattice]
+        float cfl_interface_threshold_lo = 0.01f; ///< Interface lower fill bound
+        float cfl_interface_threshold_hi = 0.99f; ///< Interface upper fill bound
+        float cfl_recoil_boost_factor    = 1.5f;  ///< Extra allowance for z-dominant forces
+    };
+
+    struct FluidConfig {
+        /// WARNING: LATTICE UNITS (not m²/s) — see UNIT CONVENTION above
+        float kinematic_viscosity = 0.0333f; ///< Kinematic viscosity (tau=0.6)
+        float density             = 4110.0f; ///< Liquid density [kg/m³]
+        float darcy_coefficient   = 1e7f;    ///< Darcy damping constant
+    };
+
+    struct ThermalConfig {
+        float thermal_diffusivity    = 5.8e-6f; ///< α [m²/s]
+        bool  enable_radiation_bc    = false;   ///< Stefan-Boltzmann radiation BC
+        float emissivity             = 0.3f;    ///< Surface emissivity [0-1]
+        float ambient_temperature    = 300.0f;  ///< Ambient temperature [K]
+        bool  enable_substrate_cooling = true;  ///< Convective bottom BC
+        float substrate_h_conv       = 1000.0f; ///< h_conv [W/(m²·K)]
+        float substrate_temperature  = 300.0f;  ///< Substrate T [K]
+    };
+
+    struct SurfaceConfig {
+        float surface_tension_coeff  = 1.65f;    ///< σ [N/m]
+        float dsigma_dT              = -0.26e-3f; ///< dσ/dT [N/(m·K)]
+        float recoil_coefficient     = 0.54f;    ///< C_r (Knight 1979)
+        float recoil_smoothing_width = 2.0f;     ///< Interface smoothing [cells]
+        float recoil_max_pressure    = 1e8f;     ///< Numerical pressure cap [Pa]
+    };
+
+    struct BuoyancyConfig {
+        float thermal_expansion_coeff = 1.5e-5f; ///< β [1/K]
+        float gravity_x               = 0.0f;    ///< g_x [m/s²]
+        float gravity_y               = 0.0f;    ///< g_y [m/s²]
+        float gravity_z               = -9.81f;  ///< g_z [m/s²]
+        float reference_temperature   = 1923.0f; ///< T_ref for buoyancy [K]
+    };
+
+    struct LaserConfig {
+        float power             = 200.0f;   ///< Laser power [W]
+        float spot_radius       = 50e-6f;   ///< Beam radius [m]
+        float absorptivity      = 0.35f;    ///< Absorptivity [0-1]
+        float penetration_depth = 10e-6f;   ///< Beer-Lambert depth [m]
+        float shutoff_time      = -1.0f;    ///< Shutoff time [s] (<0 = always on)
+        float start_x           = -1.0f;    ///< Initial X [m] (<0 = auto center)
+        float start_y           = -1.0f;    ///< Initial Y [m] (<0 = auto center)
+        float scan_vx           = 0.36f;    ///< Scan velocity X [m/s]
+        float scan_vy           = 0.0f;     ///< Scan velocity Y [m/s]
+    };
+
+    // ------------------------------------------------------------------ //
+    // Sub-config instances
+    // ------------------------------------------------------------------ //
+    DomainConfig   domain;
+    PhysicsFlags   physics;
+    NumericalConfig numerics;
+    FluidConfig    fluid;
+    ThermalConfig  thermal;
+    SurfaceConfig  surface;
+    BuoyancyConfig buoyancy;
+    LaserConfig    laser;
+    MaterialProperties material;
+    FaceBoundaryConfig boundaries;  ///< Per-face boundary conditions (preferred)
+    int boundary_type = 0; ///< Deprecated: 0=periodic, 1=Dirichlet, 2=adiabatic (use boundaries instead)
+
+    // ------------------------------------------------------------------ //
+    // Backward-compatible flat accessors
+    //
+    // These reference members let existing code of the form
+    //   config.nx = 64;  config.enable_thermal = true;  etc.
+    // continue to compile without modification.
+    // ------------------------------------------------------------------ //
+
+    // Domain
+    int&   nx  = domain.nx;
+    int&   ny  = domain.ny;
+    int&   nz  = domain.nz;
+    float& dx  = domain.dx;
+
+    // Numerical
+    float& dt                       = numerics.dt;
+    int&   vof_subcycles            = numerics.vof_subcycles;
+    bool&  enable_vof_mass_correction = numerics.enable_vof_mass_correction;
+    float& cfl_limit                = numerics.cfl_limit;
+    float& cfl_velocity_target      = numerics.cfl_velocity_target;
+    bool&  cfl_use_gradual_scaling  = numerics.cfl_use_gradual_scaling;
+    float& cfl_force_ramp_factor    = numerics.cfl_force_ramp_factor;
+    bool&  cfl_use_adaptive         = numerics.cfl_use_adaptive;
+    float& cfl_v_target_interface   = numerics.cfl_v_target_interface;
+    float& cfl_v_target_bulk        = numerics.cfl_v_target_bulk;
+    float& cfl_interface_threshold_lo = numerics.cfl_interface_threshold_lo;
+    float& cfl_interface_threshold_hi = numerics.cfl_interface_threshold_hi;
+    float& cfl_recoil_boost_factor  = numerics.cfl_recoil_boost_factor;
+
+    // Physics flags
+    bool& enable_thermal                  = physics.enable_thermal;
+    bool& enable_thermal_advection        = physics.enable_thermal_advection;
+    bool& enable_phase_change             = physics.enable_phase_change;
+    bool& enable_fluid                    = physics.enable_fluid;
+    bool& enable_vof                      = physics.enable_vof;
+    bool& enable_vof_advection            = physics.enable_vof_advection;
+    bool& enable_surface_tension          = physics.enable_surface_tension;
+    bool& enable_marangoni                = physics.enable_marangoni;
+    bool& enable_laser                    = physics.enable_laser;
+    bool& enable_darcy                    = physics.enable_darcy;
+    bool& enable_buoyancy                 = physics.enable_buoyancy;
+    bool& enable_evaporation_mass_loss    = physics.enable_evaporation_mass_loss;
+    bool& enable_recoil_pressure          = physics.enable_recoil_pressure;
+    bool& enable_solidification_shrinkage = physics.enable_solidification_shrinkage;
+
+    // Fluid
+    float& kinematic_viscosity = fluid.kinematic_viscosity;
+    float& density             = fluid.density;
+    float& darcy_coefficient   = fluid.darcy_coefficient;
+
+    // Thermal
+    float& thermal_diffusivity     = thermal.thermal_diffusivity;
+    bool&  enable_radiation_bc     = thermal.enable_radiation_bc;
+    float& emissivity              = thermal.emissivity;
+    float& ambient_temperature     = thermal.ambient_temperature;
+    bool&  enable_substrate_cooling = thermal.enable_substrate_cooling;
+    float& substrate_h_conv        = thermal.substrate_h_conv;
+    float& substrate_temperature   = thermal.substrate_temperature;
+
+    // Surface / recoil
+    float& surface_tension_coeff  = surface.surface_tension_coeff;
+    float& dsigma_dT              = surface.dsigma_dT;
+    float& recoil_coefficient     = surface.recoil_coefficient;
+    float& recoil_smoothing_width = surface.recoil_smoothing_width;
+    float& recoil_max_pressure    = surface.recoil_max_pressure;
+
+    // Buoyancy
+    float& thermal_expansion_coeff = buoyancy.thermal_expansion_coeff;
+    float& gravity_x               = buoyancy.gravity_x;
+    float& gravity_y               = buoyancy.gravity_y;
+    float& gravity_z               = buoyancy.gravity_z;
+    float& reference_temperature   = buoyancy.reference_temperature;
+
+    // Laser
+    float& laser_power             = laser.power;
+    float& laser_spot_radius       = laser.spot_radius;
+    float& laser_absorptivity      = laser.absorptivity;
+    float& laser_penetration_depth = laser.penetration_depth;
+    float& laser_shutoff_time      = laser.shutoff_time;
+    float& laser_start_x           = laser.start_x;
+    float& laser_start_y           = laser.start_y;
+    float& laser_scan_vx           = laser.scan_vx;
+    float& laser_scan_vy           = laser.scan_vy;
+
+    // ------------------------------------------------------------------ //
+    // Constructor / copy / move
+    // ------------------------------------------------------------------ //
+
+    /**
+     * @brief Default constructor with Ti6Al4V LPBF parameters.
+     * @note kinematic_viscosity is in LATTICE UNITS (tau=0.6, stable).
      *       Physical viscosity: ν_phys = 1.217e-6 m²/s
-     *       Lattice viscosity: ν_lattice = 0.0333 (tau=0.6)
      */
     MultiphysicsConfig()
-        : nx(100), ny(100), nz(50),
-          dx(1e-6f),
-          enable_thermal(false),  // Disabled by default (Step 1)
-          enable_thermal_advection(false),  // v5: Thermal-fluid coupling (disabled by default for backward compatibility)
-          enable_fluid(true),
-          enable_vof(true),
-          enable_vof_advection(false),  // Disabled by default (Step 1)
-          enable_surface_tension(false),  // Add in Step 3
-          enable_marangoni(true),
-          enable_laser(false),    // Add in Step 4
-          enable_darcy(true),     // Enable Darcy damping by default
-          enable_buoyancy(true),  // Enable buoyancy for realistic LPBF
-          enable_evaporation_mass_loss(true),  // Enable evaporation mass loss from VOF
-          enable_recoil_pressure(false),  // Disabled by default (enable for keyhole simulations)
-          enable_solidification_shrinkage(true),  // Enable by default
-          recoil_coefficient(0.54f),      // Anisimov/Knight coefficient
-          recoil_smoothing_width(2.0f),   // 2 cells interface smoothing
-          recoil_max_pressure(1e8f),      // 100 MPa limiter
-          cfl_limit(0.6f),                // LBM stability limit (relaxed for keyhole, < 0.577 traditional)
-          cfl_velocity_target(0.15f),     // Default: 3 m/s @ dx=2um,dt=0.1us (safe for Marangoni)
-          cfl_use_gradual_scaling(true),  // Gradual scaling for smoother deformation
-          cfl_force_ramp_factor(0.9f),    // Start limiting at 90% of target (was 0.8)
-          cfl_use_adaptive(false),        // Adaptive region-based CFL (for keyhole simulations)
-          cfl_v_target_interface(0.5f),   // Interface: 0.5 lattice = ~10 m/s (strong recoil allowed)
-          cfl_v_target_bulk(0.3f),        // Bulk liquid: 0.3 lattice = ~6 m/s (moderate Marangoni)
-          cfl_interface_threshold_lo(0.01f),  // Interface detection: fill > 0.01
-          cfl_interface_threshold_hi(0.99f),  // Interface detection: fill < 0.99
-          cfl_recoil_boost_factor(1.5f),  // 50% extra allowance for z-dominant (recoil) forces
-          enable_phase_change(false),  // Add in Phase 2
-          vof_subcycles(10),
-          dt(1e-9f),  // 1 ns
-          material(MaterialDatabase::getTi6Al4V()),  // CRITICAL FIX: Initialize material properties
-          thermal_diffusivity(5.8e-6f),  // Ti6Al4V liquid
-          kinematic_viscosity(0.0333f),  // LATTICE UNITS (tau=0.6, stable)
-          density(4110.0f),  // Ti6Al4V liquid
-          darcy_coefficient(1e7f),  // Darcy damping constant
-          surface_tension_coeff(1.65f),  // Ti6Al4V liquid-gas
-          dsigma_dT(-0.26e-3f),  // Ti6Al4V
-          thermal_expansion_coeff(1.5e-5f),  // Ti6Al4V typical value [1/K]
-          gravity_x(0.0f),                   // No horizontal gravity
-          gravity_y(0.0f),                   // No horizontal gravity
-          gravity_z(-9.81f),                 // Standard gravity (downward)
-          reference_temperature(1923.0f),    // Ti6Al4V melting point [K]
-          laser_power(200.0f),
-          laser_spot_radius(50e-6f),
-          laser_absorptivity(0.35f),
-          laser_penetration_depth(10e-6f),
-          laser_shutoff_time(-1.0f),  // Negative = laser always on
-          laser_start_x(-1.0f),  // Negative = auto (domain center)
-          laser_start_y(-1.0f),  // Negative = auto (domain center)
-          laser_scan_vx(0.36f),  // Default scan velocity (moderate LPBF speed)
-          laser_scan_vy(0.0f),   // No Y scanning by default
-          boundary_type(0),
-          enable_radiation_bc(false),      // v4 fix: disabled by default
-          emissivity(0.3f),                // Ti6Al4V typical emissivity
-          ambient_temperature(300.0f),     // Room temperature
-          enable_substrate_cooling(true),  // Week 1 Tuesday: enable substrate BC by default
-          substrate_h_conv(1000.0f),       // Water-cooled substrate [W/(m²·K)]
-          substrate_temperature(300.0f)    // Substrate at room temperature [K]
-        {}
+        : domain{}, physics{}, numerics{}, fluid{}, thermal{},
+          surface{}, buoyancy{}, laser{},
+          material(MaterialDatabase::getTi6Al4V())
+    {}
+
+    // Reference members make the implicit copy constructor unusable, so we
+    // define explicit copy that copies the value sub-structs and then rebinds.
+    MultiphysicsConfig(const MultiphysicsConfig& o)
+        : domain(o.domain), physics(o.physics), numerics(o.numerics),
+          fluid(o.fluid), thermal(o.thermal), surface(o.surface),
+          buoyancy(o.buoyancy), laser(o.laser),
+          material(o.material), boundaries(o.boundaries),
+          boundary_type(o.boundary_type),
+          // reference members auto-bind to this object's sub-structs via the
+          // in-class initializer (member declarations above)
+          nx(domain.nx), ny(domain.ny), nz(domain.nz), dx(domain.dx),
+          dt(numerics.dt), vof_subcycles(numerics.vof_subcycles),
+          enable_vof_mass_correction(numerics.enable_vof_mass_correction),
+          cfl_limit(numerics.cfl_limit),
+          cfl_velocity_target(numerics.cfl_velocity_target),
+          cfl_use_gradual_scaling(numerics.cfl_use_gradual_scaling),
+          cfl_force_ramp_factor(numerics.cfl_force_ramp_factor),
+          cfl_use_adaptive(numerics.cfl_use_adaptive),
+          cfl_v_target_interface(numerics.cfl_v_target_interface),
+          cfl_v_target_bulk(numerics.cfl_v_target_bulk),
+          cfl_interface_threshold_lo(numerics.cfl_interface_threshold_lo),
+          cfl_interface_threshold_hi(numerics.cfl_interface_threshold_hi),
+          cfl_recoil_boost_factor(numerics.cfl_recoil_boost_factor),
+          enable_thermal(physics.enable_thermal),
+          enable_thermal_advection(physics.enable_thermal_advection),
+          enable_phase_change(physics.enable_phase_change),
+          enable_fluid(physics.enable_fluid),
+          enable_vof(physics.enable_vof),
+          enable_vof_advection(physics.enable_vof_advection),
+          enable_surface_tension(physics.enable_surface_tension),
+          enable_marangoni(physics.enable_marangoni),
+          enable_laser(physics.enable_laser),
+          enable_darcy(physics.enable_darcy),
+          enable_buoyancy(physics.enable_buoyancy),
+          enable_evaporation_mass_loss(physics.enable_evaporation_mass_loss),
+          enable_recoil_pressure(physics.enable_recoil_pressure),
+          enable_solidification_shrinkage(physics.enable_solidification_shrinkage),
+          kinematic_viscosity(fluid.kinematic_viscosity),
+          density(fluid.density),
+          darcy_coefficient(fluid.darcy_coefficient),
+          thermal_diffusivity(thermal.thermal_diffusivity),
+          enable_radiation_bc(thermal.enable_radiation_bc),
+          emissivity(thermal.emissivity),
+          ambient_temperature(thermal.ambient_temperature),
+          enable_substrate_cooling(thermal.enable_substrate_cooling),
+          substrate_h_conv(thermal.substrate_h_conv),
+          substrate_temperature(thermal.substrate_temperature),
+          surface_tension_coeff(surface.surface_tension_coeff),
+          dsigma_dT(surface.dsigma_dT),
+          recoil_coefficient(surface.recoil_coefficient),
+          recoil_smoothing_width(surface.recoil_smoothing_width),
+          recoil_max_pressure(surface.recoil_max_pressure),
+          thermal_expansion_coeff(buoyancy.thermal_expansion_coeff),
+          gravity_x(buoyancy.gravity_x),
+          gravity_y(buoyancy.gravity_y),
+          gravity_z(buoyancy.gravity_z),
+          reference_temperature(buoyancy.reference_temperature),
+          laser_power(laser.power),
+          laser_spot_radius(laser.spot_radius),
+          laser_absorptivity(laser.absorptivity),
+          laser_penetration_depth(laser.penetration_depth),
+          laser_shutoff_time(laser.shutoff_time),
+          laser_start_x(laser.start_x),
+          laser_start_y(laser.start_y),
+          laser_scan_vx(laser.scan_vx),
+          laser_scan_vy(laser.scan_vy)
+    {}
+
+    MultiphysicsConfig& operator=(const MultiphysicsConfig& o) {
+        if (this == &o) return *this;
+        domain        = o.domain;
+        physics       = o.physics;
+        numerics      = o.numerics;
+        fluid         = o.fluid;
+        thermal       = o.thermal;
+        surface       = o.surface;
+        buoyancy      = o.buoyancy;
+        laser         = o.laser;
+        material      = o.material;
+        boundaries    = o.boundaries;
+        boundary_type = o.boundary_type;
+        // Reference members already point to our sub-structs; no rebind needed.
+        return *this;
+    }
+
+    // ------------------------------------------------------------------ //
+    // Convenience getters (for code that prefers method syntax)
+    // ------------------------------------------------------------------ //
+    int   getNx() const { return domain.nx; }
+    int   getNy() const { return domain.ny; }
+    int   getNz() const { return domain.nz; }
+    float getDx() const { return domain.dx; }
+    float getDt() const { return numerics.dt; }
+
+    /**
+     * @brief Validate configuration for LBM stability, physics consistency,
+     *        and parameter ranges.
+     * @throws std::runtime_error for fatal misconfigurations.
+     * Prints warnings to stderr for non-fatal issues.
+     */
+    void validate() const;
 };
 
 /**
@@ -444,9 +713,15 @@ public:
     int getNz() const { return config_.nz; }
     float getDx() const { return config_.dx; }
 
+    /// Get the field registry (populated after initialize())
+    const io::FieldRegistry& getFieldRegistry() const { return field_registry_; }
+
 private:
     // Configuration
     MultiphysicsConfig config_;
+
+    // Field registry for configurable VTK output
+    io::FieldRegistry field_registry_;
 
     // Unit converter for all lattice <-> physical conversions
     core::UnitConverter unit_converter_;
@@ -506,6 +781,12 @@ private:
      * @brief Free device memory
      */
     void freeMemory();
+
+    /**
+     * @brief Register available output fields in field_registry_
+     * @note Called at the end of initialize() after all sub-solvers are ready
+     */
+    void registerOutputFields();
 
     /**
      * @brief Compute total force using ForceAccumulator pipeline

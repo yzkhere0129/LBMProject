@@ -157,7 +157,20 @@ public:
                      float lambda = 3.0f / 16.0f);
 
     /**
+     * @brief Set UNIFORM kinematic viscosity (constant ν for all cells)
+     *
+     * Standard for RT instability benchmarks. Both phases have same ν,
+     * giving symmetric viscous damping for bubble and spike.
+     *
+     * @param nu_constant Kinematic viscosity [m²/s] (same for both phases)
+     */
+    void computeUniformViscosity(float nu_constant);
+
+    /**
      * @brief Compute variable viscosity field from VOF for two-phase flow
+     *
+     * WARNING: This gives asymmetric damping! Light phase has much higher ν.
+     * For symmetric RT benchmarks, use computeUniformViscosity() instead.
      *
      * For constant dynamic viscosity μ but variable density ρ(f):
      * - ν(f) = μ / ρ(f) where ρ(f) = f×ρ_heavy + (1-f)×ρ_light
@@ -565,6 +578,27 @@ __global__ void applyDarcyDampingKernel(
     float* force_y,
     float* force_z,
     float darcy_constant,
+    int num_cells);
+
+/**
+ * @brief CUDA kernel for compensating forces to make them τ-independent
+ *
+ * Guo forcing includes factor (1-ω/2) that couples force magnitude to relaxation
+ * time τ. This kernel pre-compensates forces by multiplying by 1/(1-ω/2) = 2/(2-ω)
+ * to cancel this dependency, ensuring forces have the same physical effect in both
+ * light and heavy phases regardless of local viscosity.
+ *
+ * @param force_x Force x-component (modified in place)
+ * @param force_y Force y-component (modified in place)
+ * @param force_z Force z-component (modified in place)
+ * @param omega_field Per-cell relaxation parameter
+ * @param num_cells Number of cells
+ */
+__global__ void compensateForceForOmegaKernel(
+    float* force_x,
+    float* force_y,
+    float* force_z,
+    const float* omega_field,
     int num_cells);
 
 } // namespace physics

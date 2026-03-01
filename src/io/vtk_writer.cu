@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <algorithm>
 #include "utils/cuda_check.h"
 
 namespace lbm {
@@ -446,6 +447,115 @@ void VTKWriter::writeVectorField(
     }
 
     file.close();
+}
+
+void VTKWriter::writeFields(const std::string& filename,
+                            const FieldRegistry& registry,
+                            const std::vector<std::string>& field_names,
+                            int nx, int ny, int nz, float dx) {
+    // Determine which fields to write
+    const auto& all_scalars = registry.getScalars();
+    const auto& all_vectors = registry.getVectors();  // groups of 3
+
+    bool write_all = field_names.empty();
+
+    // Collect scalar descriptors to write
+    std::vector<const FieldDescriptor*> scalars_to_write;
+    for (const auto& fd : all_scalars) {
+        if (write_all || std::find(field_names.begin(), field_names.end(), fd.name) != field_names.end()) {
+            scalars_to_write.push_back(&fd);
+        }
+    }
+
+    // Collect vector field groups to write (indices into all_vectors, step 3)
+    std::vector<size_t> vector_indices;
+    for (size_t i = 0; i + 2 < all_vectors.size(); i += 3) {
+        // Recover base name from "basename_x"
+        const std::string& vname = all_vectors[i].name;
+        std::string base = (vname.size() > 2) ? vname.substr(0, vname.size() - 2) : vname;
+        if (write_all || std::find(field_names.begin(), field_names.end(), base) != field_names.end()) {
+            vector_indices.push_back(i);
+        }
+    }
+
+    if (scalars_to_write.empty() && vector_indices.empty()) {
+        std::cerr << "VTKWriter::writeFields: no matching fields found, skipping write.\n";
+        return;
+    }
+
+    int n_points = nx * ny * nz;
+    size_t bytes = static_cast<size_t>(n_points) * sizeof(float);
+
+    // Allocate a single host buffer, reused for each field copy
+    std::vector<float> h_buf(n_points);
+
+    // Ensure .vtk extension
+    std::string output_filename = filename;
+    if (output_filename.size() < 4 || output_filename.substr(output_filename.size() - 4) != ".vtk") {
+        output_filename += ".vtk";
+    }
+
+    std::ofstream file(output_filename);
+    if (!file.is_open()) {
+        throw std::runtime_error("Cannot open file: " + output_filename);
+    }
+
+    // VTK header
+    file << "# vtk DataFile Version 3.0\n";
+    file << "LBM Field Registry Output\n";
+    file << "ASCII\n";
+    file << "DATASET STRUCTURED_POINTS\n";
+    file << "DIMENSIONS " << nx << " " << ny << " " << nz << "\n";
+    file << "ORIGIN 0.0 0.0 0.0\n";
+    file << "SPACING " << dx << " " << dx << " " << dx << "\n";
+    file << "\nPOINT_DATA " << n_points << "\n";
+
+    // Write vector fields first (ParaView convention)
+    for (size_t vi : vector_indices) {
+        const std::string& vname_x = all_vectors[vi].name;
+        std::string base = (vname_x.size() > 2) ? vname_x.substr(0, vname_x.size() - 2) : vname_x;
+
+        const float* d_vx = all_vectors[vi].device_ptr;
+        const float* d_vy = all_vectors[vi + 1].device_ptr;
+        const float* d_vz = all_vectors[vi + 2].device_ptr;
+
+        // Copy all three components to host
+        std::vector<float> h_vx(n_points), h_vy(n_points), h_vz(n_points);
+        CUDA_CHECK(cudaMemcpy(h_vx.data(), d_vx, bytes, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_vy.data(), d_vy, bytes, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_vz.data(), d_vz, bytes, cudaMemcpyDeviceToHost));
+
+        file << "VECTORS " << base << " float\n";
+        for (int k = 0; k < nz; ++k) {
+            for (int j = 0; j < ny; ++j) {
+                for (int i = 0; i < nx; ++i) {
+                    int idx = i + j * nx + k * nx * ny;
+                    file << h_vx[idx] << " " << h_vy[idx] << " " << h_vz[idx] << "\n";
+                }
+            }
+        }
+    }
+
+    // Write scalar fields
+    for (const auto* fd : scalars_to_write) {
+        CUDA_CHECK(cudaMemcpy(h_buf.data(), fd->device_ptr, bytes, cudaMemcpyDeviceToHost));
+
+        file << "\nSCALARS " << fd->name << " float 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = 0; k < nz; ++k) {
+            for (int j = 0; j < ny; ++j) {
+                for (int i = 0; i < nx; ++i) {
+                    int idx = i + j * nx + k * nx * ny;
+                    file << h_buf[idx] << "\n";
+                }
+            }
+        }
+    }
+
+    file.close();
+    std::cout << "VTK fields written: " << output_filename
+              << " (" << scalars_to_write.size() << " scalars, "
+              << vector_indices.size() << " vectors)\n";
 }
 
 } // namespace io

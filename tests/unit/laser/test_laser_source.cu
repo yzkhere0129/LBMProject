@@ -10,6 +10,8 @@
 #include <numeric>
 #include "physics/laser_source.h"
 
+using namespace lbm::physics;
+
 // Test fixture for laser source tests
 class LaserSourceTest : public ::testing::Test {
 protected:

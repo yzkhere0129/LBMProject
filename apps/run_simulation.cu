@@ -23,6 +23,7 @@
 #include "diagnostics/energy_balance.h"
 
 using namespace lbm;
+using namespace lbm::physics;
 
 // 固体速度约束核函数（与Phase5相同）
 __global__ void enforceZeroVelocityInSolid(

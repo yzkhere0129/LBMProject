@@ -24,6 +24,7 @@
 #include "io/vtk_writer.h"
 
 using namespace lbm;
+using namespace lbm::physics;
 
 /**
  * @brief Print simulation progress and statistics

@@ -151,7 +151,7 @@ __host__ __device__ float D3Q7::computeThermalEquilibrium(
     }
 
     // Thermal equilibrium: g_eq = w_i * T * (1 + c_i·u/cs^2)
-    // cs^2 = 1/3 for D3Q7
+    // cs^2 = 1/3 for D3Q7 (now correctly set in lattice_d3q7.h)
     return w * T * (1.0f + cu_normalized);
 }
 

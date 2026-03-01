@@ -6,11 +6,14 @@
  * laser-material interaction in LPBF/DED processes.
  */
 
-#ifndef LASER_SOURCE_H
-#define LASER_SOURCE_H
+#ifndef LBM_LASER_SOURCE_H
+#define LBM_LASER_SOURCE_H
 
 #include <cuda_runtime.h>
 #include <cmath>
+
+namespace lbm {
+namespace physics {
 
 /**
  * @class LaserSource
@@ -314,4 +317,7 @@ float computeTotalLaserEnergy(
     int nx, int ny, int nz
 );
 
-#endif // LASER_SOURCE_H
+} // namespace physics
+} // namespace lbm
+
+#endif // LBM_LASER_SOURCE_H

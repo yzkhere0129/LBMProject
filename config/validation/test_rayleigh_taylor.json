@@ -1,0 +1,300 @@
+{
+  "test_name": "Case 3: Rayleigh-Taylor Instability",
+  "description": "VOF interface tracking validation - gravity-driven instability of heavy fluid over light fluid",
+  "reference": "Gerris benchmark, Thibault et al. (2013), Popinet (2009)",
+  "test_category": "multiphysics_vof",
+  "difficulty": "advanced",
+  "runtime_estimate": "30-60 minutes",
+
+  "domain": {
+    "description": "2D vertical domain with perturbed interface",
+    "dimensions": {
+      "x": 0.128,
+      "y": 0.512,
+      "z": 0.008,
+      "unit": "m",
+      "comment": "128×512 mm, aspect ratio 1:4, thin in z for quasi-2D"
+    },
+    "grid": {
+      "nx": 16,
+      "ny": 64,
+      "nz": 1,
+      "dx": 0.008,
+      "dy": 0.008,
+      "dz": 0.008,
+      "unit": "m",
+      "comment": "8 mm uniform mesh, 16×64 grid"
+    }
+  },
+
+  "initial_conditions": {
+    "type": "perturbed_interface",
+    "interface": {
+      "description": "Cosine perturbation at horizontal interface",
+      "formula": "y_interface = y_0 + A * cos(2π * x / L_x)",
+      "y_0": 0.0,
+      "y_0_unit": "m",
+      "y_0_comment": "Mean interface position at domain center (y=0, shifted coords)",
+      "amplitude": 0.05,
+      "amplitude_unit": "m",
+      "amplitude_comment": "50 mm perturbation amplitude",
+      "wavelength": 0.128,
+      "wavelength_unit": "m",
+      "wavelength_comment": "One wavelength across domain width"
+    },
+    "fluid_distribution": {
+      "above_interface": {
+        "phase": "heavy",
+        "density": 1.225,
+        "density_unit": "kg/m³",
+        "comment": "Air-like density (ρ₁)"
+      },
+      "below_interface": {
+        "phase": "light",
+        "density": 0.169,
+        "density_unit": "kg/m³",
+        "comment": "Low-density fluid (ρ₂)"
+      }
+    },
+    "velocity": [0.0, 0.0, 0.0],
+    "velocity_unit": "m/s",
+    "velocity_comment": "Start from rest"
+  },
+
+  "boundary_conditions": {
+    "top_bottom": {
+      "type": "no_slip",
+      "comment": "Solid walls at y=±0.256 m"
+    },
+    "left_right": {
+      "type": "periodic",
+      "comment": "Periodic in x for single wavelength"
+    },
+    "front_back": {
+      "type": "periodic",
+      "comment": "Periodic in z for quasi-2D"
+    }
+  },
+
+  "flow_parameters": {
+    "atwood_number": {
+      "value": 0.758,
+      "formula": "At = (ρ₁ - ρ₂)/(ρ₁ + ρ₂) = (1.225 - 0.169)/(1.225 + 0.169)",
+      "comment": "Measure of density contrast"
+    },
+    "gravity": {
+      "gx": 0.0,
+      "gy": -9.81,
+      "gz": 0.0,
+      "unit": "m/s²",
+      "comment": "Standard gravity pointing downward"
+    },
+    "characteristic_velocity": {
+      "formula": "U_c = sqrt(g * A * At) where A is amplitude",
+      "value": 0.609,
+      "unit": "m/s",
+      "comment": "Initial interface velocity scale"
+    },
+    "characteristic_time": {
+      "formula": "τ = sqrt(A / (g * At))",
+      "value": 0.082,
+      "unit": "s",
+      "comment": "Instability growth timescale"
+    }
+  },
+
+  "material_properties": {
+    "fluid_1": {
+      "name": "Heavy fluid (air-like)",
+      "density": 1.225,
+      "density_unit": "kg/m³",
+      "kinematic_viscosity": 1.5e-5,
+      "kinematic_viscosity_unit": "m²/s",
+      "comment": "Air properties at STP"
+    },
+    "fluid_2": {
+      "name": "Light fluid (low-density gas)",
+      "density": 0.169,
+      "density_unit": "kg/m³",
+      "kinematic_viscosity": 1.5e-5,
+      "kinematic_viscosity_unit": "m²/s",
+      "comment": "Matched viscosity for simplicity"
+    },
+    "interface": {
+      "surface_tension": 0.01,
+      "surface_tension_unit": "N/m",
+      "surface_tension_comment": "Moderate surface tension (σ = 1×10⁻²)",
+      "contact_angle": 90.0,
+      "contact_angle_unit": "degrees"
+    }
+  },
+
+  "time_parameters": {
+    "final_time": 3.0,
+    "final_time_unit": "s",
+    "final_time_comment": "Multiple instability growth periods (~36 τ)",
+    "dt": null,
+    "dt_comment": "Auto-computed from CFL and capillary time constraints",
+    "cfl_fluid": 0.3,
+    "cfl_capillary": 0.1,
+    "output_interval": 100,
+    "output_interval_comment": "Frequent output to capture instability evolution"
+  },
+
+  "physics_flags": {
+    "enable_thermal": false,
+    "enable_fluid": true,
+    "enable_vof": true,
+    "enable_vof_advection": true,
+    "enable_phase_change": false,
+    "enable_laser": false,
+    "enable_surface_tension": true,
+    "enable_marangoni": false,
+    "enable_buoyancy": true,
+    "enable_gravity": true,
+    "comment": "VOF + surface tension + buoyancy"
+  },
+
+  "numerical_methods": {
+    "vof_scheme": "PLIC (Piecewise Linear Interface Construction)",
+    "vof_advection": "Lagrangian-Eulerian split or geometrical VOF",
+    "surface_tension_model": "CSF (Continuum Surface Force)",
+    "density_interpolation": "Harmonic mean at interface",
+    "curvature_calculation": "Height function or smoothed VOF gradient",
+    "interface_thickness": 2,
+    "interface_thickness_comment": "Interface smeared over 2-3 cells"
+  },
+
+  "validation": {
+    "reference_data": {
+      "source": "Gerris flow solver benchmark",
+      "gerris_url": "http://gerris.dalembert.upmc.fr/gerris/tests/tests/rt.html",
+      "thibault_2013": "Comparison with spectral method (Thibault et al. JCP 2013)"
+    },
+    "key_metrics": {
+      "spike_penetration": {
+        "description": "Depth of heavy fluid spike into light fluid",
+        "measurement": "y_spike(t) = min(y | VOF > 0.5)",
+        "expected_trend": "Linear growth followed by nonlinear saturation"
+      },
+      "bubble_rise": {
+        "description": "Height of light fluid bubble into heavy fluid",
+        "measurement": "y_bubble(t) = max(y | VOF < 0.5)",
+        "expected_trend": "Faster than spike, approaches free surface"
+      },
+      "interface_mixing": {
+        "description": "Growth of mixing layer thickness",
+        "measurement": "δ(t) = y_bubble(t) - y_spike(t)",
+        "expected_trend": "δ(t) ~ t for linear regime, then ~ t^θ (θ < 1)"
+      }
+    },
+    "success_criteria": {
+      "qualitative": {
+        "spike_formation": "Heavy fluid penetrates downward with sharp tip",
+        "bubble_formation": "Light fluid rises with rounded cap",
+        "rollup_structures": "Kelvin-Helmholtz vortices at interface",
+        "symmetry": "Single-mode perturbation maintains x-symmetry"
+      },
+      "quantitative": {
+        "spike_depth_t1": {
+          "time": 1.0,
+          "time_unit": "s",
+          "expected_range": [-0.15, -0.10],
+          "expected_range_unit": "m",
+          "tolerance": 0.02,
+          "comment": "Compare with Gerris/Thibault at t=1s"
+        },
+        "bubble_height_t1": {
+          "time": 1.0,
+          "time_unit": "s",
+          "expected_range": [0.10, 0.15],
+          "expected_range_unit": "m",
+          "tolerance": 0.02
+        },
+        "interface_length": {
+          "growth": "monotonic increase",
+          "comment": "Interface stretches due to instability"
+        },
+        "mass_conservation": {
+          "threshold": 0.01,
+          "comment": "< 1% mass loss/gain throughout simulation"
+        }
+      }
+    }
+  },
+
+  "diagnostics": {
+    "interface_tracking": {
+      "measure_spike_position": true,
+      "measure_bubble_position": true,
+      "measure_interface_length": true,
+      "measure_mixing_layer_thickness": true
+    },
+    "conservation": {
+      "check_mass": true,
+      "check_momentum": false,
+      "check_energy": false
+    },
+    "visualization": {
+      "vof_field": true,
+      "velocity_field": true,
+      "vorticity": true,
+      "pressure": true,
+      "density_field": true
+    }
+  },
+
+  "output": {
+    "directory": "validation/case3_rayleigh_taylor",
+    "vtk_format": true,
+    "csv_format": true,
+    "save_fields": ["vof", "velocity", "pressure", "density", "vorticity", "curvature"],
+    "save_diagnostics": ["spike_position", "bubble_position", "mixing_layer_thickness", "interface_length", "total_mass"],
+    "comparison_plots": {
+      "spike_vs_time": "Compare with Gerris data",
+      "bubble_vs_time": "Compare with Gerris data",
+      "interface_evolution": "Snapshots at t=[0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]s"
+    }
+  },
+
+  "notes": [
+    "This is Case 3 from the group meeting validation suite",
+    "Tests VOF interface tracking with surface tension and buoyancy",
+    "Classic benchmark problem with extensive reference data",
+    "Sensitive to numerical diffusion - VOF scheme quality matters",
+    "Expected to show: spike formation, bubble rise, Kelvin-Helmholtz rollups",
+    "Grid resolution 8mm is coarse - may need refinement for quantitative match",
+    "Expected runtime: 30-60 minutes on RTX 3050 depending on timestep"
+  ],
+
+  "known_challenges": {
+    "numerical_diffusion": "Coarse grid may smear interface, reducing growth rate",
+    "surface_tension_accuracy": "CSF model can introduce spurious currents",
+    "mass_conservation": "VOF advection must be conservative to < 1% error",
+    "late_time_behavior": "Nonlinear regime (t > 2s) is chaotic and harder to match exactly"
+  },
+
+  "extensions": {
+    "grid_refinement_study": {
+      "grids": ["8mm (baseline)", "4mm (2x)", "2mm (4x)"],
+      "expected": "Better resolution of interface features"
+    },
+    "atwood_number_sweep": {
+      "values": [0.2, 0.5, 0.758, 0.9],
+      "comment": "Study effect of density ratio"
+    },
+    "surface_tension_study": {
+      "values": [0.0, 0.001, 0.01, 0.1],
+      "comment": "σ=0 is pure RT, σ>0 adds capillary stabilization"
+    }
+  },
+
+  "implementation_notes": {
+    "lbm_scheme": "D3Q19 fluid LBM with variable density",
+    "vof_coupling": "One-way: VOF→density, density→LBM body force",
+    "surface_tension_implementation": "CSF model: F_σ = σ·κ·n·δ_interface",
+    "buoyancy_implementation": "Body force: F_b = (ρ - ρ_ref)·g",
+    "interface_sharpening": "Optional: apply reinitialization or compression step",
+    "stability_considerations": "Capillary timestep limit: dt < sqrt(ρ·dx³/(2π·σ))"
+  }
+}

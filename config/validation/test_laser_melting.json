@@ -1,0 +1,467 @@
+{
+  "test_name": "Case 4: Full LPBF Multiphysics",
+  "description": "Complete laser powder bed fusion simulation - all physics integrated",
+  "reference": "OpenFOAM LaserbeamFoam comparison, Khairallah et al. (2016)",
+  "test_category": "full_multiphysics",
+  "difficulty": "expert",
+  "runtime_estimate": "2-5 hours",
+
+  "domain": {
+    "description": "3D powder bed with stationary laser spot",
+    "dimensions": {
+      "x": 1.5e-4,
+      "y": 1.5e-4,
+      "z": 3.0e-4,
+      "unit": "m",
+      "comment": "150×150×300 μm domain for melt pool capture"
+    },
+    "grid": {
+      "nx": 40,
+      "ny": 80,
+      "nz": 80,
+      "dx": 3.75e-6,
+      "dy": 1.875e-6,
+      "dz": 3.75e-6,
+      "unit": "m",
+      "comment": "40×80×80 mesh, finer in y (build direction) for melt pool resolution"
+    },
+    "computational_cost": {
+      "total_cells": 256000,
+      "memory_estimate": "~2 GB for distributions + fields",
+      "cells_per_timestep_per_sec": 49000000,
+      "estimated_runtime": "~3 hours for 30 μs physical time @ dt=0.05 μs"
+    }
+  },
+
+  "initial_conditions": {
+    "type": "powder_bed_substrate",
+    "substrate": {
+      "description": "Solid substrate at bottom of domain",
+      "z_range": [0.0, 1.0e-4],
+      "z_range_unit": "m",
+      "z_range_comment": "Bottom 100 μm is solid substrate",
+      "initial_temperature": 300.0,
+      "initial_temperature_unit": "K",
+      "phase": "solid",
+      "vof": 1.0
+    },
+    "powder_bed": {
+      "description": "Powder layer on top of substrate (not explicitly modeled in this validation)",
+      "z_range": [1.0e-4, 1.5e-4],
+      "z_range_unit": "m",
+      "z_range_comment": "Top 50 μm could be powder (future extension)",
+      "initial_temperature": 300.0,
+      "initial_temperature_unit": "K",
+      "phase": "solid",
+      "vof": 1.0,
+      "powder_porosity": 0.4,
+      "powder_porosity_comment": "For future: effective properties in powder region"
+    },
+    "gas_phase": {
+      "description": "Inert gas atmosphere above powder",
+      "z_range": [1.5e-4, 3.0e-4],
+      "z_range_unit": "m",
+      "initial_temperature": 300.0,
+      "initial_temperature_unit": "K",
+      "vof": 0.0,
+      "comment": "Initially no metal, pure gas"
+    }
+  },
+
+  "boundary_conditions": {
+    "top": {
+      "type": "outflow_pressure",
+      "pressure": 101325.0,
+      "pressure_unit": "Pa",
+      "thermal_type": "radiation",
+      "comment": "Open to atmosphere with radiation cooling"
+    },
+    "bottom": {
+      "type": "no_slip",
+      "thermal_type": "substrate_cooling",
+      "comment": "Substrate with heat extraction"
+    },
+    "sides": {
+      "type": "no_slip",
+      "thermal_type": "adiabatic",
+      "comment": "Insulated side walls (or periodic for infinite domain)"
+    }
+  },
+
+  "laser_parameters": {
+    "mode": "stationary",
+    "mode_comment": "Laser fixed at center for validation, scanning for production",
+    "power": 50.0,
+    "power_unit": "W",
+    "power_comment": "Moderate power for steel melting validation",
+    "spot_radius": 5.0e-5,
+    "spot_radius_unit": "m",
+    "spot_radius_comment": "50 μm spot radius (100 μm diameter)",
+    "profile": "gaussian",
+    "center": {
+      "x": 7.5e-5,
+      "y": 7.5e-5,
+      "z": 1.5e-4,
+      "unit": "m",
+      "comment": "Laser centered on top surface"
+    },
+    "penetration_depth": 2.0e-6,
+    "penetration_depth_unit": "m",
+    "penetration_depth_comment": "Beer-Lambert absorption: 2 μm typical for steel",
+    "absorptivity": 0.35,
+    "absorptivity_comment": "Steel solid surface absorptivity"
+  },
+
+  "material_properties": {
+    "name": "Steel (Fe)",
+    "reference": "Generic steel properties for validation",
+    "thermal": {
+      "density_solid": 7874.0,
+      "density_liquid": 7200.0,
+      "density_unit": "kg/m³",
+      "specific_heat_solid": 450.0,
+      "specific_heat_liquid": 680.0,
+      "specific_heat_unit": "J/(kg·K)",
+      "thermal_conductivity_solid": 50.0,
+      "thermal_conductivity_liquid": 30.0,
+      "thermal_conductivity_unit": "W/(m·K)",
+      "melting_point": 1808.0,
+      "boiling_point": 3133.0,
+      "temperature_unit": "K",
+      "latent_heat_fusion": 2.47e5,
+      "latent_heat_vaporization": 6.09e6,
+      "latent_heat_unit": "J/kg"
+    },
+    "fluid": {
+      "kinematic_viscosity_liquid": 0.02,
+      "kinematic_viscosity_unit": "m²/s",
+      "kinematic_viscosity_comment": "LBM-compatible value (physical ~6e-7 too low for stability)",
+      "thermal_expansion_coefficient": 1.0e-4,
+      "thermal_expansion_unit": "1/K"
+    },
+    "surface": {
+      "surface_tension": 1.76,
+      "surface_tension_unit": "N/m",
+      "surface_tension_reference_temp": 1808.0,
+      "dsigma_dT": -4.0e-4,
+      "dsigma_dT_unit": "N/(m·K)",
+      "dsigma_dT_comment": "Negative for metals - Marangoni flow from hot to cold",
+      "emissivity": 0.4,
+      "emissivity_comment": "Radiation cooling coefficient"
+    },
+    "optical": {
+      "absorptivity_solid": 0.35,
+      "absorptivity_liquid": 0.40,
+      "absorptivity_comment": "Increases slightly when molten",
+      "penetration_depth": 2.0e-6,
+      "penetration_depth_unit": "m"
+    }
+  },
+
+  "time_parameters": {
+    "final_time": 3.0e-5,
+    "final_time_unit": "s",
+    "final_time_comment": "30 μs simulation - captures melt pool formation",
+    "dt": 5.0e-8,
+    "dt_unit": "s",
+    "dt_comment": "0.05 μs timestep for stability",
+    "total_steps": 600,
+    "output_interval": 10,
+    "output_interval_comment": "Output every 10 steps = 0.5 μs"
+  },
+
+  "physics_flags": {
+    "enable_thermal": true,
+    "enable_thermal_advection": true,
+    "enable_phase_change": true,
+    "enable_fluid": true,
+    "enable_vof": true,
+    "enable_vof_advection": true,
+    "enable_laser": true,
+    "enable_surface_tension": true,
+    "enable_marangoni": true,
+    "enable_buoyancy": true,
+    "enable_darcy": true,
+    "enable_recoil_pressure": true,
+    "enable_evaporative_cooling": true,
+    "enable_radiation_bc": true,
+    "enable_substrate_cooling": true,
+    "comment": "ALL LPBF physics enabled"
+  },
+
+  "advanced_parameters": {
+    "darcy_coefficient": 1.0e5,
+    "darcy_comment": "Mushy zone damping for phase change",
+    "recoil_pressure_coefficient": 0.54,
+    "recoil_pressure_comment": "P_recoil = 0.54 * P_vapor at interface",
+    "evaporation_coefficient": 0.82,
+    "evaporation_comment": "Hertz-Knudsen accommodation coefficient",
+    "substrate_heat_transfer_coefficient": 50000.0,
+    "substrate_h_unit": "W/(m²·K)",
+    "substrate_temperature": 300.0,
+    "substrate_temperature_unit": "K",
+    "ambient_temperature": 300.0,
+    "ambient_temperature_unit": "K"
+  },
+
+  "validation": {
+    "reference_simulations": {
+      "openfoam_laserbeamfoam": {
+        "description": "FVM-based LPBF solver from TU Graz",
+        "comparison_metrics": ["T_max", "melt_pool_depth", "melt_pool_width", "v_max"],
+        "expected_agreement": "Within 20-30% for calibrated parameters"
+      },
+      "khairallah_2016": {
+        "description": "ALE3D results for 316L stainless steel",
+        "material": "316L (not Fe, but similar physics)",
+        "key_results": "v_max ~ 0.5-2 m/s, T_max ~ 3000-3500 K for 200W"
+      }
+    },
+    "key_metrics": {
+      "peak_temperature": {
+        "measurement": "max(T) over all cells and time",
+        "expected_range": [2400, 3200],
+        "expected_range_unit": "K",
+        "expected_range_comment": "Below boiling point for conduction mode",
+        "tolerance": 0.3,
+        "tolerance_comment": "30% tolerance due to parameter uncertainty"
+      },
+      "melt_pool_depth": {
+        "measurement": "Maximum depth where T > T_melt",
+        "expected_range": [3.0e-5, 8.0e-5],
+        "expected_range_unit": "m",
+        "expected_range_comment": "30-80 μm typical for 50W",
+        "tolerance": 0.4
+      },
+      "melt_pool_width": {
+        "measurement": "Maximum width at surface where T > T_melt",
+        "expected_range": [8.0e-5, 1.5e-4],
+        "expected_range_unit": "m",
+        "expected_range_comment": "80-150 μm typical",
+        "tolerance": 0.3
+      },
+      "surface_velocity": {
+        "measurement": "max(|v|) at interface (VOF ~ 0.5)",
+        "expected_range": [0.1, 1.0],
+        "expected_range_unit": "m/s",
+        "expected_range_comment": "Marangoni-driven flow",
+        "tolerance": 0.5,
+        "critical": true,
+        "critical_comment": "Key validation metric for Marangoni physics"
+      },
+      "reynolds_number": {
+        "formula": "Re = ρ*v*L/μ where L ~ melt pool width",
+        "expected_range": [100, 2000],
+        "comment": "Transitional flow regime"
+      }
+    },
+    "success_criteria": {
+      "tier_1_must_pass": {
+        "numerical_stability": "No NaN, no divergence over 600 steps",
+        "mass_conservation": "< 1% mass change",
+        "energy_conservation": "< 5% energy error (accounting for laser input/radiation output)"
+      },
+      "tier_2_should_pass": {
+        "temperature_reasonable": "T_max in [2000, 4000] K",
+        "velocity_reasonable": "v_max in [0.01, 5] m/s",
+        "melt_pool_forms": "Clearly visible liquid region (VOF, T > T_melt)"
+      },
+      "tier_3_quantitative": {
+        "compare_with_openfoam": "Within 30% for all metrics",
+        "compare_with_literature": "Qualitative agreement (trends, force balance)"
+      }
+    }
+  },
+
+  "diagnostics": {
+    "real_time_monitoring": {
+      "peak_temperature": true,
+      "peak_velocity": true,
+      "total_liquid_volume": true,
+      "total_mass": true,
+      "total_energy": true,
+      "laser_energy_input": true,
+      "radiation_energy_output": true,
+      "substrate_energy_output": true
+    },
+    "field_outputs": {
+      "temperature": true,
+      "velocity": true,
+      "vof": true,
+      "liquid_fraction": true,
+      "pressure": true,
+      "marangoni_force": true,
+      "surface_tension_force": true,
+      "curvature": true
+    },
+    "melt_pool_analysis": {
+      "extract_geometry": true,
+      "calculate_depth": true,
+      "calculate_width": true,
+      "calculate_aspect_ratio": true,
+      "track_center_position": true
+    }
+  },
+
+  "output": {
+    "directory": "validation/case4_laser_melting",
+    "vtk_format": true,
+    "vtk_interval": 10,
+    "vtk_comment": "Every 10 steps = 0.5 μs for detailed evolution",
+    "csv_format": true,
+    "csv_diagnostics": [
+      "time",
+      "peak_temperature",
+      "peak_velocity",
+      "melt_pool_depth",
+      "melt_pool_width",
+      "total_mass",
+      "total_energy",
+      "laser_power_absorbed",
+      "radiation_power_lost",
+      "substrate_power_lost"
+    ],
+    "final_report": {
+      "generate": true,
+      "format": "markdown",
+      "include": [
+        "parameter_summary",
+        "key_metrics_table",
+        "comparison_with_references",
+        "energy_balance_analysis",
+        "convergence_plots"
+      ]
+    }
+  },
+
+  "notes": [
+    "This is Case 4 from the group meeting validation suite - THE FULL SYSTEM TEST",
+    "Integrates all physics: thermal, fluid, VOF, surface tension, Marangoni, phase change, laser",
+    "Most computationally expensive test: 2-5 hours expected runtime",
+    "Validation against OpenFOAM LaserbeamFoam (reference in /home/yzk/LaserbeamFoam/)",
+    "Success demonstrates entire framework is functional",
+    "Quantitative accuracy requires careful parameter calibration",
+    "This is the 'final boss' validation - pass this and you can publish"
+  ],
+
+  "known_challenges": {
+    "parameter_sensitivity": "Results sensitive to absorptivity, emissivity, viscosity",
+    "multiphysics_coupling": "Tight coupling between all modules - debugging is complex",
+    "computational_cost": "256k cells × 600 steps ≈ 150M cell-steps",
+    "validation_uncertainty": "Literature data has ±20-30% experimental uncertainty",
+    "force_balance": "Marangoni vs buoyancy vs surface tension - must get ratios right"
+  },
+
+  "debugging_guide": {
+    "if_temperature_too_high": [
+      "Check absorptivity (too high?)",
+      "Check emissivity (too low? should be 0.4-0.6)",
+      "Check substrate cooling (enabled?)",
+      "Check radiation BC (working?)"
+    ],
+    "if_velocity_too_low": [
+      "Check Marangoni coefficient (dσ/dT must be negative!)",
+      "Check temperature gradient (sufficient?)",
+      "Check force coupling (Marangoni force → fluid LBM)",
+      "Check viscosity (too high?)"
+    ],
+    "if_simulation_crashes": [
+      "Check CFL condition (reduce dt)",
+      "Check phase change stability (smooth latent heat?)",
+      "Check VOF advection (conservative?)",
+      "Check for NaN in laser source (intensity too high?)"
+    ],
+    "if_melt_pool_too_small": [
+      "Increase laser power",
+      "Increase absorptivity",
+      "Decrease thermal conductivity (less heat spreading)",
+      "Increase simulation time"
+    ]
+  },
+
+  "extensions": {
+    "scanning_laser": {
+      "description": "Move laser across domain at constant velocity",
+      "scan_speed": 0.5,
+      "scan_speed_unit": "m/s",
+      "scan_length": 1.0e-4,
+      "scan_length_unit": "m",
+      "comment": "Single-track scanning simulation"
+    },
+    "powder_bed_porosity": {
+      "description": "Explicit powder particles or effective medium",
+      "porosity": 0.4,
+      "effective_absorptivity": 0.6,
+      "comment": "Powder bed absorbs more than solid due to multiple reflections"
+    },
+    "multi_track": {
+      "description": "Multiple laser passes to build layer",
+      "track_spacing": 8.0e-5,
+      "track_spacing_unit": "m",
+      "num_tracks": 3,
+      "comment": "Future extension for process simulation"
+    },
+    "grid_refinement": {
+      "description": "Finer grid for convergence study",
+      "grids": [
+        {"label": "coarse", "nx": 20, "ny": 40, "nz": 40, "dx": 7.5e-6},
+        {"label": "medium", "nx": 40, "ny": 80, "nz": 80, "dx": 3.75e-6},
+        {"label": "fine", "nx": 80, "ny": 160, "nz": 160, "dx": 1.875e-6}
+      ],
+      "comment": "Fine grid requires >16GB GPU memory"
+    }
+  },
+
+  "implementation_notes": {
+    "lbm_schemes": {
+      "thermal": "D3Q7 with enthalpy method for phase change",
+      "fluid": "D3Q19 BGK with variable density and viscosity"
+    },
+    "coupling_sequence": {
+      "step_1": "Laser source → thermal field",
+      "step_2": "Thermal LBM collision + streaming",
+      "step_3": "Phase change (update liquid fraction, latent heat)",
+      "step_4": "Compute forces (Marangoni, buoyancy, surface tension, Darcy)",
+      "step_5": "Fluid LBM with forces (Guo scheme)",
+      "step_6": "VOF advection with fluid velocity",
+      "step_7": "Boundary conditions (radiation, substrate cooling, recoil pressure)",
+      "step_8": "Diagnostics and output"
+    },
+    "stability_critical": {
+      "thermal_cfl": "dt ≤ 0.5 * dx² / α_max",
+      "fluid_cfl": "dt ≤ dx / v_max",
+      "capillary_timestep": "dt ≤ sqrt(ρ*dx³/(2π*σ))",
+      "relaxation_parameters": "ω_thermal, ω_fluid must be in (0, 2)"
+    }
+  },
+
+  "comparison_with_references": {
+    "openfoam_50W_steel": {
+      "expected": {
+        "T_max": 2600,
+        "T_max_unit": "K",
+        "melt_depth": 5.0e-5,
+        "melt_depth_unit": "m",
+        "melt_width": 1.2e-4,
+        "melt_width_unit": "m",
+        "v_max": 0.3,
+        "v_max_unit": "m/s"
+      },
+      "source": "To be run from /home/yzk/LaserbeamFoam/ for direct comparison",
+      "status": "Baseline to establish"
+    },
+    "literature_scaling": {
+      "khairallah_316L_200W": {
+        "T_max": 3200,
+        "v_max": 1.5,
+        "power": 200,
+        "comment": "Higher power, expect proportionally larger values"
+      },
+      "scaling_to_50W": {
+        "power_ratio": 0.25,
+        "temperature_scaling": "T ~ P^0.5 → expect ~0.5× temperature rise",
+        "velocity_scaling": "v ~ ∇T ~ P^0.5 → expect ~0.5× velocity"
+      }
+    }
+  }
+}

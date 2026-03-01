@@ -668,9 +668,17 @@ TEST(MarangoniVelocityValidation, RealisticVelocityMagnitude) {
     // ===== Physical to Lattice Unit Conversion =====
     // FluidLBM works in lattice units where dt_lattice = 1, dx_lattice = 1
     // Forces must be converted from physical N/m³ to lattice units
-    // NOTE: FluidLBM kernel already divides by density internally (Guo forcing)
-    // Conversion: F_lattice = F_physical * (dt_phys² / dx_phys)
-    const float force_conversion_to_lattice = (dt * dt) / dx;
+    // CRITICAL FIX (2026-01-17): Include density in conversion
+    //
+    // Guo forcing scheme applies: u_corrected = u + 0.5 * F_lattice / ρ_lattice
+    // Where ρ_lattice ≈ 1.0, so F_lattice must be in units of ACCELERATION.
+    //
+    // Conversion from volumetric force [N/m³] to lattice acceleration:
+    //   F_lattice = (F_phys / ρ_phys) × (dt²/dx)
+    //
+    // Units: [N/m³] / [kg/m³] × [s²/m] = [m/s²] × [s²/m] = [dimensionless] ✓
+    //
+    const float force_conversion_to_lattice = (dt * dt / dx) / rho_liquid;
 
     std::cout << "Physical to lattice conversion:" << std::endl;
     std::cout << "  Force conversion factor: " << force_conversion_to_lattice << std::endl;

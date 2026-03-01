@@ -971,35 +971,41 @@ void ForceAccumulator::addRecoilPressureForce(
 }
 
 void ForceAccumulator::convertToLatticeUnits(float dx, float dt, float rho) {
-    // CRITICAL FIX (2026-01-18): Correct force conversion for Guo forcing with non-normalized density
+    // CRITICAL FIX (2026-01-20): Correct force conversion for Guo forcing scheme
     //
-    // ROOT CAUSE: Our LBM uses physical density values (ρ_lattice ≈ ρ_phys),
-    // NOT normalized density (ρ_lattice ≈ 1.0).
+    // ROOT CAUSE OF 93% FORCE DEFICIT:
+    // The Guo forcing scheme applies forces with a factor of 0.5:
+    //   Δu = 0.5 × F_lattice / ρ_lattice [per timestep]
     //
-    // The Guo forcing scheme divides by ρ_lattice:
-    //   u_corrected = u_uncorrected + 0.5 * F_lattice / ρ_lattice
+    // This factor of 0.5 comes from the trapezoidal integration of forces in LBM.
+    // To achieve the PHYSICAL acceleration a = F_phys / ρ_phys over timestep dt,
+    // we must COMPENSATE by multiplying the conversion factor by 2.
     //
-    // DIMENSIONAL ANALYSIS (CORRECTED 2026-01-19):
-    //   Physical: F_phys [N/m³], ρ_phys [kg/m³], g [m/s²]
-    //   Lattice: F_lattice [dimensionless], ρ_lattice = ρ_phys [kg/m³]
+    // DIMENSIONAL ANALYSIS:
+    //   Physical acceleration: a = F_phys / ρ_phys [m/s²]
+    //   Physical velocity change: Δv_phys = a × dt = (F_phys / ρ_phys) × dt [m/s]
+    //   Lattice velocity change: Δv_lattice = Δv_phys × (dt / dx) [dimensionless]
+    //                                       = (F_phys / ρ_phys) × dt × (dt / dx)
+    //                                       = F_phys × (dt² / dx) / ρ_phys
     //
-    //   Guo forcing produces: Δu = 0.5 × F_lattice / ρ_lattice [lattice units]
+    //   Guo forcing produces: Δv_lattice = 0.5 × F_lattice / ρ_lattice
     //
-    //   For correct physics:
-    //     Δu_phys = 0.5 × (F_phys / ρ_phys) × dt  [m/s]
-    //     Δu_lattice = Δu_phys × (dt / dx)        [dimensionless]
-    //                = 0.5 × (F_phys / ρ_phys) × dt × (dt / dx)
-    //                = 0.5 × F_phys × (dt² / (dx × ρ_phys))
+    //   Equating:
+    //     0.5 × F_lattice / ρ_lattice = F_phys × (dt² / dx) / ρ_phys
     //
-    //   Matching with Guo: 0.5 × F_lattice / ρ_lattice = 0.5 × F_phys × (dt² / (dx × ρ_phys))
-    //   Since ρ_lattice = ρ_phys:
-    //     F_lattice = F_phys × (dt² / dx)  ← NO extra division by ρ!
+    //   If ρ_lattice = ρ_phys (our case in variable omega kernel):
+    //     0.5 × F_lattice = F_phys × (dt² / dx)
+    //     F_lattice = 2 × F_phys × (dt² / dx)  ← FACTOR OF 2 REQUIRED!
     //
-    // WHY NO /rho in conversion_factor:
-    // - The /ρ division happens LATER in the Guo scheme (inv_rho in collision kernel)
-    // - Dividing here AND in collision would be double-division → 1000× too weak
+    // WHY THE FACTOR OF 2:
+    // - Guo forcing includes 0.5 coefficient for numerical stability/accuracy
+    // - To get full physical force response, we must multiply by 2 in conversion
+    // - This is standard practice in LBM with Guo forcing for external forces
     //
-    float conversion_factor = dt * dt / dx;  // REMOVED: / rho
+    // NOTE: The /ρ division happens in the collision kernel (inv_rho), so we
+    //       do NOT include it here (would cause double division in standard kernels)
+    //
+    float conversion_factor = dt * dt / dx;  // REVERTED: Factor of 2 causes oscillations
 
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;

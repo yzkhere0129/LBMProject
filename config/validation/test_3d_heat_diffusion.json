@@ -1,0 +1,140 @@
+{
+  "test_name": "Case 1: 3D Heat Diffusion",
+  "description": "Pure thermal diffusion validation against analytical Gaussian solution",
+  "reference": "Senior's Thesis Chapter 4, Section 4.2.1",
+  "test_category": "thermal_solver",
+  "difficulty": "basic",
+  "runtime_estimate": "2-5 minutes",
+
+  "domain": {
+    "description": "Cubic domain with uniform grid",
+    "dimensions": {
+      "x": 0.0095,
+      "y": 0.0095,
+      "z": 0.0095,
+      "unit": "m",
+      "comment": "9.5 mm cube"
+    },
+    "grid": {
+      "nx": 51,
+      "ny": 51,
+      "nz": 51,
+      "dx": 1.8627450980392157e-4,
+      "unit": "m",
+      "comment": "186 μm grid spacing, uniform"
+    }
+  },
+
+  "initial_conditions": {
+    "type": "gaussian_heat_pulse",
+    "parameters": {
+      "distribution": "3D Gaussian centered at domain center",
+      "total_energy": 1000.0,
+      "energy_unit": "J",
+      "sigma_0": 0.001,
+      "sigma_unit": "m",
+      "sigma_comment": "Initial Gaussian width = 1 mm",
+      "center": [0.00475, 0.00475, 0.00475],
+      "center_unit": "m",
+      "center_comment": "Domain center"
+    },
+    "analytical_form": "T(r,0) = T_w + A*exp(-r²/(2σ₀²)) where A chosen such that ∫∫∫ ρ·cp·(T-T_w) dV = Q"
+  },
+
+  "boundary_conditions": {
+    "type": "dirichlet",
+    "all_boundaries": {
+      "temperature": 273.13,
+      "temperature_unit": "K",
+      "comment": "Fixed wall temperature (slightly above freezing)"
+    }
+  },
+
+  "material_properties": {
+    "name": "Water-like (validation material)",
+    "thermal": {
+      "density": 1000.0,
+      "density_unit": "kg/m³",
+      "specific_heat": 4186.0,
+      "specific_heat_unit": "J/(kg·K)",
+      "thermal_conductivity": 1.0,
+      "thermal_conductivity_unit": "W/(m·K)",
+      "thermal_diffusivity": 2.39e-7,
+      "thermal_diffusivity_unit": "m²/s",
+      "diffusivity_comment": "α = k/(ρ·c_p)"
+    }
+  },
+
+  "time_parameters": {
+    "final_time": 0.1,
+    "final_time_unit": "s",
+    "dt": null,
+    "dt_comment": "Auto-computed from CFL condition: dt = 0.02 * dx² / α",
+    "cfl_thermal": 0.02,
+    "output_times": [0.0, 0.02, 0.04, 0.06, 0.08, 0.1],
+    "output_times_unit": "s",
+    "num_outputs": 6
+  },
+
+  "physics_flags": {
+    "enable_thermal": true,
+    "enable_thermal_advection": false,
+    "enable_fluid": false,
+    "enable_vof": false,
+    "enable_phase_change": false,
+    "enable_laser": false,
+    "enable_surface_tension": false,
+    "enable_marangoni": false,
+    "enable_buoyancy": false,
+    "enable_radiation": false,
+    "comment": "Pure conduction only"
+  },
+
+  "validation": {
+    "analytical_solution": {
+      "type": "3D_gaussian_diffusion",
+      "formula": "T(r,t) = T_w + A(t)·exp(-r²/(2σ(t)²))",
+      "sigma_evolution": "σ(t)² = σ₀² + 2αt",
+      "amplitude_decay": "A(t) = A_0·(σ₀/σ(t))³"
+    },
+    "success_criteria": {
+      "L2_error": {
+        "threshold": 0.05,
+        "unit": "dimensionless",
+        "comment": "< 5% L2 error at all output times"
+      },
+      "peak_temperature": {
+        "relative_error": 0.05,
+        "comment": "Peak T within 5% of analytical"
+      }
+    },
+    "expected_behavior": {
+      "peak_temperature_initial": "~273.6 K",
+      "peak_temperature_final": "~273.15 K (approaches T_wall)",
+      "diffusion_length": "~sqrt(4*α*t) ≈ 1 mm at t=0.1s"
+    }
+  },
+
+  "output": {
+    "directory": "validation/case1_3d_heat_diffusion",
+    "vtk_format": true,
+    "csv_format": true,
+    "save_fields": ["temperature", "temperature_analytical", "error"],
+    "save_diagnostics": ["L2_error", "peak_temperature", "center_temperature"]
+  },
+
+  "notes": [
+    "This is Case 1 from the group meeting validation suite",
+    "Tests pure thermal solver without any coupling",
+    "Must use exact parameters from senior's thesis for reproducibility",
+    "Analytical solution available for direct comparison",
+    "Expected runtime: 2-5 minutes on RTX 3050"
+  ],
+
+  "implementation_notes": {
+    "lbm_scheme": "D3Q7 thermal LBM",
+    "collision_operator": "BGK",
+    "boundary_scheme": "Half-way bounce-back for Dirichlet BC",
+    "initial_condition_implementation": "Initialize temperature field, then run relaxation for smooth start"
+  }
+}

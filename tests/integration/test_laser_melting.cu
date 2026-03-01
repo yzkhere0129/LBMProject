@@ -27,6 +27,7 @@
 #include "io/vtk_writer.h"
 
 using namespace lbm;
+using namespace lbm::physics;
 
 class LaserMeltingTest : public ::testing::Test {
 protected:

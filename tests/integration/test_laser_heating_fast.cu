@@ -34,6 +34,8 @@
 #include "physics/laser_source.h"
 #include "physics/material_properties.h"
 
+using namespace lbm::physics;
+
 // Kernel to compute laser heat source
 __global__ void computeLaserHeatSourceKernel(
     float* heat_source,

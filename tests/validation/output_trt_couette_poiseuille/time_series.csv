@@ -1,0 +1,6 @@
+# TRT Couette-Poiseuille Time Evolution
+# Columns: time, L2_error_percent, max_change
+time,L2_error_percent,max_change
+0.000000e+00,28.6975,0.0000e+00
+5.000000e+02,2.9761,9.3739e-04
+1.000000e+03,1.1578,1.9324e-03

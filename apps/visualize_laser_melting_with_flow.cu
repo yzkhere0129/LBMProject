@@ -43,6 +43,7 @@
 #include "core/lattice_d3q19.h"
 
 using namespace lbm;
+using namespace lbm::physics;
 
 /**
  * @brief CUDA kernel to scale force arrays for unit conversion

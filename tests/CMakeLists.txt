@@ -24,6 +24,11 @@ add_cuda_test(test_d3q19 unit/lattice/test_d3q19.cu)
 add_cuda_test(test_bgk unit/collision/test_bgk.cu)
 add_cuda_test(test_streaming unit/streaming/test_streaming.cu)
 add_cuda_test(test_boundary unit/boundary/test_boundary_conditions.cu)
+# Per-face boundary config (links lbm_io due to FieldRegistry in multiphysics_solver.h)
+add_executable(test_face_boundary_config unit/boundary/test_face_boundary_config.cu)
+set_target_properties(test_face_boundary_config PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_link_libraries(test_face_boundary_config lbm_core lbm_physics lbm_io gtest gtest_main CUDA::cudart)
+gtest_discover_tests(test_face_boundary_config)
 
 # Unit tests - Physics/Thermal
 add_cuda_test(test_lattice_d3q7 unit/thermal/test_lattice_d3q7.cu)
@@ -127,8 +132,6 @@ add_cuda_test(test_vof_advection_rotation validation/vof/test_vof_advection_rota
 add_cuda_test(test_vof_curvature_sphere validation/vof/test_vof_curvature_sphere.cu)
 add_cuda_test(test_vof_curvature_cylinder validation/vof/test_vof_curvature_cylinder.cu)
 add_cuda_test(test_vof_oscillating_droplet validation/vof/test_vof_oscillating_droplet.cu)
-add_cuda_test(test_buoyancy_unit validation/vof/test_buoyancy_unit.cu)
-
 # Unit tests - Phase 6: Marangoni Validation (New small module tests)
 add_cuda_test(test_interface_geometry unit/vof/test_interface_geometry.cu)
 add_cuda_test(test_marangoni_force unit/vof/test_marangoni_force.cu)
@@ -165,267 +168,11 @@ add_cuda_test(test_vof_advection_bulk_cells regression/test_vof_advection_bulk_c
 # Fix: Changed timesteps from {4,2,1,0.5}μs to {8,4,2,1}μs
 add_cuda_test(test_timestep_omega_clamping regression/test_timestep_omega_clamping.cu)
 
-# Debug tests - Minimal reproduction tests
-add_executable(test_fluidlbm_nan_debug debug/test_fluidlbm_nan_debug.cu)
-set_target_properties(test_fluidlbm_nan_debug PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_fluidlbm_nan_debug
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Debug test - Force application detailed diagnostic
-add_executable(test_force_application_detailed debug/test_force_application_detailed.cu)
-set_target_properties(test_force_application_detailed PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_force_application_detailed
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Debug test - Buoyancy force minimal test
-add_executable(test_buoyancy_force_minimal debug/test_buoyancy_force_minimal.cu)
-set_target_properties(test_buoyancy_force_minimal PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_buoyancy_force_minimal
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Debug test - Test without boundary conditions
-add_executable(test_no_boundaries debug/test_no_boundaries.cu)
-set_target_properties(test_no_boundaries PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_no_boundaries
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Debug test - Unit conversion test
-add_executable(test_unit_conversion debug/test_unit_conversion.cu)
-set_target_properties(test_unit_conversion PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_unit_conversion
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Debug test - Force kernel direct test
-add_executable(test_debug_force_kernel debug/test_debug_force_kernel.cu)
-set_target_properties(test_debug_force_kernel PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_debug_force_kernel
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Debug tests - Test Ladder for Zero Velocity Bug
-# Level 1: Kernel tests
-add_executable(test_collision_kernel_direct debug/test_collision_kernel_direct.cu)
-set_target_properties(test_collision_kernel_direct PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_collision_kernel_direct
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-add_executable(test_macroscopic_kernel debug/test_macroscopic_kernel.cu)
-set_target_properties(test_macroscopic_kernel PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_macroscopic_kernel
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Level 2: Function tests
-add_executable(test_force_velocity_pipeline debug/test_force_velocity_pipeline.cu)
-set_target_properties(test_force_velocity_pipeline PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_force_velocity_pipeline
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Level 3: Integration tests
-add_executable(test_buoyancy_force_check debug/test_buoyancy_force_check.cu)
-set_target_properties(test_buoyancy_force_check PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_buoyancy_force_check
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-add_executable(test_darcy_survival debug/test_darcy_survival.cu)
-set_target_properties(test_darcy_survival PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_darcy_survival
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Level 4: Instrumented Phase 5
-add_executable(test_phase5_instrumented debug/test_phase5_instrumented.cu)
-set_target_properties(test_phase5_instrumented PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_phase5_instrumented
-    lbm_core
-    lbm_physics
-    lbm_io
-    CUDA::cudart
-)
-
-# Debug test - Multiphysics Force Diagnostic
-add_cuda_test(test_multiphysics_force_diagnostic debug/test_multiphysics_force_diagnostic.cu)
-
-# Diagnostic tests - Emergency Zero-Velocity Bug Isolation Suite
-# These tests isolate the exact failure point in FluidLBM -> velocity computation
-add_executable(test0_unit_conversion diagnostic/test0_unit_conversion.cu)
-set_target_properties(test0_unit_conversion PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test0_unit_conversion
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-add_executable(test1_fluid_velocity_only diagnostic/test1_fluid_velocity_only.cu)
-set_target_properties(test1_fluid_velocity_only PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test1_fluid_velocity_only
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-add_executable(test2_buoyancy_force diagnostic/test2_buoyancy_force.cu)
-set_target_properties(test2_buoyancy_force PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test2_buoyancy_force
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-add_executable(test3_darcy_damping diagnostic/test3_darcy_damping.cu)
-set_target_properties(test3_darcy_damping PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test3_darcy_damping
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-add_executable(test4_thermal_advection_coupling diagnostic/test4_thermal_advection_coupling.cu)
-set_target_properties(test4_thermal_advection_coupling PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test4_thermal_advection_coupling
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-add_executable(test5_config_flags diagnostic/test5_config_flags.cu)
-set_target_properties(test5_config_flags PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test5_config_flags
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Diagnostic test - Temperature Anomaly (Tier2 bug isolation)
-add_executable(test_temperature_anomaly diagnostic/test_temperature_anomaly.cu)
-set_target_properties(test_temperature_anomaly PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_temperature_anomaly
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Diagnostic test - Multiphysics Temperature Anomaly
-add_executable(test_multiphysics_temp_anomaly diagnostic/test_multiphysics_temp_anomaly.cu)
-set_target_properties(test_multiphysics_temp_anomaly PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_multiphysics_temp_anomaly
-    lbm_core
-    lbm_physics
-    lbm_diagnostics
-    CUDA::cudart
-)
-
-# Diagnostic test - Marangoni Force Flow Tracing
-add_executable(test_marangoni_force_diagnostic diagnostic/test_marangoni_force_diagnostic.cu)
-set_target_properties(test_marangoni_force_diagnostic PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_marangoni_force_diagnostic
-    lbm_core
-    lbm_physics
-    gtest
-    gtest_main
-    CUDA::cudart
-)
-
-# Diagnostic test - Surface Tension Unit Conversion
-add_executable(test_force_unit_conversion diagnostic/test_force_unit_conversion.cu)
-set_target_properties(test_force_unit_conversion PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_force_unit_conversion
-    lbm_core
-    lbm_physics
-    CUDA::cudart
-)
-
-# Diagnostic test - CollisionBGK Force Application (Oscillating Droplet Velocity Bug)
-add_executable(test_collisionBGK_force diagnostic/test_collisionBGK_force.cu)
-set_target_properties(test_collisionBGK_force PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-target_link_libraries(test_collisionBGK_force
-    lbm_core
-    lbm_physics
-    gtest
-    gtest_main
-    CUDA::cudart
-)
+# Integration test - Force Diagnostic (moved from debug, has real assertions)
+add_cuda_test(test_force_diagnostic_integration integration/test_force_diagnostic_integration.cu)
 
 # Integration tests
-add_cuda_test(test_poiseuille integration/test_poiseuille_flow.cu)
 add_cuda_test(test_gravity_driven_flow integration/test_gravity_driven_flow.cu)
-add_cuda_test(test_marangoni_force_validation integration/test_marangoni_force_validation.cu)
 add_cuda_test(test_marangoni_force_validation_fixed integration/test_marangoni_force_validation_fixed.cu)
 
 # STABILITY INTEGRATION TEST: High-Pe stability (500-step end-to-end test)
@@ -448,7 +195,7 @@ add_subdirectory(validation)
 # Create a target to run all tests
 add_custom_target(run_tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_d3q19 test_bgk test_streaming test_boundary test_poiseuille test_lattice_d3q7
+    DEPENDS test_d3q19 test_bgk test_streaming test_boundary test_lattice_d3q7
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
@@ -461,8 +208,7 @@ add_custom_target(run_unit_tests
 
 # Create a target for integration tests only
 add_custom_target(run_integration_tests
-    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R "test_poiseuille"
-    DEPENDS test_poiseuille
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R "integration"
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 

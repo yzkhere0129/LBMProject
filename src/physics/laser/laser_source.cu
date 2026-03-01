@@ -9,6 +9,9 @@
 #include <cub/cub.cuh>
 #include "utils/cuda_check.h"
 
+namespace lbm {
+namespace physics {
+
 /**
  * @brief Compute laser heat source distribution on GPU
  *
@@ -341,3 +344,6 @@ __global__ void addHeatSourceAdaptiveKernel(
     int f0_idx = idx * 7;
     g_distributions[f0_idx] += delta_f0;
 }
+
+} // namespace physics
+} // namespace lbm

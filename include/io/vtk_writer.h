@@ -8,7 +8,9 @@
 
 #pragma once
 #include <string>
+#include <vector>
 #include <fstream>
+#include "io/field_registry.h"
 
 namespace lbm {
 namespace io {
@@ -179,6 +181,23 @@ public:
         float dx, float dy, float dz,
         const std::string& field_name = "Velocity"
     );
+
+    /**
+     * @brief Write selected fields to VTK file using field registry
+     *
+     * Copies each requested field from device to host and writes a single
+     * VTK structured points file containing all selected scalars and vectors.
+     *
+     * @param filename Output filename (without .vtk extension)
+     * @param registry Field registry with registered fields
+     * @param field_names Names of fields to write (empty = write all)
+     * @param nx,ny,nz Grid dimensions
+     * @param dx Grid spacing [m] (uniform in all directions)
+     */
+    static void writeFields(const std::string& filename,
+                            const FieldRegistry& registry,
+                            const std::vector<std::string>& field_names,
+                            int nx, int ny, int nz, float dx);
 };
 
 } // namespace io

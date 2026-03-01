@@ -367,6 +367,12 @@ public:
     static MaterialProperties getAlSi10Mg();
 
     /**
+     * @brief Get pure Iron/Steel properties
+     * @return MaterialProperties structure for Fe (pure iron)
+     */
+    static MaterialProperties getSteel();
+
+    /**
      * @brief Copy material properties to device constant memory
      * @param mat Material properties to copy
      */
@@ -374,7 +380,7 @@ public:
 
     /**
      * @brief Get material by name
-     * @param name Material name (Ti6Al4V, 316L, IN718, AlSi10Mg)
+     * @param name Material name (Ti6Al4V, 316L, IN718, AlSi10Mg, Steel)
      * @return MaterialProperties structure
      * @throws std::runtime_error if material not found
      */
