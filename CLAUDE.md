@@ -16,6 +16,14 @@ Write code that is **concise, elegant, efficient, and in good taste**. Avoid ove
 - Choose the boring, proven solution
 - Delete code whenever possible
 
+## Modular Architecture (积木式开发)
+
+- **独立插拔**: 每个物理模块可独立实例化、测试、替换，不依赖其他模块
+- **经典 benchmark 验收**: 每个模块以对应的经典解析/benchmark 问题通过作为完成标准
+- **最小接口**: 模块间仅通过标量/向量场指针耦合，不暴露内部数据结构
+- **自下而上验证**: L1(格子) → L3(求解器) → L4(耦合)，低层通过后才测高层
+- **合成输入测试**: 用解析构造的场(速度/温度)驱动模块，不依赖其他求解器输出
+
 ## Quality Standards
 
 - **High performance** - Consider algorithmic complexity and resource usage
