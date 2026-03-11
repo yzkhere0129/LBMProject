@@ -343,15 +343,15 @@ TEST_F(MaterialPropertiesTest, EffectiveHeatCapacity) {
     MaterialProperties ti64 = MaterialDatabase::getTi6Al4V();
 
     // Outside mushy zone - should return normal cp
-    float cp_solid = ti64.getEffectiveHeatCapacity(300.0f);
+    float cp_solid = ti64.getApparentHeatCapacity(300.0f);
     EXPECT_FLOAT_EQ(cp_solid, ti64.cp_solid);
 
-    float cp_liquid = ti64.getEffectiveHeatCapacity(2200.0f);
+    float cp_liquid = ti64.getApparentHeatCapacity(2200.0f);
     EXPECT_FLOAT_EQ(cp_liquid, ti64.cp_liquid);
 
     // In mushy zone - should include latent heat contribution
     float T_mushy = (ti64.T_solidus + ti64.T_liquidus) / 2.0f;
-    float cp_eff = ti64.getEffectiveHeatCapacity(T_mushy, 1.0f);
+    float cp_eff = ti64.getApparentHeatCapacity(T_mushy);
     float cp_base = ti64.getSpecificHeat(T_mushy);
 
     // Effective cp should be higher due to latent heat

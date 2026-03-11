@@ -172,6 +172,14 @@ struct FaceBoundaryConfig {
 };
 
 /**
+ * @brief Configuration for phase change solver (Newton/bisection iteration)
+ */
+struct PhaseChangeConfig {
+    float newton_tolerance = 0.01f;  ///< Newton solver temperature tolerance [K]
+    int max_iterations = 50;         ///< Max Newton+bisection iterations
+};
+
+/**
  * @brief Configuration for MultiphysicsSolver
  *
  * Parameters are grouped into named sub-structs for maintainability.
@@ -288,6 +296,7 @@ struct MultiphysicsConfig {
     BuoyancyConfig buoyancy;
     LaserConfig    laser;
     MaterialProperties material;
+    PhaseChangeConfig phase_change;
     FaceBoundaryConfig boundaries;  ///< Per-face boundary conditions (preferred)
     int boundary_type = 0; ///< Deprecated: 0=periodic, 1=Dirichlet, 2=adiabatic (use boundaries instead)
 
@@ -519,6 +528,9 @@ public:
      * @brief Destructor
      */
     ~MultiphysicsSolver();
+
+    /// Validate configuration and print warnings for non-fatal issues
+    void validate() const;
 
     /**
      * @brief Initialize all physics modules

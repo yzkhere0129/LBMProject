@@ -1,6 +1,4 @@
-# Couette-Poiseuille Time Evolution
-# Columns: time[s], L2_error[%], max_change[m/s]
+# Couette-Poiseuille Time Evolution (BGK)
 time,L2_error_percent,max_change
-0.000000e+00,27.9849,0.0000e+00
-5.000000e+02,5.9855,1.3743e-03
-1.000000e+03,3.3059,3.6604e-03
+2.000000e+03,3.3905,4.5430e-04
+4.000000e+03,1.4748,2.0878e-03

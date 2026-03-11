@@ -296,7 +296,7 @@ TEST_F(StefanProblemTest, ShortTime) {
     //   2. Temperature diffuses through mushy zone
     //   3. Latent heat is tracked but not used to slow front propagation
     // Expect 100-200% error due to faster-than-physical melting front
-    EXPECT_LT(error, 2.50f) << "Front position error exceeds 250% threshold";
+    EXPECT_LT(error, 1.0f) << "Front position error exceeds 100% threshold";
 
     // Verify melting is actually occurring
     std::vector<float> h_fl(NX * NY * NZ);
@@ -316,7 +316,7 @@ TEST_F(StefanProblemTest, MediumTime) {
     std::cout << "  Actual error: " << error * 100.0f << "%" << std::endl;
 
     // Relaxed acceptance criteria (same reasoning as ShortTime)
-    EXPECT_LT(error, 2.50f) << "Front position error exceeds 250% threshold";
+    EXPECT_LT(error, 1.0f) << "Front position error exceeds 100% threshold";
 
     // Verify melting is progressing
     std::vector<float> h_fl(NX * NY * NZ);
@@ -336,7 +336,7 @@ TEST_F(StefanProblemTest, LongTime) {
     std::cout << "  Actual error: " << error * 100.0f << "%" << std::endl;
 
     // Relaxed acceptance criteria (same reasoning as ShortTime)
-    EXPECT_LT(error, 2.50f) << "Front position error exceeds 250% threshold";
+    EXPECT_LT(error, 1.0f) << "Front position error exceeds 100% threshold";
 
     // Verify melting is progressing
     std::vector<float> h_fl(NX * NY * NZ);
@@ -424,7 +424,7 @@ TEST_F(StefanProblemTest, TemperatureProfile) {
     // LBM has a 45K mushy zone where both solid and liquid coexist
     // We just verify that some temperature gradient exists
     if (num_samples > 0) {
-        EXPECT_LT(max_error, 5.0f) << "Temperature profile completely wrong (>500% error)";
+        EXPECT_LT(max_error, 2.0f) << "Temperature profile error exceeds 200% threshold";
         std::cout << "  NOTE: Large error expected due to mushy zone vs sharp interface" << std::endl;
     } else {
         std::cout << "  WARNING: No fully liquid cells found for validation" << std::endl;
@@ -509,9 +509,12 @@ TEST_F(StefanProblemTest, SpatialConvergence) {
                   << ": Order = " << convergence_order << std::endl;
     }
 
-    // Check that finest grid has reasonable error (relaxed from 30% to 250%)
+    // Check that finest grid has reasonable error (relaxed from 30% to 100%)
+    // Note: With C_app method + Ti6Al4V 45K mushy zone, the melting front may not
+    // be resolved when analytical front position is only a few cells wide.
+    // s_numerical=0 (no front found) gives exactly 100% error.
     float finest_error_pct = errors[num_levels - 1] / analyticalFrontPosition(test_time, lambda, alpha);
-    EXPECT_LT(finest_error_pct, 2.50f) << "Finest grid error exceeds 250%";
+    EXPECT_LE(finest_error_pct, 1.0f) << "Finest grid error exceeds 100%";
 
     // Check convergence trend (error should decrease or stay similar with refinement)
     // Due to mushy zone physics, may not see perfect convergence

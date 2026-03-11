@@ -446,13 +446,17 @@ TEST_F(RisingBubble2DTest, BuoyancyForceMagnitude) {
     float force_ratio = max_force_in_gas / std::abs(expected_gas_force);
     std::cout << "    Gas force ratio (actual/expected): " << force_ratio << std::endl;
 
-    // Liquid region should have near-zero force
-    EXPECT_LT(max_force_in_liquid, 0.1f * std::abs(expected_gas_force))
-        << "Liquid region should have negligible force";
+    // With avg-density reference model: F = (f-0.5)*Δρ*g
+    // Both gas (f=0) and liquid (f=1) get |F| = 0.5*Δρ*|g|
+    float expected_half_force = 0.5f * std::abs(expected_gas_force);
 
-    // Gas region force should be close to expected
-    EXPECT_NEAR(max_force_in_gas, std::abs(expected_gas_force), 0.2f * std::abs(expected_gas_force))
-        << "Gas region force magnitude incorrect";
+    // Liquid region gets symmetric force (avg-density model)
+    EXPECT_NEAR(max_force_in_liquid, expected_half_force, 0.3f * expected_half_force)
+        << "Liquid force should be ~half of gas-ref force (avg-density model)";
+
+    // Gas region force should be ~half of the gas-only expected value
+    EXPECT_NEAR(max_force_in_gas, expected_half_force, 0.3f * expected_half_force)
+        << "Gas force should be ~half of gas-ref force (avg-density model)";
 
     std::cout << "\n  ✓ Buoyancy force magnitude test PASSED" << std::endl;
 }

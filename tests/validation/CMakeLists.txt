@@ -1685,3 +1685,40 @@ set_tests_properties(TVDVOFAdvection PROPERTIES
     TIMEOUT 300
     LABELS "validation;vof;tvd;advection"
 )
+
+# ========================================
+# COMPREHENSIVE PHASE CHANGE VALIDATION
+# ========================================
+
+add_executable(test_phase_change_comprehensive
+    test_phase_change_comprehensive.cu
+)
+
+set_target_properties(test_phase_change_comprehensive PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "86"
+)
+
+target_include_directories(test_phase_change_comprehensive PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_phase_change_comprehensive
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME PhaseChangeComprehensive
+    COMMAND test_phase_change_comprehensive
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(PhaseChangeComprehensive PROPERTIES
+    TIMEOUT 300
+    LABELS "validation;phase_change;enthalpy;newton;energy;comprehensive;critical"
+)

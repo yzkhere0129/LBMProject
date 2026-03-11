@@ -56,23 +56,23 @@ TEST_F(NewtonBisectionTest, SolidPhaseConvergence) {
     solver_->initializeFromTemperature(d_temperature_);
 
     // Copy enthalpy to our buffer
-    solver_->copyEnthalpyToHost(&T_test);  // Reusing variable
-    cudaMemcpy(d_enthalpy_, &T_test, sizeof(float), cudaMemcpyHostToDevice);
+    float H_test;
+    solver_->copyEnthalpyToHost(&H_test);
+    cudaMemcpy(d_enthalpy_, &H_test, sizeof(float), cudaMemcpyHostToDevice);
 
     // Reset temperature to a bad initial guess
     float T_bad_guess = material_.T_liquidus + 100.0f;
     cudaMemcpy(d_temperature_, &T_bad_guess, sizeof(float), cudaMemcpyHostToDevice);
 
     // Solve for temperature from enthalpy
-    int iterations = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
+    int converged_cells = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
 
     // Check result
     float T_result;
     cudaMemcpy(&T_result, d_temperature_, sizeof(float), cudaMemcpyDeviceToHost);
 
     EXPECT_NEAR(T_result, T_test, 1.0f) << "Solid phase should converge accurately";
-    EXPECT_GT(iterations, 0) << "Should require at least one iteration";
-    EXPECT_LT(iterations, 50) << "Should converge before max iterations";
+    EXPECT_EQ(converged_cells, 1) << "Single cell should converge";
 }
 
 TEST_F(NewtonBisectionTest, LiquidPhaseConvergence) {
@@ -90,13 +90,13 @@ TEST_F(NewtonBisectionTest, LiquidPhaseConvergence) {
     float T_bad_guess = material_.T_solidus - 100.0f;
     cudaMemcpy(d_temperature_, &T_bad_guess, sizeof(float), cudaMemcpyHostToDevice);
 
-    int iterations = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
+    int converged_cells = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
 
     float T_result;
     cudaMemcpy(&T_result, d_temperature_, sizeof(float), cudaMemcpyDeviceToHost);
 
     EXPECT_NEAR(T_result, T_test, 1.0f) << "Liquid phase should converge accurately";
-    EXPECT_LT(iterations, 50) << "Should converge before max iterations";
+    EXPECT_EQ(converged_cells, 1) << "Single cell should converge";
 }
 
 TEST_F(NewtonBisectionTest, MushyZoneConvergence) {
@@ -114,7 +114,7 @@ TEST_F(NewtonBisectionTest, MushyZoneConvergence) {
     float T_bad_guess = material_.T_solidus - 200.0f;
     cudaMemcpy(d_temperature_, &T_bad_guess, sizeof(float), cudaMemcpyHostToDevice);
 
-    int iterations = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
+    int converged_cells = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
 
     float T_result;
     cudaMemcpy(&T_result, d_temperature_, sizeof(float), cudaMemcpyDeviceToHost);
@@ -122,6 +122,7 @@ TEST_F(NewtonBisectionTest, MushyZoneConvergence) {
     // CRITICAL: This should converge even with bad initial guess
     // If Newton-Raphson fails, bisection fallback should work
     EXPECT_NEAR(T_result, T_test, 2.0f) << "Mushy zone should converge with bisection fallback";
+    EXPECT_EQ(converged_cells, 1) << "Single cell should converge";
     EXPECT_FALSE(std::isnan(T_result)) << "Result should not be NaN";
     EXPECT_FALSE(std::isinf(T_result)) << "Result should not be Inf";
 }
@@ -141,13 +142,14 @@ TEST_F(NewtonBisectionTest, ExtremeCaseRobustness) {
     float T_bad_guess = 100.0f;  // Very cold
     cudaMemcpy(d_temperature_, &T_bad_guess, sizeof(float), cudaMemcpyHostToDevice);
 
-    int iterations = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
+    int converged_cells = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
 
     float T_result;
     cudaMemcpy(&T_result, d_temperature_, sizeof(float), cudaMemcpyDeviceToHost);
 
     // Should converge to reasonable value (within 10K is acceptable for extreme case)
     EXPECT_NEAR(T_result, T_test, 10.0f) << "Extreme case should converge";
+    EXPECT_EQ(converged_cells, 1) << "Single cell should converge";
     EXPECT_FALSE(std::isnan(T_result)) << "Should not return NaN";
 }
 
@@ -178,15 +180,15 @@ TEST_F(NewtonBisectionTest, MultiplePhaseTransitions) {
         cudaMemcpy(d_temperature_, &T_prev, sizeof(float), cudaMemcpyHostToDevice);
 
         // Solve
-        int iterations = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
+        int converged_cells = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
 
         float T_result;
         cudaMemcpy(&T_result, d_temperature_, sizeof(float), cudaMemcpyDeviceToHost);
 
         EXPECT_NEAR(T_result, T_test, 2.0f)
             << "Phase transition " << i << " should converge";
-        EXPECT_LT(iterations, 50)
-            << "Phase transition " << i << " should converge before max iterations";
+        EXPECT_EQ(converged_cells, 1)
+            << "Single cell should converge at phase transition " << i;
     }
 }
 
@@ -204,13 +206,15 @@ TEST_F(NewtonBisectionTest, NumericalStability) {
         float T_guess = T_test + 5.0f;
         cudaMemcpy(d_temperature_, &T_guess, sizeof(float), cudaMemcpyHostToDevice);
 
-        solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
+        int converged_cells = solver_->updateTemperatureFromEnthalpy(d_temperature_, 1e-6f, 50);
 
         float T_result;
         cudaMemcpy(&T_result, d_temperature_, sizeof(float), cudaMemcpyDeviceToHost);
 
         EXPECT_NEAR(T_result, T_test, 0.5f)
             << "Small perturbation i=" << i << " should be stable";
+        EXPECT_EQ(converged_cells, 1)
+            << "Single cell should converge at perturbation i=" << i;
         EXPECT_FALSE(std::isnan(T_result)) << "Should not produce NaN";
     }
 }

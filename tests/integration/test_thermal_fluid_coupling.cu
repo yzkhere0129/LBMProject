@@ -264,6 +264,11 @@ TEST_F(ThermalFluidCouplingTest, NaturalConvectionInCavity) {
         thermal.streaming();
         thermal.computeTemperature();
 
+        // Reset forces each step (computeBuoyancyForce uses +=)
+        cudaMemset(d_fx, 0, num_cells_ * sizeof(float));
+        cudaMemset(d_fy, 0, num_cells_ * sizeof(float));
+        cudaMemset(d_fz, 0, num_cells_ * sizeof(float));
+
         // Compute buoyancy force from temperature field
         // Scale down force for numerical stability
         float force_scale = 1e-3f;

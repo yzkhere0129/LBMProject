@@ -12,11 +12,11 @@
 namespace lbm {
 namespace physics {
 
-// Device constant memory for D3Q7 lattice
-__constant__ int tex[7];
-__constant__ int tey[7];
-__constant__ int tez[7];
-__constant__ float tw[7];
+// Device memory for D3Q7 lattice (using __device__ for RDC compatibility)
+__device__ int tex[7];
+__device__ int tey[7];
+__device__ int tez[7];
+__device__ float tw[7];
 
 // Static member initialization
 bool D3Q7::initialized = false;
@@ -43,38 +43,39 @@ const float D3Q7::h_tw[Q] = {
     1.0f/8.0f      // -z (q=6)
 };
 
+// Helper: upload data to a __device__ symbol (RDC-compatible)
+// Must be a template so the symbol identity is preserved for cudaGetSymbolAddress
+template<typename T>
+static void uploadToDeviceSymbol(T& symbol, const void* src, size_t bytes, const char* name) {
+    void* d_ptr = nullptr;
+    cudaError_t err = cudaGetSymbolAddress(&d_ptr, symbol);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string("Failed to get address of ") + name + ": " +
+                               cudaGetErrorString(err));
+    }
+    err = cudaMemcpy(d_ptr, src, bytes, cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string("Failed to copy ") + name + " to device: " +
+                               cudaGetErrorString(err));
+    }
+}
+
 void D3Q7::initializeDevice() {
-    cudaError_t err;
+    // Copy lattice directions to device memory (using __device__ for RDC compatibility)
+    uploadToDeviceSymbol(tex, h_tex, Q * sizeof(int), "tex");
+    uploadToDeviceSymbol(tey, h_tey, Q * sizeof(int), "tey");
+    uploadToDeviceSymbol(tez, h_tez, Q * sizeof(int), "tez");
+    uploadToDeviceSymbol(tw, h_tw, Q * sizeof(float), "tw");
 
-    // Copy lattice directions to constant memory
-    err = cudaMemcpyToSymbol(tex, h_tex, Q * sizeof(int));
-    if (err != cudaSuccess) {
-        throw std::runtime_error("Failed to copy tex to device: " +
-                               std::string(cudaGetErrorString(err)));
-    }
-
-    err = cudaMemcpyToSymbol(tey, h_tey, Q * sizeof(int));
-    if (err != cudaSuccess) {
-        throw std::runtime_error("Failed to copy tey to device: " +
-                               std::string(cudaGetErrorString(err)));
-    }
-
-    err = cudaMemcpyToSymbol(tez, h_tez, Q * sizeof(int));
-    if (err != cudaSuccess) {
-        throw std::runtime_error("Failed to copy tez to device: " +
-                               std::string(cudaGetErrorString(err)));
-    }
-
-    // Copy weights to constant memory
-    err = cudaMemcpyToSymbol(tw, h_tw, Q * sizeof(float));
-    if (err != cudaSuccess) {
-        throw std::runtime_error("Failed to copy tw to device: " +
-                               std::string(cudaGetErrorString(err)));
-    }
-
-    // Verify the copy (optional but recommended)
+    // Verify the copy
     float test_weights[Q];
-    err = cudaMemcpyFromSymbol(test_weights, tw, Q * sizeof(float));
+    void* d_tw = nullptr;
+    cudaError_t err = cudaGetSymbolAddress(&d_tw, tw);
+    if (err != cudaSuccess) {
+        throw std::runtime_error("Failed to verify tw address: " +
+                               std::string(cudaGetErrorString(err)));
+    }
+    err = cudaMemcpy(test_weights, d_tw, Q * sizeof(float), cudaMemcpyDeviceToHost);
     if (err != cudaSuccess) {
         throw std::runtime_error("Failed to verify tw copy: " +
                                std::string(cudaGetErrorString(err)));

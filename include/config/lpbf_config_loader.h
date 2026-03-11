@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iostream>
 #include <map>
+#include <set>
 
 namespace lbm {
 namespace config {
@@ -34,13 +35,15 @@ public:
             }
         }
 
+        used_keys_.clear();
         std::cout << "Loaded configuration from: " << filename << "\n";
         std::cout << "Parameters loaded: " << params.size() << "\n";
         return true;
     }
 
     template<typename T>
-    T get(const std::string& key, T default_value) const {
+    T get(const std::string& key, T default_value) {
+        used_keys_.insert(key);
         auto it = params.find(key);
         if (it == params.end()) return default_value;
 
@@ -50,7 +53,31 @@ public:
         return value;
     }
 
+    /// Check if a key exists in the loaded parameters
+    bool has(const std::string& key) const {
+        return params.find(key) != params.end();
+    }
+
+    /// Get raw string value for a key (marks it as used)
+    std::string getString(const std::string& key) {
+        used_keys_.insert(key);
+        auto it = params.find(key);
+        if (it == params.end()) return "";
+        return it->second;
+    }
+
+    /// Warn about any keys that were loaded but never accessed
+    void warnUnusedKeys() const {
+        for (const auto& kv : params) {
+            if (used_keys_.find(kv.first) == used_keys_.end()) {
+                std::cerr << "WARNING: Unknown config key '" << kv.first << "' ignored" << std::endl;
+            }
+        }
+    }
+
 private:
+    std::set<std::string> used_keys_;
+
     std::string trim(const std::string& str) {
         size_t first = str.find_first_not_of(" \t");
         if (first == std::string::npos) return "";
@@ -153,6 +180,33 @@ inline bool loadLPBFConfig(const std::string& filename,
         return false;
     }
 
+    // Load material selection (before individual property overrides)
+    if (loader.has("material_type") || loader.has("material")) {
+        // Mark both keys as used to avoid spurious warnings when both are present
+        std::string mat_name = loader.getString("material_type");
+        if (mat_name.empty()) mat_name = loader.getString("material");
+        else loader.getString("material");  // Mark as used even if not selected
+        // Strip surrounding quotes if present
+        if (mat_name.size() >= 2 &&
+            ((mat_name.front() == '"' && mat_name.back() == '"') ||
+             (mat_name.front() == '\'' && mat_name.back() == '\''))) {
+            mat_name = mat_name.substr(1, mat_name.size() - 2);
+        }
+        try {
+            config.material = lbm::physics::MaterialDatabase::getMaterialByName(mat_name);
+            std::cout << "[CONFIG LOADING] Material: " << config.material.name << std::endl;
+        } catch (const std::runtime_error& e) {
+            std::cerr << "WARNING: " << e.what() << ", using default Ti6Al4V" << std::endl;
+        }
+    }
+
+    // Load individual phase change property overrides
+    if (loader.has("T_solidus"))  config.material.T_solidus = loader.get("T_solidus", config.material.T_solidus);
+    if (loader.has("T_liquidus")) config.material.T_liquidus = loader.get("T_liquidus", config.material.T_liquidus);
+    if (loader.has("L_fusion"))   config.material.L_fusion = loader.get("L_fusion", config.material.L_fusion);
+    if (loader.has("T_vaporization")) config.material.T_vaporization = loader.get("T_vaporization", config.material.T_vaporization);
+    if (loader.has("L_vaporization")) config.material.L_vaporization = loader.get("L_vaporization", config.material.L_vaporization);
+
     // Load domain configuration
     config.nx = loader.get("nx", config.nx);
     config.ny = loader.get("ny", config.ny);
@@ -246,6 +300,9 @@ inline bool loadLPBFConfig(const std::string& filename,
         metadata->reference = "";
         metadata->purpose = "";
     }
+
+    // Warn about any unrecognized config keys (catches typos)
+    loader.warnUnusedKeys();
 
     return true;
 }

@@ -52,6 +52,12 @@ public:
      */
     ~PhaseChangeSolver();
 
+    // Rule of Five: prevent double-free of GPU memory
+    PhaseChangeSolver(const PhaseChangeSolver&) = delete;
+    PhaseChangeSolver& operator=(const PhaseChangeSolver&) = delete;
+    PhaseChangeSolver(PhaseChangeSolver&& other) noexcept;
+    PhaseChangeSolver& operator=(PhaseChangeSolver&& other) noexcept;
+
     /**
      * @brief Initialize enthalpy field from temperature field
      * @param temperature Device array of temperature values [K]
@@ -77,7 +83,7 @@ public:
      */
     int updateTemperatureFromEnthalpy(float* temperature,
                                       float tolerance = 0.01f,
-                                      int max_iterations = 10);
+                                      int max_iterations = 50);
 
     /**
      * @brief Update liquid fraction field based on current temperature
@@ -171,6 +177,12 @@ public:
     float computeTotalEnergy() const;
 
     /**
+     * @brief Set the physical cell spacing (used by computeTotalEnergy)
+     * @param dx Cell width [m] (uniform cubic cells assumed)
+     */
+    void setDx(float dx) { dx_ = dx; }
+
+    /**
      * @brief Get domain dimensions
      */
     int getNx() const { return nx_; }
@@ -181,6 +193,9 @@ private:
     // Domain dimensions
     int nx_, ny_, nz_;
     int num_cells_;
+
+    // Physical cell spacing [m] for energy integration (dx = dy = dz assumed)
+    float dx_ = 1.0f;
 
     // Material properties
     MaterialProperties material_;

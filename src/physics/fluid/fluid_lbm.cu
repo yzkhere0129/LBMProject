@@ -523,6 +523,37 @@ void FluidLBM::computeMacroscopic() {
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+void FluidLBM::computeMacroscopic(const float* force_x,
+                                   const float* force_y,
+                                   const float* force_z) {
+    int block_size = 256;
+    int grid_size = (num_cells_ + block_size - 1) / block_size;
+
+    computeMacroscopicWithForceKernel<<<grid_size, block_size>>>(
+        d_f_src, d_rho, d_ux, d_uy, d_uz,
+        force_x, force_y, force_z, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    // Compute pressure
+    computePressureKernel<<<grid_size, block_size>>>(
+        d_rho, d_pressure, rho0_, D3Q19::CS2, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    // Enforce correct velocity at boundary nodes
+    if (n_boundary_nodes_ > 0) {
+        int wall_grid_size = (n_boundary_nodes_ + block_size - 1) / block_size;
+        setBoundaryVelocityKernel<<<wall_grid_size, block_size>>>(
+            d_ux, d_uy, d_uz,
+            d_boundary_nodes_,
+            n_boundary_nodes_,
+            nx_, ny_, nz_
+        );
+        CUDA_CHECK_KERNEL();
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
 // Compute buoyancy force
 void FluidLBM::computeBuoyancyForce(const float* temperature,
                                    float T_ref,
@@ -1560,6 +1591,76 @@ __global__ void computeMacroscopicKernel(
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {
             // Clamp velocity magnitude while preserving direction
+            float scale = U_MAX / u_mag;
+            u_x *= scale;
+            u_y *= scale;
+            u_z *= scale;
+        }
+    }
+
+    ux[id] = u_x;
+    uy[id] = u_y;
+    uz[id] = u_z;
+}
+
+/**
+ * @brief Compute macroscopic quantities with Guo force correction
+ *
+ * In the Guo forcing scheme, the physical velocity is:
+ *   u = Σ(ci*fi)/ρ + 0.5*F/ρ
+ * Without this correction, velocity computed from moments alone is
+ * missing the forcing contribution, causing forces to appear ineffective.
+ */
+__global__ void computeMacroscopicWithForceKernel(
+    const float* f,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    int num_cells)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= num_cells) return;
+
+    // Compute density
+    float m_rho = 0.0f;
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        m_rho += f[id + q * num_cells];
+    }
+
+    // Compute momentum from distributions
+    float m_ux = 0.0f;
+    float m_uy = 0.0f;
+    float m_uz = 0.0f;
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float fq = f[id + q * num_cells];
+        m_ux += ex[q] * fq;
+        m_uy += ey[q] * fq;
+        m_uz += ez[q] * fq;
+    }
+
+    // Store density
+    rho[id] = m_rho;
+
+    // Compute velocity with Guo force correction
+    float u_x = 0.0f;
+    float u_y = 0.0f;
+    float u_z = 0.0f;
+
+    if (m_rho > 1e-10f && !isnan(m_rho)) {
+        float inv_rho = 1.0f / m_rho;
+        // Guo correction: u = Σ(ci*fi)/ρ + 0.5*F/ρ
+        u_x = m_ux * inv_rho + 0.5f * force_x[id] * inv_rho;
+        u_y = m_uy * inv_rho + 0.5f * force_y[id] * inv_rho;
+        u_z = m_uz * inv_rho + 0.5f * force_z[id] * inv_rho;
+
+        // Velocity clamping for stability
+        const float U_MAX = 0.3f;
+        float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
+        if (u_mag > U_MAX) {
             float scale = U_MAX / u_mag;
             u_x *= scale;
             u_y *= scale;

@@ -244,7 +244,7 @@ TEST_F(PhasePropertiesTest, EffectiveHeatCapacity) {
     // In solid or liquid: cp_eff = cp
     {
         float T_solid = 1500.0f;
-        float cp_eff = mat.getEffectiveHeatCapacity(T_solid, 1.0f);
+        float cp_eff = mat.getApparentHeatCapacity(T_solid);
         float cp = mat.getSpecificHeat(T_solid);
         EXPECT_FLOAT_EQ(cp_eff, cp)
             << "In solid, effective heat capacity should equal cp";
@@ -253,7 +253,7 @@ TEST_F(PhasePropertiesTest, EffectiveHeatCapacity) {
     // In mushy zone: cp_eff > cp due to latent heat
     {
         float T_mushy = (mat.T_solidus + mat.T_liquidus) / 2.0f;
-        float cp_eff = mat.getEffectiveHeatCapacity(T_mushy, 1.0f);
+        float cp_eff = mat.getApparentHeatCapacity(T_mushy);
         float cp = mat.getSpecificHeat(T_mushy);
 
         EXPECT_GT(cp_eff, cp)

@@ -16,12 +16,15 @@ namespace lbm {
 namespace physics {
 
 // External reference to D3Q7 lattice constants (defined in lattice_d3q7.cu)
-extern __constant__ int tex[7];
-extern __constant__ int tey[7];
-extern __constant__ int tez[7];
+extern __device__ int tex[7];
+extern __device__ int tey[7];
+extern __device__ int tez[7];
 
 // Forward declaration of kernels
 __global__ void initializeEquilibriumKernel(float* g_src, const float* temperature, int num_cells);
+__global__ void thermalStreamingKernel(const float* g_src, float* g_dst,
+                                       int nx, int ny, int nz,
+                                       float emissivity, bool z_periodic);
 __global__ void applyPhaseChangeCorrectionKernel(float* g, float* temperature,
                                                    const float* fl_curr, const float* fl_prev,
                                                    MaterialProperties material, int num_cells,
@@ -36,6 +39,7 @@ ThermalLBM::ThermalLBM(int nx, int ny, int nz, float thermal_diffusivity,
       thermal_diff_physical_(thermal_diffusivity), rho_(density), cp_(specific_heat),
       emissivity_(0.35f),  // Default emissivity
       T_initial_(300.0f),  // Default ambient temperature
+      z_periodic_(false),
       phase_solver_(nullptr), has_material_(false) {
 
     // Initialize D3Q7 lattice if not already done
@@ -127,6 +131,7 @@ ThermalLBM::ThermalLBM(int nx, int ny, int nz,
       rho_(material.rho_solid), cp_(material.cp_solid),
       emissivity_(0.35f),  // Default emissivity (will be overridden by config)
       T_initial_(300.0f),  // Default ambient temperature (will be set by initialize())
+      z_periodic_(false),
       material_(material), has_material_(true),
       phase_solver_(nullptr) {
 
@@ -364,9 +369,9 @@ void ThermalLBM::streaming() {
     // Bounce-back will write reflected distributions
     CUDA_CHECK(cudaMemset(d_g_dst, 0, num_cells_ * D3Q7::Q * sizeof(float)));
 
-    // Stream all distributions with adiabatic bounce-back at boundaries
+    // Stream all distributions with boundary treatment
     thermalStreamingKernel<<<gridSize, blockSize>>>(
-        d_g_src, d_g_dst, nx_, ny_, nz_, emissivity_);
+        d_g_src, d_g_dst, nx_, ny_, nz_, emissivity_, z_periodic_);
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -651,10 +656,9 @@ __global__ void applyEvaporationCoolingKernel(
         if (T <= T_boil) return;
 
         // Estimate J from temperature (same model as interface cells)
-        // Iteration 3 - reduced from 0.30 to 0.15 to allow deeper melt pool
-        // ITERATION 8 (2026-01-27): DISABLE evaporation cooling (alpha_evap = 0.0) to diagnose its impact
-        const float alpha_evap = 0.0f;  // ITERATION 8: completely disabled to test impact on 75μs depth
-        const float M_molar = 0.0479f;
+        // Calibrated alpha_evap = 0.18 (Anisimov 1995)
+        const float alpha_evap = 0.18f;
+        const float M_molar = material.molar_mass;  // Molar mass [kg/mol]
         const float R_gas = 8.314f;
         const float P_ref = 101325.0f;
         const float PI = 3.14159265359f;
@@ -789,6 +793,59 @@ void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update temperature field
+    computeTemperature();
+}
+
+// ============================================================================
+// STANDALONE TEMPERATURE SAFETY CAP
+// ============================================================================
+// Clamps temperature at T_vaporization for ALL cells, without requiring
+// VOF fill_level. This is the physics-based temperature limit: in reality,
+// strong surface evaporation prevents temperatures significantly exceeding
+// the boiling point. When VOF/evaporation coupling is disabled, this cap
+// provides the equivalent constraint.
+// ============================================================================
+__global__ void applyTemperatureSafetyCapKernel(
+    float* g,
+    const float* temperature,
+    int num_cells,
+    float T_max_allowed)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    float T = temperature[idx];
+    if (T <= T_max_allowed) return;
+
+    float dT = T_max_allowed - T;
+
+    // Apply temperature correction to all distributions (maintains isotropy)
+    const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    for (int q = 0; q < D3Q7::Q; ++q) {
+        g[q * num_cells + idx] += weights[q] * dT;
+    }
+}
+
+void ThermalLBM::applyTemperatureSafetyCap() {
+    if (!has_material_) return;  // No material = no boiling point info
+
+    float T_boil = material_.T_vaporization;
+    if (T_boil <= 0.0f) return;  // No boiling point defined
+
+    // Allow a small margin above T_boil for numerical smoothness
+    // Physical: evaporation creates ~100K superheat before equilibrium
+    float T_max_allowed = T_boil + 100.0f;
+
+    int blockSize = 256;
+    int gridSize = (num_cells_ + blockSize - 1) / blockSize;
+
+    applyTemperatureSafetyCapKernel<<<gridSize, blockSize>>>(
+        d_g_src, d_temperature, num_cells_, T_max_allowed
+    );
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Update temperature field after capping
     computeTemperature();
 }
 
@@ -957,7 +1014,8 @@ __global__ void thermalStreamingKernel(
     const float* g_src,
     float* g_dst,
     int nx, int ny, int nz,
-    float emissivity) {
+    float emissivity,
+    bool z_periodic) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -966,44 +1024,6 @@ __global__ void thermalStreamingKernel(
     if (x >= nx || y >= ny || z >= nz) return;
 
     int idx = x + y * nx + z * nx * ny;
-
-    // ============================================================================
-    // BUG FIX 2025-11-18: Removed incorrect pseudo-radiation implementation
-    // ============================================================================
-    // PROBLEM IDENTIFIED:
-    //   Previous code computed "reflection_coeff = 1 - q_rad/q_cond" and applied
-    //   it in the streaming kernel. This violates LBM theory and physics:
-    //
-    //   1. PHYSICAL ERROR: Radiation and conduction are independent mechanisms.
-    //      Their ratio (q_rad/q_cond) has no physical basis for reflection.
-    //
-    //   2. LBM THEORY ERROR: Streaming should only propagate distributions.
-    //      Boundary conditions must be applied separately (operator splitting).
-    //
-    //   3. NUMERICAL ERROR: Clamping to [0.7, 0.98] was arbitrary and backwards:
-    //      - High T should → strong radiation → LOW reflection (→ 0.0)
-    //      - Low T should → weak radiation → HIGH reflection (→ 1.0)
-    //      - Code did the opposite
-    //
-    //   4. DOUBLE IMPLEMENTATION CONFLICT:
-    //      - Explicit radiation BC (applyRadiationBoundaryCondition) exists
-    //      - Pseudo-radiation in streaming weakened the true radiation effect
-    //
-    // SOLUTION:
-    //   Use standard LBM streaming with bounce-back for boundaries.
-    //   Radiation BC is properly handled by applyRadiationBoundaryCondition().
-    //
-    // REFERENCE:
-    //   - Standard LBM: streaming propagates f_i(x + e_i*dt) = f_i_post(x)
-    //   - Adiabatic BC: full bounce-back (reflection_coeff = 1.0)
-    //   - Radiation BC: applied via source term, NOT via reflection coefficient
-    // ============================================================================
-
-    // STANDARD LBM BOUNDARY CONDITIONS:
-    // - X, Y boundaries: Adiabatic (full bounce-back for zero flux)
-    // - Z-top (z=nz-1): Adiabatic bounce-back (radiation applied separately)
-    // - Z-bottom (z=0): Adiabatic (substrate)
-
     int num_cells = nx * ny * nz;
 
     for (int q = 0; q < D3Q7::Q; ++q) {
@@ -1016,22 +1036,24 @@ __global__ void thermalStreamingKernel(
         cx = 0; cy = 0; cz = 0;
 #endif
 
-        // Calculate target position
         int nx_target = x + cx;
         int ny_target = y + cy;
         int nz_target = z + cz;
+
+        // Z-periodic wrapping (for quasi-2D simulations)
+        if (z_periodic) {
+            nz_target = (nz_target + nz) % nz;
+        }
 
         // Check if target is inside domain
         if (nx_target >= 0 && nx_target < nx &&
             ny_target >= 0 && ny_target < ny &&
             nz_target >= 0 && nz_target < nz) {
 
-            // Normal streaming: target is inside domain
             int target_idx = nx_target + ny_target * nx + nz_target * nx * ny;
             g_dst[q * num_cells + target_idx] = g_src[q * num_cells + idx];
         } else {
-            // Boundary: apply standard bounce-back
-            // Find opposite direction for bounce-back
+            // Bounce-back for x and y boundaries (adiabatic)
             int q_opposite = 0;
             if (q == 1) q_opposite = 2;      // +x -> -x
             else if (q == 2) q_opposite = 1; // -x -> +x
@@ -1040,9 +1062,6 @@ __global__ void thermalStreamingKernel(
             else if (q == 5) q_opposite = 6; // +z -> -z
             else if (q == 6) q_opposite = 5; // -z -> +z
 
-            // CORRECTED: Standard adiabatic bounce-back for ALL boundaries
-            // Radiation is applied separately in applyRadiationBoundaryCondition()
-            // This ensures clean separation of concerns per LBM theory
             g_dst[q_opposite * num_cells + idx] = g_src[q * num_cells + idx];
         }
     }
@@ -1385,11 +1404,9 @@ __global__ void applyRadiationBoundaryCondition(
 
     // Physical constants for Ti6Al4V evaporation
     // CRITICAL FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
-    // UPDATE (2026-01-27): Reduced from 0.50 to 0.30 to prevent excessive cooling
-    // Iteration 3 - reduced from 0.30 to 0.15 to allow deeper melt pool
-    // ITERATION 8 (2026-01-27): DISABLE evaporation cooling (alpha_evap = 0.0) to diagnose its impact
-    const float alpha_evap = 0.0f;           // ITERATION 8: completely disabled to test impact on 75μs depth
-    const float M_molar = 0.0479f;            // Molar mass [kg/mol]
+    // Calibrated alpha_evap = 0.18 (Anisimov 1995)
+    const float alpha_evap = 0.18f;
+    const float M_molar = material.molar_mass; // Molar mass [kg/mol]
     const float R_gas = 8.314f;               // Universal gas constant [J/(mol·K)]
     const float P_ref = 101325.0f;            // Reference pressure at boiling point [Pa]
     const float PI = 3.14159265359f;
@@ -1773,12 +1790,9 @@ __global__ void computeEvaporationPowerKernel(
     }
 
     // Compute evaporation mass flux using Hertz-Knudsen equation
-    // FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
-    // UPDATE (2026-01-27): Reduced from 0.50 to 0.30 to prevent excessive cooling
-    // Iteration 3 - reduced from 0.30 to 0.15 to allow deeper melt pool
-    // ITERATION 8 (2026-01-27): DISABLE evaporation cooling (alpha_evap = 0.0) to diagnose its impact
-    const float alpha_evap = 0.0f;  // ITERATION 8: completely disabled to test impact on 75μs depth
-    const float M = 0.0479f;  // kg/mol (Ti6Al4V)
+    // Calibrated alpha_evap = 0.18 (Anisimov 1995)
+    const float alpha_evap = 0.18f;
+    const float M = material.molar_mass;  // kg/mol
     const float R = 8.314f;   // J/(mol·K)
     const float P_ref = 101325.0f;  // Pa
     const float PI = 3.14159265f;
@@ -2180,11 +2194,9 @@ __global__ void computeEvaporationMassFluxKernel(
 
     // Physical constants for Ti6Al4V evaporation
     // CRITICAL FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
-    // UPDATE (2026-01-27): Reduced from 0.50 to 0.30 to prevent excessive cooling
-    // Iteration 3 - reduced from 0.30 to 0.15 to allow deeper melt pool
-    // ITERATION 8 (2026-01-27): DISABLE evaporation cooling (alpha_evap = 0.0) to diagnose its impact
-    const float alpha_evap = 0.0f;           // ITERATION 8: completely disabled to test impact on 75μs depth
-    const float M_molar = 0.0479f;            // Molar mass [kg/mol]
+    // Calibrated alpha_evap = 0.18 (Anisimov 1995)
+    const float alpha_evap = 0.18f;
+    const float M_molar = material.molar_mass; // Molar mass [kg/mol]
     const float R_gas = 8.314f;               // Universal gas constant [J/(mol·K)]
     const float P_ref = 101325.0f;            // Reference pressure at boiling point [Pa]
     const float PI = 3.14159265359f;

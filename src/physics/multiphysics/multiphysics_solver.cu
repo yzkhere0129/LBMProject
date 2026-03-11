@@ -1424,6 +1424,26 @@ void MultiphysicsSolver::thermalStep(float dt) {
     thermal_->computeTemperature();
 
     // ============================================================
+    // PHYSICS-BASED TEMPERATURE SAFETY CAP
+    // ============================================================
+    // When laser heating is active, apply a temperature cap at
+    // T_vaporization + 100K. This prevents unphysical thermal
+    // runaway in ALL modes (with or without VOF/evaporation).
+    //
+    // Physical justification: Strong surface evaporation self-limits
+    // temperature to near T_boil in real AM processes. This cap
+    // enforces that constraint when the evaporation-VOF coupling
+    // is disabled or insufficient.
+    //
+    // When VOF-based evaporation IS active, the tighter cap in
+    // applyEvaporationCooling (T_boil - 100K) dominates, so this
+    // is a no-op in that case.
+    // ============================================================
+    if (config_.enable_laser) {
+        thermal_->applyTemperatureSafetyCap();
+    }
+
+    // ============================================================
     // RE-APPLY DIRICHLET BCs AFTER STREAMING
     // ============================================================
     // Streaming can perturb Dirichlet values via bounce-back.
@@ -1883,8 +1903,11 @@ void MultiphysicsSolver::fluidStep(float dt) {
     // Streaming
     fluid_->streaming();
 
-    // Compute macroscopic quantities
-    fluid_->computeMacroscopic();
+    // Compute macroscopic quantities with Guo force correction
+    // In Guo forcing: u = Σ(ci*fi)/ρ + 0.5*F/ρ
+    // Without force correction, velocity from moments alone misses the forcing
+    // contribution, causing forces to appear ineffective after streaming.
+    fluid_->computeMacroscopic(d_force_x_, d_force_y_, d_force_z_);
 }
 
 // ForceAccumulator-based implementation
@@ -2714,6 +2737,27 @@ void MultiphysicsSolver::writeEnergyBalanceHistory(const std::string& filename) 
 
 const diagnostics::EnergyBalance& MultiphysicsSolver::getCurrentEnergyBalance() const {
     return energy_tracker_.getCurrent();
+}
+
+void MultiphysicsSolver::validate() const {
+    const auto& material = config_.material;
+
+    if (config_.enable_darcy && !config_.enable_phase_change) {
+        std::cerr << "WARNING: enable_darcy=true without enable_phase_change=true. "
+                  << "Darcy damping uses liquid_fraction which defaults to 1.0, "
+                  << "making Darcy ineffective." << std::endl;
+    }
+
+    if (config_.enable_phase_change) {
+        float alpha_material = material.k_liquid / (material.rho_liquid * material.cp_liquid);
+        float alpha_config = config_.thermal_diffusivity;
+        if (alpha_config > 0 &&
+            std::abs(alpha_config - alpha_material) / alpha_material > 0.5f) {
+            std::cerr << "WARNING: thermal_diffusivity=" << alpha_config
+                      << " differs from material-derived value=" << alpha_material
+                      << " by more than 50%." << std::endl;
+        }
+    }
 }
 
 } // namespace physics

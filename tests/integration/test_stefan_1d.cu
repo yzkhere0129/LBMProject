@@ -225,8 +225,8 @@ float find_interface_position(const float* h_fl, int nx, int ny, int nz, float d
 TEST_F(StefanProblemTest, InterfacePositionMatchesAnalytical) {
     std::cout << "=== Stefan Problem Validation ===\n\n";
 
-    // Create thermal solver with phase change
-    physics::ThermalLBM thermal(nx, ny, nz, material, alpha, true);
+    // Create thermal solver with phase change (pass dt and dx for correct unit mapping)
+    physics::ThermalLBM thermal(nx, ny, nz, material, alpha, true, dt, dx);
 
     // Initialize with cold temperature
     thermal.initialize(T_cold);
@@ -259,6 +259,7 @@ TEST_F(StefanProblemTest, InterfacePositionMatchesAnalytical) {
 
     float max_error = 0.0f;
     std::vector<float> errors;
+    std::vector<float> front_positions;
 
     for (int step = 0; step <= n_steps; ++step) {
         // Apply boundary conditions
@@ -289,6 +290,7 @@ TEST_F(StefanProblemTest, InterfacePositionMatchesAnalytical) {
             // Calculate error
             float error = fabsf(x_sim - x_theory) / x_theory * 100.0f;
             errors.push_back(error);
+            front_positions.push_back(x_sim);
             max_error = fmaxf(max_error, error);
 
             // Print results
@@ -332,9 +334,12 @@ TEST_F(StefanProblemTest, InterfacePositionMatchesAnalytical) {
     // Quantitative accuracy would require additional parameter tuning and
     // proper lattice-physical unit mapping, which is left for future work.
 
-    // Verify qualitative behavior: interface should move
-    EXPECT_GT(errors.back(), 0.0f)
-        << "Interface should be detected and moving";
+    // C_app with Ti6Al4V (45K mushy zone) gives large front position error vs
+    // sharp-interface analytical solution. With T_hot=2500K, St~1.06, the C_app
+    // method's mushy zone smearing causes ~200-300% position error.
+    // This is a known limitation; the enthalpy source term method would do better.
+    EXPECT_LT(errors.back(), 400.0f) << "Front position error exceeds 400% threshold";
+    EXPECT_GT(front_positions.back(), 0.0f) << "Should detect some melting";
 
     std::cout << "\n=== Stefan Problem Assessment ===\n";
     std::cout << "Qualitative behavior: CORRECT\n";
@@ -355,8 +360,8 @@ TEST_F(StefanProblemTest, InterfacePositionMatchesAnalytical) {
 TEST_F(StefanProblemTest, EnergyConservation) {
     std::cout << "\n=== Stefan Problem: Energy Conservation ===\n\n";
 
-    // Create thermal solver
-    physics::ThermalLBM thermal(nx, ny, nz, material, alpha, true);
+    // Create thermal solver (pass dt and dx for correct unit mapping)
+    physics::ThermalLBM thermal(nx, ny, nz, material, alpha, true, dt, dx);
     thermal.initialize(T_cold);
 
     // Allocate host memory

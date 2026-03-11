@@ -230,6 +230,19 @@ public:
     void computeMacroscopic();
 
     /**
+     * @brief Compute macroscopic quantities with Guo force correction
+     *
+     * In the Guo forcing scheme, the physical velocity is:
+     *   u = Σ(ci*fi)/ρ + 0.5*F/ρ
+     * This overload applies the force correction to get the true velocity.
+     *
+     * @param force_x Device array of x-force (lattice units)
+     * @param force_y Device array of y-force (lattice units)
+     * @param force_z Device array of z-force (lattice units)
+     */
+    void computeMacroscopic(const float* force_x, const float* force_y, const float* force_z);
+
+    /**
      * @brief Compute buoyancy force using Boussinesq approximation
      * @param temperature Device array of temperature field [K]
      * @param T_ref Reference temperature [K]
@@ -290,6 +303,13 @@ public:
      */
     float* getPressure() { return d_pressure; }
     const float* getPressure() const { return d_pressure; }
+
+    /**
+     * @brief Get distribution function arrays (device pointers)
+     * Needed for custom boundary conditions (e.g., free-surface stress BC).
+     */
+    float* getDistributionSrc() { return d_f_src; }
+    float* getDistributionDst() { return d_f_dst; }
 
     /**
      * @brief Copy velocity to host
@@ -535,6 +555,21 @@ __global__ void computeMacroscopicKernel(
     float* ux,
     float* uy,
     float* uz,
+    int num_cells);
+
+/**
+ * @brief CUDA kernel for computing macroscopic quantities with Guo force correction
+ * u = Σ(ci*fi)/ρ + 0.5*F/ρ
+ */
+__global__ void computeMacroscopicWithForceKernel(
+    const float* f,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
     int num_cells);
 
 /**

@@ -9,8 +9,8 @@
 #include <cstring>
 #include "utils/cuda_check.h"
 
-// Define device constant memory for material properties globally
-__constant__ lbm::physics::MaterialProperties d_material;
+// Define device memory for material properties globally (RDC-compatible)
+__device__ lbm::physics::MaterialProperties d_material;
 
 namespace lbm {
 namespace physics {
@@ -38,6 +38,7 @@ MaterialProperties MaterialDatabase::getTi6Al4V() {
     mat.T_vaporization = 3560.0f;      // K (boiling point, ASM Handbook)
     mat.L_fusion = 286000.0f;          // J/kg
     mat.L_vaporization = 9830000.0f;   // J/kg
+    mat.molar_mass = 0.0479f;          // kg/mol (weighted avg: Ti:0.048, Al:0.027, V:0.051)
 
     // Surface properties
     mat.surface_tension = 1.65f;       // N/m at melting point
@@ -77,6 +78,7 @@ MaterialProperties MaterialDatabase::get316L() {
     mat.T_vaporization = 3090.0f;      // K (boiling point)
     mat.L_fusion = 260000.0f;          // J/kg
     mat.L_vaporization = 7450000.0f;   // J/kg
+    mat.molar_mass = 0.0558f;          // kg/mol (weighted avg: Fe:0.056, Cr:0.052, Ni:0.059, Mo:0.096)
 
     // Surface properties
     mat.surface_tension = 1.75f;       // N/m at melting point
@@ -116,6 +118,7 @@ MaterialProperties MaterialDatabase::getInconel718() {
     mat.T_vaporization = 3100.0f;      // K (boiling point)
     mat.L_fusion = 210000.0f;          // J/kg
     mat.L_vaporization = 6430000.0f;   // J/kg
+    mat.molar_mass = 0.0580f;          // kg/mol (weighted avg: Ni:0.059, Cr:0.052, Fe:0.056, Nb:0.093)
 
     // Surface properties
     mat.surface_tension = 1.89f;       // N/m at melting point
@@ -155,6 +158,7 @@ MaterialProperties MaterialDatabase::getAlSi10Mg() {
     mat.T_vaporization = 2743.0f;      // K (boiling point)
     mat.L_fusion = 395000.0f;          // J/kg
     mat.L_vaporization = 10900000.0f;  // J/kg
+    mat.molar_mass = 0.0270f;          // kg/mol (dominated by Al: 0.027)
 
     // Surface properties
     mat.surface_tension = 0.914f;      // N/m at melting point
@@ -202,6 +206,7 @@ MaterialProperties MaterialDatabase::getSteel() {
     mat.T_vaporization = 3090.0f;      // K (from validation case - ASM: 3134K for pure Fe)
     mat.L_fusion = 247000.0f;          // J/kg (ASM Handbook: 247-272 kJ/kg for pure Fe)
     mat.L_vaporization = 6340000.0f;   // J/kg (ASM Handbook: ~6.3 MJ/kg)
+    mat.molar_mass = 0.0558f;          // kg/mol (pure Fe: 0.05585)
 
     // Surface properties
     // Mills 2002: σ(Fe) = 1.872 - 0.00049*(T-T_m) N/m
@@ -239,7 +244,14 @@ MaterialProperties MaterialDatabase::getSteel() {
 }
 
 void MaterialDatabase::copyToDevice(const MaterialProperties& mat) {
-    cudaError_t error = cudaMemcpyToSymbol(d_material, &mat, sizeof(MaterialProperties));
+    // Use cudaGetSymbolAddress + cudaMemcpy for RDC compatibility
+    void* d_ptr = nullptr;
+    cudaError_t error = cudaGetSymbolAddress(&d_ptr, d_material);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("Failed to get d_material address: " +
+                                 std::string(cudaGetErrorString(error)));
+    }
+    error = cudaMemcpy(d_ptr, &mat, sizeof(MaterialProperties), cudaMemcpyHostToDevice);
     if (error != cudaSuccess) {
         throw std::runtime_error("Failed to copy material properties to device: " +
                                  std::string(cudaGetErrorString(error)));

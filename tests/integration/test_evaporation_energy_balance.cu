@@ -37,6 +37,7 @@ protected:
         material.L_fusion = 286000.0f;
         material.T_vaporization = 3533.0f;
         material.L_vaporization = 9830000.0f;
+        material.molar_mass = 0.04593f;  // Ti6Al4V effective molar mass [kg/mol]
     }
 
     MaterialProperties material;
@@ -71,7 +72,6 @@ TEST_F(EvaporationEnergyBalanceTest, SingleHotCellEvaporation) {
     T_field[hot_idx] = 4000.0f;  // Well above boiling point
 
     thermal.initialize(T_field.data());
-    thermal.computeTemperature();
 
     // Create fill level (surface identification)
     std::vector<float> fill_level(nx * ny * nz, 1.0f);  // All liquid
@@ -141,7 +141,6 @@ TEST_F(EvaporationEnergyBalanceTest, MultiCellEvaporationScaling) {
         }
 
         thermal.initialize(T_field.data());
-        thermal.computeTemperature();
 
         float *d_fill_level;
         cudaMalloc(&d_fill_level, nx * ny * nz * sizeof(float));
@@ -193,7 +192,6 @@ TEST_F(EvaporationEnergyBalanceTest, TemperatureDependence) {
         }
 
         thermal.initialize(T_field.data());
-        thermal.computeTemperature();
 
         float *d_fill_level;
         cudaMalloc(&d_fill_level, nx * ny * nz * sizeof(float));
@@ -262,7 +260,6 @@ TEST_F(EvaporationEnergyBalanceTest, RealisticMagnitudeCheck) {
     std::cout << "  Evaporating cells: " << n_evap_cells << std::endl;
 
     thermal.initialize(T_field.data());
-    thermal.computeTemperature();
 
     float *d_fill_level;
     cudaMalloc(&d_fill_level, nx * ny * nz * sizeof(float));
@@ -312,7 +309,6 @@ TEST_F(EvaporationEnergyBalanceTest, NoNaNWithHighTemperature) {
         fill_level[idx] = 0.5f;
 
         thermal.initialize(T_field.data());
-        thermal.computeTemperature();
 
         float *d_fill_level;
         cudaMalloc(&d_fill_level, nx * ny * nz * sizeof(float));

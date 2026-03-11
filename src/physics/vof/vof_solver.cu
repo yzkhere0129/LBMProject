@@ -452,7 +452,7 @@ __global__ void advectFillLevelTVDKernel(
         // Gradient ratio: r = (f_upwind - f_down) / (f_center - f_upwind)
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
 
         // Flux limiter
         float phi = applyFluxLimiter(r, limiter_type);
@@ -473,7 +473,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
 
         float phi = applyFluxLimiter(r, limiter_type);
 
@@ -493,7 +493,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
 
         float phi = applyFluxLimiter(r, limiter_type);
 
@@ -510,7 +510,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
 
         float phi = applyFluxLimiter(r, limiter_type);
 
@@ -535,7 +535,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = v_face_ym * f_upwind;
@@ -550,7 +550,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = v_face_ym * f_upwind;
@@ -568,7 +568,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = v_face_yp * f_upwind;
@@ -583,7 +583,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = v_face_yp * f_upwind;
@@ -606,7 +606,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = w_face_zm * f_upwind;
@@ -621,7 +621,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = w_face_zm * f_upwind;
@@ -639,7 +639,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = w_face_zp * f_upwind;
@@ -654,7 +654,7 @@ __global__ void advectFillLevelTVDKernel(
 
         float delta_upwind = f_upwind - f_down;
         float delta_center = f_center - f_upwind;
-        float r = delta_upwind / (delta_center + copysignf(1e-10f, delta_center));
+        float r = (fabsf(delta_center) > 1e-6f) ? (delta_upwind / delta_center) : 0.0f;
         float phi = applyFluxLimiter(r, limiter_type);
 
         float F_low = w_face_zp * f_upwind;
@@ -1310,10 +1310,26 @@ void VOFSolver::initializeDroplet(float center_x, float center_y,
     computeCurvature();
 }
 
+void VOFSolver::setInterfaceCompression(bool enabled, float coefficient) {
+    interface_compression_enabled_ = enabled;
+    C_compress_coeff_ = coefficient;
+}
+
 void VOFSolver::advectFillLevel(const float* velocity_x,
                                  const float* velocity_y,
                                  const float* velocity_z,
                                  float dt) {
+    // ========================================================================
+    // PLIC geometric advection dispatch
+    // ========================================================================
+    // PLIC bypasses the upwind/TVD subcycling loop entirely.
+    // Operator-split directional sweeps with full geometric reconstruction
+    // are inherently mass-conservative and naturally bounded in [0,1].
+    if (advection_scheme_ == VOFAdvectionScheme::PLIC) {
+        advectFillLevelPLIC(velocity_x, velocity_y, velocity_z, dt);
+        return;
+    }
+
     // CRITICAL FIX (2026-01-17): Velocities from FluidLBM are in LATTICE UNITS
     //
     // The velocities passed to this function are in lattice units (dimensionless),
@@ -1608,9 +1624,10 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     // No additional copy needed when compression is disabled.
     //
     // OPTIMIZED (2026-01-20): Mild compression for sharper interface
-    float C_compress = 0.30f;  // Moderate compression (0.50 caused fragmentation, 0.10 too weak)
+    if (!interface_compression_enabled_) return;
+    float C_compress = C_compress_coeff_;
 
-    if (C_compress > 0.0f) {
+    {
         // Copy current field to tmp buffer for compression kernel input
         CUDA_CHECK(cudaMemcpy(d_fill_level_tmp_, d_fill_level_, num_cells_ * sizeof(float),
                    cudaMemcpyDeviceToDevice));
@@ -2173,6 +2190,780 @@ __global__ void countInterfaceCellsKernel(
     if (tid == 0) {
         partial_counts[blockIdx.x] = shared_count[0];
     }
+}
+
+// ============================================================================
+// PLIC (Piecewise Linear Interface Calculation) Geometric Advection
+// ============================================================================
+//
+// Reference: Scardovelli & Zaleski (2000), JCP 164:228-237
+// Parker & Youngs (1992) for normal estimation
+//
+// Summary of the PLIC approach:
+//   1. Reconstruct a plane n·x = α per interface cell (Youngs normal + α inversion)
+//   2. For each directional sweep, compute the geometric flux through each face
+//      by intersecting the PLIC plane with the departure slab
+//   3. Update the fill level conservatively, one direction at a time (Strang splitting)
+//
+// The flux through the right face of cell (i,j,k) for x-sweep with u > 0 is:
+//   flux = volume of fluid in the slab [1-d, 1] × [0,1] × [0,1]
+// where d = u_face * dt / dx (CFL number for this face).
+//
+// Coordinate transformation maps the slab to [0,1]³ with a modified alpha.
+// The volume function plicVolume3D uses the inclusion-exclusion formula of
+// Scardovelli & Zaleski, valid for 0 ≤ α ≤ (m1+m2+m3)/2 (symmetry handles rest).
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// Device helper: volume below plane m·x = α in the unit cube [0,1]³
+// Requires m1 ≥ m2 ≥ m3 ≥ 0 and uses symmetry for α > S/2.
+//
+// Inclusion-exclusion formula (Scardovelli & Zaleski 2000, eq. 28):
+//   V = [α³ - Σ(α - mi)³₊ + Σ(α - mi - mj)³₊] / (6·m1·m2·m3)
+// valid for α ≤ S/2; use V(α) = 1 - V(S-α) for α > S/2.
+// ----------------------------------------------------------------------------
+// Evaluate the inclusion-exclusion formula for alpha in [0, S/2] (first half only).
+// Caller must apply symmetry if alpha > S/2.
+__device__ __forceinline__ float plicVolumeFirstHalf(float alpha,
+                                                      float m1, float m2, float m3) {
+    // 2D degenerate case (m3 ≈ 0, e.g. quasi-2D or thin-slab domain)
+    if (m3 < 1e-8f) {
+        float S2 = m1 + m2;
+        if (alpha >= S2) return 1.0f;
+        if (alpha <= 0.0f) return 0.0f;
+        float vol2d;
+        if (alpha <= m2) {
+            vol2d = (alpha * alpha) / (2.0f * m1 * m2);
+        } else if (alpha <= m1) {
+            vol2d = (alpha - 0.5f * m2) / m1;
+        } else {
+            float t = S2 - alpha;
+            vol2d = 1.0f - (t * t) / (2.0f * m1 * m2);
+        }
+        return fmaxf(0.0f, fminf(1.0f, vol2d));
+    }
+
+    // 3D inclusion-exclusion (Scardovelli & Zaleski 2000, eq. 28)
+    float denom = 6.0f * m1 * m2 * m3;
+    float a = alpha;
+    float vol = a * a * a;
+    float t1 = a - m1; if (t1 > 0.0f) vol -= t1 * t1 * t1;
+    float t2 = a - m2; if (t2 > 0.0f) vol -= t2 * t2 * t2;
+    float t3 = a - m3; if (t3 > 0.0f) vol -= t3 * t3 * t3;
+    float t12 = a - m1 - m2; if (t12 > 0.0f) vol += t12 * t12 * t12;
+    float t13 = a - m1 - m3; if (t13 > 0.0f) vol += t13 * t13 * t13;
+    float t23 = a - m2 - m3; if (t23 > 0.0f) vol += t23 * t23 * t23;
+    return fmaxf(0.0f, fminf(1.0f, vol / denom));
+}
+
+// Volume below plane m1*x + m2*y + m3*z = alpha in unit cube [0,1]^3.
+// Requires m1 >= m2 >= m3 >= 0. Non-recursive.
+__device__ float plicVolume3D(float alpha, float m1, float m2, float m3) {
+    if (alpha <= 0.0f) return 0.0f;
+    float S = m1 + m2 + m3;
+    if (alpha >= S) return 1.0f;
+    // Use symmetry V(alpha) = 1 - V(S-alpha) for the upper half
+    if (alpha > 0.5f * S) {
+        return 1.0f - plicVolumeFirstHalf(S - alpha, m1, m2, m3);
+    }
+    return plicVolumeFirstHalf(alpha, m1, m2, m3);
+}
+
+// ----------------------------------------------------------------------------
+// Device helper: find α such that plicVolume3D(α, m1, m2, m3) = C
+// Uses bisection (40 iterations → machine precision for float).
+// ----------------------------------------------------------------------------
+// Find alpha s.t. plicVolume3D(alpha, m1, m2, m3) = C. Non-recursive.
+__device__ float plicAlphaFromVolume3D(float C, float m1, float m2, float m3) {
+    C = fmaxf(1e-8f, fminf(1.0f - 1e-8f, C));
+    float S = m1 + m2 + m3;
+
+    // Exploit symmetry: V(S-α) = 1 - V(α)
+    // For C > 0.5 → solve for (1-C) in [0, S/2], then reflect
+    bool flipped = (C > 0.5f);
+    float Csearch = flipped ? (1.0f - C) : C;
+
+    // Bisect in [0, S/2] where V is monotone increasing 0→0.5
+    float a_lo = 0.0f, a_hi = 0.5f * S;
+    for (int iter = 0; iter < 56; ++iter) {  // 56 iterations for float precision
+        float a_mid = 0.5f * (a_lo + a_hi);
+        float v = plicVolumeFirstHalf(a_mid, m1, m2, m3);
+        if (v < Csearch) a_lo = a_mid; else a_hi = a_mid;
+        if (a_hi - a_lo < 1e-7f * (S + 1e-30f)) break;
+    }
+    float alpha = 0.5f * (a_lo + a_hi);
+    return flipped ? (S - alpha) : alpha;
+}
+
+// ----------------------------------------------------------------------------
+// Device helper: volume of fluid in a rectangular box [0,Lx]×[0,Ly]×[0,Lz]
+// below the plane nx*x + ny*y + nz*z = alpha_orig (original coordinates).
+// Handles sign flips (negative normals) and scaling to unit cube internally.
+// ----------------------------------------------------------------------------
+__device__ float plicVolumeInBox(float alpha_orig,
+                                 float nx_raw, float ny_raw, float nz_raw,
+                                 float Lx, float Ly, float Lz) {
+    // Handle sign flips: for each negative component, reflect that axis.
+    // If ni < 0: xi → Ldi - xi, which maps alpha → alpha + |ni| * Ldi.
+    float alpha = alpha_orig;
+    float anx = fabsf(nx_raw), any = fabsf(ny_raw), anz = fabsf(nz_raw);
+    if (nx_raw < 0.0f) alpha += anx * Lx;
+    if (ny_raw < 0.0f) alpha += any * Ly;
+    if (nz_raw < 0.0f) alpha += anz * Lz;
+
+    // Scale to unit cube: x' = x/Lx, y' = y/Ly, z' = z/Lz
+    // Plane: (anx*Lx)*x' + (any*Ly)*y' + (anz*Lz)*z' = alpha
+    float mx = anx * Lx;
+    float my = any * Ly;
+    float mz = anz * Lz;
+
+    // Sort so m1 ≥ m2 ≥ m3 (required by plicVolume3D)
+    if (mx < my) { float t = mx; mx = my; my = t; }
+    if (mx < mz) { float t = mx; mx = mz; mz = t; }
+    if (my < mz) { float t = my; my = mz; mz = t; }
+
+    // Volume in unit cube times box volume
+    float unit_vol = plicVolume3D(alpha, mx, my, mz);
+    return unit_vol * Lx * Ly * Lz;
+}
+
+// ============================================================================
+// Kernel 1: Youngs Normal Computation (Parker-Youngs 3×3×3 stencil)
+// ============================================================================
+__global__ void computePlicNormalsKernel(
+    const float* __restrict__ fill,
+    float* __restrict__ nx_out,
+    float* __restrict__ ny_out,
+    float* __restrict__ nz_out,
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + nx * (j + ny * k);
+    float f = fill[idx];
+
+    // Bulk cells: no plane needed, zero normal
+    if (f <= 0.0f || f >= 1.0f) {
+        nx_out[idx] = 0.0f;
+        ny_out[idx] = 0.0f;
+        nz_out[idx] = 0.0f;
+        return;
+    }
+
+    // Neighbor index helpers respecting boundary conditions
+    int im = (bc_x == 0) ? ((i > 0)      ? i-1 : nx-1) : max(0,    i-1);
+    int ip = (bc_x == 0) ? ((i < nx-1)   ? i+1 : 0)    : min(nx-1, i+1);
+    int jm = (bc_y == 0) ? ((j > 0)      ? j-1 : ny-1) : max(0,    j-1);
+    int jp = (bc_y == 0) ? ((j < ny-1)   ? j+1 : 0)    : min(ny-1, j+1);
+    int km = (bc_z == 0) ? ((k > 0)      ? k-1 : nz-1) : max(0,    k-1);
+    int kp = (bc_z == 0) ? ((k < nz-1)   ? k+1 : 0)    : min(nz-1, k+1);
+
+    // Parker-Youngs 3×3×3 weighted gradient:
+    //   ∂C/∂x ≈ Σ_{dj,dk} w(dj,dk) * (C[ip,j+dj,k+dk] - C[im,j+dj,k+dk]) / (2*h)
+    //   weights: face=2, edge=1, corner=0.5  (total x-weight = 4·(2+1+1+1+1+0.5*4) = ... )
+    // Implemented as weighted sum over the 3×3 face slices:
+    //   center slice (dj=0,dk=0): weight 2
+    //   edge faces (|dj|+|dk|=1): weight 1
+    //   corners (|dj|=|dk|=1): weight 0.5
+
+    // Macro: read fill level with BC-aware index clamping/wrapping
+    // Evaluates to a float from global memory. ii/jj/kk may be negative or OOB.
+#define FILL(ii, jj, kk) \
+    fill[ \
+        ((bc_x == 0) ? (((ii) % nx + nx) % nx) : max(0, min(nx-1, (ii)))) \
+        + nx * ( \
+            ((bc_y == 0) ? (((jj) % ny + ny) % ny) : max(0, min(ny-1, (jj)))) \
+            + ny * ((bc_z == 0) ? (((kk) % nz + nz) % nz) : max(0, min(nz-1, (kk)))) \
+        ) \
+    ]
+
+    // X-gradient (Youngs 1982, Parker-Youngs 3×3×3 extension)
+    // weights: center face = 2, edge = 1, corner = 0.5
+    float gx = 0.0f;
+    gx += 2.0f * (FILL(ip,j ,k ) - FILL(im,j ,k ));   // center face: w=2
+    gx += 1.0f * (FILL(ip,jp,k ) - FILL(im,jp,k ));   // y-edge: w=1
+    gx += 1.0f * (FILL(ip,jm,k ) - FILL(im,jm,k ));
+    gx += 1.0f * (FILL(ip,j ,kp) - FILL(im,j ,kp));   // z-edge: w=1
+    gx += 1.0f * (FILL(ip,j ,km) - FILL(im,j ,km));
+    gx += 0.5f * (FILL(ip,jp,kp) - FILL(im,jp,kp));   // corners: w=0.5
+    gx += 0.5f * (FILL(ip,jp,km) - FILL(im,jp,km));
+    gx += 0.5f * (FILL(ip,jm,kp) - FILL(im,jm,kp));
+    gx += 0.5f * (FILL(ip,jm,km) - FILL(im,jm,km));
+
+    // Y-gradient
+    float gy = 0.0f;
+    gy += 2.0f * (FILL(i ,jp,k ) - FILL(i ,jm,k ));
+    gy += 1.0f * (FILL(ip,jp,k ) - FILL(ip,jm,k ));
+    gy += 1.0f * (FILL(im,jp,k ) - FILL(im,jm,k ));
+    gy += 1.0f * (FILL(i ,jp,kp) - FILL(i ,jm,kp));
+    gy += 1.0f * (FILL(i ,jp,km) - FILL(i ,jm,km));
+    gy += 0.5f * (FILL(ip,jp,kp) - FILL(ip,jm,kp));
+    gy += 0.5f * (FILL(ip,jp,km) - FILL(ip,jm,km));
+    gy += 0.5f * (FILL(im,jp,kp) - FILL(im,jm,kp));
+    gy += 0.5f * (FILL(im,jp,km) - FILL(im,jm,km));
+
+    // Z-gradient
+    float gz = 0.0f;
+    gz += 2.0f * (FILL(i ,j ,kp) - FILL(i ,j ,km));
+    gz += 1.0f * (FILL(ip,j ,kp) - FILL(ip,j ,km));
+    gz += 1.0f * (FILL(im,j ,kp) - FILL(im,j ,km));
+    gz += 1.0f * (FILL(i ,jp,kp) - FILL(i ,jp,km));
+    gz += 1.0f * (FILL(i ,jm,kp) - FILL(i ,jm,km));
+    gz += 0.5f * (FILL(ip,jp,kp) - FILL(ip,jp,km));
+    gz += 0.5f * (FILL(ip,jm,kp) - FILL(ip,jm,km));
+    gz += 0.5f * (FILL(im,jp,kp) - FILL(im,jp,km));
+    gz += 0.5f * (FILL(im,jm,kp) - FILL(im,jm,km));
+
+#undef FILL
+
+    // Interface normal points from liquid to gas: n̂ = -∇C / |∇C|
+    // (∇C points toward increasing C = toward liquid)
+    float mag = sqrtf(gx*gx + gy*gy + gz*gz);
+    if (mag < 1e-8f) {
+        // Flat or unresolved region: use (1,0,0) fallback
+        nx_out[idx] = 1.0f;
+        ny_out[idx] = 0.0f;
+        nz_out[idx] = 0.0f;
+    } else {
+        nx_out[idx] = -gx / mag;
+        ny_out[idx] = -gy / mag;
+        nz_out[idx] = -gz / mag;
+    }
+}
+
+// ============================================================================
+// Kernel 2: Alpha (plane constant) inversion — one thread per cell
+// ============================================================================
+__global__ void computePlicAlphaKernel(
+    const float* __restrict__ fill,
+    const float* __restrict__ nx_in,
+    const float* __restrict__ ny_in,
+    const float* __restrict__ nz_in,
+    float* __restrict__ alpha_out,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    float f = fill[idx];
+    if (f <= 0.0f || f >= 1.0f) {
+        alpha_out[idx] = f;  // 0 or 1 (unused in flux kernel for bulk cells)
+        return;
+    }
+
+    float pnx = nx_in[idx];
+    float pny = ny_in[idx];
+    float pnz = nz_in[idx];
+
+    // Convention: store alpha for the equation with ABSOLUTE VALUE normals in unit cube.
+    // That is, we find alpha s.t.:
+    //   Volume({x in [0,1]^3 : |nx|*x + |ny|*y + |nz|*z < alpha_abs}) = f
+    // where alpha_abs is in the sorted-|n| frame.
+    //
+    // When the flux kernel calls plicVolumeInBox(alpha_signed, nx_signed, ny_signed, ...),
+    // it first does sign-flip reflections that map alpha_signed → alpha_abs by adding
+    // |ni| * Li for each negative ni. So we must store:
+    //   alpha_out = alpha_abs - Σ_{ni < 0} |ni|   (in the original signed frame)
+    // so that plicVolumeInBox recovers alpha_abs correctly.
+    //
+    // In the full-cell case (Lx=Ly=Lz=1), this adjustment is:
+    //   alpha_signed = alpha_abs - (|pnx| if pnx<0 else 0) - (|pny| if pny<0 else 0) - ...
+
+    float mx = fabsf(pnx);
+    float my = fabsf(pny);
+    float mz = fabsf(pnz);
+
+    // Sort for plicAlphaFromVolume3D: m1 ≥ m2 ≥ m3
+    float sm1 = mx, sm2 = my, sm3 = mz;
+    if (sm1 < sm2) { float t = sm1; sm1 = sm2; sm2 = t; }
+    if (sm1 < sm3) { float t = sm1; sm1 = sm3; sm3 = t; }
+    if (sm2 < sm3) { float t = sm2; sm2 = sm3; sm3 = t; }
+
+    // Find alpha in the sorted-|n| frame (unit cube, all-positive normals)
+    float alpha_abs = plicAlphaFromVolume3D(f, sm1, sm2, sm3);
+
+    // Convert to signed frame: subtract contributions for negative components
+    // plicVolumeInBox will add them back via its sign-flip logic
+    float alpha_signed = alpha_abs;
+    if (pnx < 0.0f) alpha_signed -= mx;   // subtract |pnx| * Lx (Lx=1)
+    if (pny < 0.0f) alpha_signed -= my;   // subtract |pny| * Ly (Ly=1)
+    if (pnz < 0.0f) alpha_signed -= mz;   // subtract |pnz| * Lz (Lz=1)
+
+    alpha_out[idx] = alpha_signed;
+}
+
+// ============================================================================
+// Kernel 3: Face velocity interpolation (cell-centered → face-centered)
+// ============================================================================
+// For dir=0 (x-faces): output array has (nx+1)*ny*nz entries
+// face index: fi + (nx+1)*(j + ny*k),  fi = 0..nx  (faces between cells)
+// ============================================================================
+__global__ void interpolateFaceVelocityKernel(
+    const float* __restrict__ u_cell,
+    float* __restrict__ u_face,
+    int nx, int ny, int nz,
+    int dir,     // 0=x-faces, 1=y-faces, 2=z-faces
+    int bc_dir)  // 0=periodic, 1=wall
+{
+    // Grid layout: each thread handles one face
+    // Launch with face-count threads
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (dir == 0) {
+        // x-faces: (nx+1)*ny*nz faces, index fi + (nx+1)*(j + ny*k)
+        int total = (nx+1) * ny * nz;
+        if (idx >= total) return;
+        int fi = idx % (nx+1);
+        int tmp = idx / (nx+1);
+        int j  = tmp % ny;
+        int k  = tmp / ny;
+
+        // Wall BC: zero velocity at domain boundaries
+        if (bc_dir != 0 && (fi == 0 || fi == nx)) {
+            u_face[idx] = 0.0f;
+            return;
+        }
+        // Periodic or interior: average adjacent cell values
+        int il = (fi == 0)  ? (bc_dir == 0 ? nx-1 : 0)    : fi-1;
+        int ir = (fi == nx) ? (bc_dir == 0 ? 0    : nx-1)  : fi;
+        int cidx_l = il + nx * (j + ny * k);
+        int cidx_r = ir + nx * (j + ny * k);
+        u_face[idx] = 0.5f * (u_cell[cidx_l] + u_cell[cidx_r]);
+
+    } else if (dir == 1) {
+        // y-faces: nx*(ny+1)*nz
+        int total = nx * (ny+1) * nz;
+        if (idx >= total) return;
+        int i  = idx % nx;
+        int tmp = idx / nx;
+        int fj  = tmp % (ny+1);
+        int k   = tmp / (ny+1);
+
+        if (bc_dir != 0 && (fj == 0 || fj == ny)) {
+            u_face[idx] = 0.0f;
+            return;
+        }
+        int jl = (fj == 0)  ? (bc_dir == 0 ? ny-1 : 0)    : fj-1;
+        int jr = (fj == ny) ? (bc_dir == 0 ? 0    : ny-1)  : fj;
+        int cidx_l = i + nx * (jl + ny * k);
+        int cidx_r = i + nx * (jr + ny * k);
+        u_face[idx] = 0.5f * (u_cell[cidx_l] + u_cell[cidx_r]);
+
+    } else {
+        // z-faces: nx*ny*(nz+1)
+        int total = nx * ny * (nz+1);
+        if (idx >= total) return;
+        int i  = idx % nx;
+        int tmp = idx / nx;
+        int j   = tmp % ny;
+        int fk  = tmp / ny;
+
+        if (bc_dir != 0 && (fk == 0 || fk == nz)) {
+            u_face[idx] = 0.0f;
+            return;
+        }
+        int kl = (fk == 0)  ? (bc_dir == 0 ? nz-1 : 0)    : fk-1;
+        int kr = (fk == nz) ? (bc_dir == 0 ? 0    : nz-1)  : fk;
+        int cidx_l = i + nx * (j + ny * kl);
+        int cidx_r = i + nx * (j + ny * kr);
+        u_face[idx] = 0.5f * (u_cell[cidx_l] + u_cell[cidx_r]);
+    }
+}
+
+// ============================================================================
+// Kernel 4: Geometric PLIC flux computation (one direction per call)
+// ============================================================================
+// Each thread computes the volumetric flux through one face.
+// The flux is in units of [cell volume] (dimensionless fill fraction × volume).
+//
+// Convention: flux[face] = volume of fluid that crosses this face in time dt.
+//   Positive = flow in +dir direction.
+// ============================================================================
+__global__ void computePlicFluxKernel(
+    const float* __restrict__ fill,
+    const float* __restrict__ plic_nx,
+    const float* __restrict__ plic_ny,
+    const float* __restrict__ plic_nz,
+    const float* __restrict__ plic_alpha,
+    const float* __restrict__ u_face,
+    float* __restrict__ flux_out,
+    float dt, float dx,
+    int nx, int ny, int nz,
+    int dir, int bc_dir)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // -------------------------------------------------------------------------
+    // Decode face index → (fi, j, k) depending on direction
+    // -------------------------------------------------------------------------
+    int fi = 0, fj = 0, fk = 0;
+    int donor_i = 0, donor_j = 0, donor_k = 0;
+
+    if (dir == 0) {
+        int total = (nx+1) * ny * nz;
+        if (idx >= total) return;
+        fi = idx % (nx+1);
+        int tmp = idx / (nx+1);
+        fj = tmp % ny;
+        fk = tmp / ny;
+    } else if (dir == 1) {
+        int total = nx * (ny+1) * nz;
+        if (idx >= total) return;
+        fi = idx % nx;
+        int tmp = idx / nx;
+        fj = tmp % (ny+1);
+        fk = tmp / (ny+1);
+    } else {
+        int total = nx * ny * (nz+1);
+        if (idx >= total) return;
+        fi = idx % nx;
+        int tmp = idx / nx;
+        fj = tmp % ny;
+        fk = tmp / ny;
+    }
+
+    float u = u_face[idx];
+
+    // Wall faces: always zero flux
+    if (bc_dir != 0) {
+        bool is_boundary = (dir == 0 && (fi == 0 || fi == nx)) ||
+                           (dir == 1 && (fj == 0 || fj == ny)) ||
+                           (dir == 2 && (fk == 0 || fk == nz));
+        if (is_boundary) { flux_out[idx] = 0.0f; return; }
+    }
+
+    // Zero velocity: no flux
+    if (fabsf(u) < 1e-15f) { flux_out[idx] = 0.0f; return; }
+
+    // -------------------------------------------------------------------------
+    // Determine donor cell (upwind cell)
+    // For x-faces: face fi sits between cell fi-1 (left) and cell fi (right)
+    // u > 0 → material moves right → donor = left cell (fi-1, fj, fk)
+    // u < 0 → material moves left  → donor = right cell (fi, fj, fk)
+    // -------------------------------------------------------------------------
+    if (dir == 0) {
+        if (u > 0.0f) {
+            donor_i = fi - 1;
+            donor_j = fj;
+            donor_k = fk;
+            // Periodic wrap for left-most face
+            if (donor_i < 0) donor_i = (bc_dir == 0) ? nx-1 : 0;
+        } else {
+            donor_i = fi;
+            donor_j = fj;
+            donor_k = fk;
+            if (donor_i >= nx) donor_i = (bc_dir == 0) ? 0 : nx-1;
+        }
+    } else if (dir == 1) {
+        if (u > 0.0f) {
+            donor_i = fi;
+            donor_j = fj - 1;
+            donor_k = fk;
+            if (donor_j < 0) donor_j = (bc_dir == 0) ? ny-1 : 0;
+        } else {
+            donor_i = fi;
+            donor_j = fj;
+            donor_k = fk;
+            if (donor_j >= ny) donor_j = (bc_dir == 0) ? 0 : ny-1;
+        }
+    } else {
+        if (u > 0.0f) {
+            donor_i = fi;
+            donor_j = fj;
+            donor_k = fk - 1;
+            if (donor_k < 0) donor_k = (bc_dir == 0) ? nz-1 : 0;
+        } else {
+            donor_i = fi;
+            donor_j = fj;
+            donor_k = fk;
+            if (donor_k >= nz) donor_k = (bc_dir == 0) ? 0 : nz-1;
+        }
+    }
+
+    // Clamp donor indices to valid range
+    donor_i = max(0, min(nx-1, donor_i));
+    donor_j = max(0, min(ny-1, donor_j));
+    donor_k = max(0, min(nz-1, donor_k));
+
+    int d_idx = donor_i + nx * (donor_j + ny * donor_k);
+
+    float f  = fill[d_idx];
+    float d  = fabsf(u) * dt / dx;  // CFL depth in [0,1] units
+
+    // Clamp CFL to 1 for safety (should be ≤ 1 if CFL condition holds)
+    d = fminf(d, 1.0f);
+
+    // -------------------------------------------------------------------------
+    // Compute geometric flux volume using PLIC plane in the departure slab
+    // -------------------------------------------------------------------------
+    float vol_flux;
+
+    // Trivial cases: bulk cells need no geometry
+    if (f <= 0.0f) {
+        vol_flux = 0.0f;
+    } else if (f >= 1.0f) {
+        vol_flux = d;  // Full slab = d (in normalized units, volume = d*1*1)
+    } else {
+        // Interface cell: compute volume in departure slab
+        float pnx_d = plic_nx[d_idx];
+        float pny_d = plic_ny[d_idx];
+        float pnz_d = plic_nz[d_idx];
+        float alpha = plic_alpha[d_idx];  // In |n|-sorted frame
+
+        // The slab geometry depends on direction and flow sign:
+        //   u > 0: departure slab is the RIGHT portion of donor cell: [1-d,1]×[0,1]×[0,1] (for dir=0)
+        //   u < 0: departure slab is the LEFT  portion of donor cell: [0,d]×[0,1]×[0,1]
+        //
+        // For u > 0 (right face): translate x' = x - (1-d) so slab becomes [0,d]×[0,1]×[0,1]
+        //   New alpha: alpha' = alpha - n_sweep * (1-d)
+        //   where n_sweep is the component of n in the sweep direction.
+        // For u < 0 (left face): slab is already [0,d]×[0,1]×[0,1], no translation.
+        //
+        // Then scale the slab to unit cube [0,1]³ for the sweep dimension:
+        //   vol in [0,d]×[0,1]×[0,1] = d * plicVolume3D(alpha' , |n_sweep|*d, |ny|, |nz|)
+        // The sign-flip convention for negative normals is handled inside plicVolumeInBox.
+
+        float n_sweep;
+        float Lx_slab, Ly_slab, Lz_slab;
+        float alpha_slab;
+
+        if (dir == 0) {
+            n_sweep = pnx_d;
+            if (u > 0.0f) {
+                // Right slab [1-d, 1]×[0,1]×[0,1] → translate x' = x-(1-d)
+                // alpha' = alpha - n_sweep*(1-d)
+                alpha_slab = alpha - n_sweep * (1.0f - d);
+            } else {
+                // Left slab [0, d]×[0,1]×[0,1], no translation
+                alpha_slab = alpha;
+            }
+            Lx_slab = d;
+            Ly_slab = 1.0f;
+            Lz_slab = 1.0f;
+            vol_flux = plicVolumeInBox(alpha_slab, n_sweep, pny_d, pnz_d,
+                                       Lx_slab, Ly_slab, Lz_slab);
+        } else if (dir == 1) {
+            n_sweep = pny_d;
+            if (u > 0.0f) {
+                alpha_slab = alpha - n_sweep * (1.0f - d);
+            } else {
+                alpha_slab = alpha;
+            }
+            Lx_slab = 1.0f;
+            Ly_slab = d;
+            Lz_slab = 1.0f;
+            vol_flux = plicVolumeInBox(alpha_slab, pnx_d, n_sweep, pnz_d,
+                                       Lx_slab, Ly_slab, Lz_slab);
+        } else {
+            n_sweep = pnz_d;
+            if (u > 0.0f) {
+                alpha_slab = alpha - n_sweep * (1.0f - d);
+            } else {
+                alpha_slab = alpha;
+            }
+            Lx_slab = 1.0f;
+            Ly_slab = 1.0f;
+            Lz_slab = d;
+            vol_flux = plicVolumeInBox(alpha_slab, pnx_d, pny_d, n_sweep,
+                                       Lx_slab, Ly_slab, Lz_slab);
+        }
+
+        // vol_flux is in physical units [dx³ fractions], normalize to per-cell-volume
+        // Actually plicVolumeInBox returns vol in units of Lx*Ly*Lz (already in dx units)
+        // We want flux in [cell volume] = 1 (normalized), so vol_flux is already correct.
+        vol_flux = fmaxf(0.0f, fminf(d, vol_flux));
+    }
+
+    // Sign: flux is positive in the +dir direction
+    // (we store signed flux; updateVofFromFlux uses it as: C -= flux_right - flux_left)
+    flux_out[idx] = (u >= 0.0f) ? vol_flux : -vol_flux;
+}
+
+// ============================================================================
+// Kernel 5: VOF update from PLIC fluxes (one direction)
+// ============================================================================
+// C_new[i,j,k] = C_old[i,j,k] - (flux[i+1/2] - flux[i-1/2])
+// No clamping: geometric fluxes are naturally bounded.
+// ============================================================================
+__global__ void updateVofFromFluxKernel(
+    const float* __restrict__ fill_old,
+    float* __restrict__ fill_new,
+    const float* __restrict__ flux,
+    int nx, int ny, int nz,
+    int dir, int bc_dir)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + nx * (j + ny * k);
+    float f = fill_old[idx];
+
+    float flux_plus, flux_minus;
+
+    if (dir == 0) {
+        // x-sweep: faces at i+1/2 (face index i+1) and i-1/2 (face index i)
+        // Face array layout: fi + (nx+1)*(j + ny*k)
+        int f_plus  = (i+1) + (nx+1) * (j + ny * k);  // right face i+1/2
+        int f_minus = (i)   + (nx+1) * (j + ny * k);  // left face  i-1/2
+        flux_plus  = flux[f_plus];
+        flux_minus = flux[f_minus];
+    } else if (dir == 1) {
+        // y-sweep: faces at j+1/2 and j-1/2
+        int f_plus  = i + nx * ((j+1) + (ny+1) * k);
+        int f_minus = i + nx * ( j    + (ny+1) * k);
+        flux_plus  = flux[f_plus];
+        flux_minus = flux[f_minus];
+    } else {
+        // z-sweep: faces at k+1/2 and k-1/2
+        int f_plus  = i + nx * (j + ny * (k+1));
+        int f_minus = i + nx * (j + ny *  k   );
+        flux_plus  = flux[f_plus];
+        flux_minus = flux[f_minus];
+    }
+
+    // Conservative update: C_new = C_old - (flux_plus - flux_minus)
+    // Fluxes carry sign: positive = flowing in +dir direction
+    float f_new = f - (flux_plus - flux_minus);
+
+    // Soft clamp: geometric fluxes are bounded but floating-point can cause tiny violations
+    f_new = fmaxf(0.0f, fminf(1.0f, f_new));
+
+    fill_new[idx] = f_new;
+}
+
+// ============================================================================
+// VOFSolver::plicAllocateIfNeeded()
+// ============================================================================
+void VOFSolver::plicAllocateIfNeeded() {
+    if (plic_nx_.size() > 0) return;
+
+    int N = num_cells_;
+    int max_face = std::max({(nx_+1)*ny_*nz_,
+                            nx_*(ny_+1)*nz_,
+                            nx_*ny_*(nz_+1)});
+
+    plic_nx_       = lbm::utils::CudaBuffer<float>(N);
+    plic_ny_       = lbm::utils::CudaBuffer<float>(N);
+    plic_nz_       = lbm::utils::CudaBuffer<float>(N);
+    plic_alpha_    = lbm::utils::CudaBuffer<float>(N);
+    plic_flux_     = lbm::utils::CudaBuffer<float>(max_face);
+    plic_face_vel_ = lbm::utils::CudaBuffer<float>(max_face);
+
+    plic_nx_.zero();
+    plic_ny_.zero();
+    plic_nz_.zero();
+    plic_alpha_.zero();
+    plic_flux_.zero();
+    plic_face_vel_.zero();
+}
+
+// ============================================================================
+// VOFSolver::advectFillLevelPLIC()
+// Strang-split directional sweeps with full PLIC reconstruction each sweep.
+// ============================================================================
+void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
+                                     const float* d_uz, float dt) {
+    plicAllocateIfNeeded();
+
+    int N = num_cells_;
+    int bcs[3] = { static_cast<int>(bc_x_),
+                   static_cast<int>(bc_y_),
+                   static_cast<int>(bc_z_) };
+
+    // Face array sizes for each direction
+    int face_sizes[3] = {
+        (nx_+1) * ny_  * nz_,
+        nx_  * (ny_+1) * nz_,
+        nx_  * ny_  * (nz_+1)
+    };
+
+    const float* vel_ptrs[3] = { d_ux, d_uy, d_uz };
+
+    // Strang splitting: alternate XYZ / YXZ order each step
+    int sweeps[3];
+    if (plic_strang_x_first_) {
+        sweeps[0] = 0; sweeps[1] = 1; sweeps[2] = 2;
+    } else {
+        sweeps[0] = 1; sweeps[1] = 0; sweeps[2] = 2;
+    }
+
+    // Work on d_fill_level_ / d_fill_level_tmp_ ping-pong
+    float* src = d_fill_level_;
+    float* dst = d_fill_level_tmp_;
+
+    // 1-D block for flat kernels
+    dim3 cell_block(256);
+    dim3 cell_grid((N + 255) / 256);
+
+    // 3-D block for normal kernel (same as existing kernels)
+    dim3 blk3(8, 8, 8);
+    dim3 grd3((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
+
+    for (int s = 0; s < 3; ++s) {
+        int dir = sweeps[s];
+        int face_N = face_sizes[dir];
+        dim3 face_block(256);
+        dim3 face_grid((face_N + 255) / 256);
+
+        // Step 1: Compute Youngs normals from current fill
+        computePlicNormalsKernel<<<grd3, blk3>>>(
+            src,
+            plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+            nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+        CUDA_CHECK_KERNEL();
+
+        // Step 2: Invert alpha from volume fraction + normal
+        computePlicAlphaKernel<<<cell_grid, cell_block>>>(
+            src,
+            plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+            plic_alpha_.get(),
+            N);
+        CUDA_CHECK_KERNEL();
+
+        // Step 3: Interpolate face velocities for this direction
+        interpolateFaceVelocityKernel<<<face_grid, face_block>>>(
+            vel_ptrs[dir], plic_face_vel_.get(),
+            nx_, ny_, nz_, dir, bcs[dir]);
+        CUDA_CHECK_KERNEL();
+
+        // Step 4: Compute geometric flux at each face
+        computePlicFluxKernel<<<face_grid, face_block>>>(
+            src,
+            plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+            plic_alpha_.get(),
+            plic_face_vel_.get(),
+            plic_flux_.get(),
+            dt, dx_,
+            nx_, ny_, nz_, dir, bcs[dir]);
+        CUDA_CHECK_KERNEL();
+
+        // Step 5: Update VOF fill level from fluxes
+        updateVofFromFluxKernel<<<grd3, blk3>>>(
+            src, dst, plic_flux_.get(),
+            nx_, ny_, nz_, dir, bcs[dir]);
+        CUDA_CHECK_KERNEL();
+
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        // Swap ping-pong buffers
+        float* tmp = src; src = dst; dst = tmp;
+    }
+
+    // Ensure d_fill_level_ holds the final result
+    if (src != d_fill_level_) {
+        CUDA_CHECK(cudaMemcpy(d_fill_level_, src, N * sizeof(float),
+                              cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    // Alternate Strang sweep order for next call
+    plic_strang_x_first_ = !plic_strang_x_first_;
 }
 
 } // namespace physics

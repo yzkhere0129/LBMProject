@@ -30,6 +30,7 @@
 
 #include <cuda_runtime.h>
 #include <cstdint>
+#include "utils/cuda_memory.h"
 
 namespace lbm {
 namespace physics {
@@ -49,7 +50,8 @@ enum class CellFlag : uint8_t {
  */
 enum class VOFAdvectionScheme : uint8_t {
     UPWIND = 0,     ///< First-order upwind (most diffusive, most stable)
-    TVD = 1         ///< TVD with flux limiter (2nd-order in smooth regions)
+    TVD    = 1,     ///< TVD with flux limiter (2nd-order in smooth regions)
+    PLIC   = 2      ///< Geometric PLIC (Piecewise Linear Interface Calculation)
 };
 
 /**
@@ -303,6 +305,15 @@ public:
     void setReferenceMass(float mass_ref) { mass_reference_ = mass_ref; }
 
     /**
+     * @brief Enable or disable Olsson-Kreiss interface compression
+     * @param enabled True to enable compression, false to disable (default: false)
+     * @param coefficient Compression coefficient C in ε = C·|u|_max·dx (default: 0.10)
+     * @note Compression sharpens diffuse interfaces but can cause artifacts at concave
+     *       corners (e.g., Zalesak disk slot). Disable for pure advection benchmarks.
+     */
+    void setInterfaceCompression(bool enabled, float coefficient = 0.10f);
+
+    /**
      * @brief Get reference mass
      */
     float getReferenceMass() const { return mass_reference_; }
@@ -325,6 +336,10 @@ private:
     float mass_correction_damping_;        ///< Damping factor for redistribution (default: 0.7)
     float mass_reference_;                 ///< Reference mass for conservation tracking
 
+    // Interface compression settings
+    bool interface_compression_enabled_ = false;  ///< Enable Olsson-Kreiss compression (default: OFF)
+    float C_compress_coeff_ = 0.10f;              ///< Compression coefficient when enabled
+
     // Device memory for VOF fields
     float* d_fill_level_;           ///< Fill level field (0-1)
     uint8_t* d_cell_flags_;         ///< Cell flag field (GAS/LIQUID/INTERFACE/OBSTACLE)
@@ -334,9 +349,20 @@ private:
     // Temporary storage for advection
     float* d_fill_level_tmp_;       ///< Temporary fill level for advection
 
+    // ---- PLIC geometric advection buffers (lazy-allocated) ----
+    lbm::utils::CudaBuffer<float> plic_nx_;
+    lbm::utils::CudaBuffer<float> plic_ny_;
+    lbm::utils::CudaBuffer<float> plic_nz_;
+    lbm::utils::CudaBuffer<float> plic_alpha_;
+    lbm::utils::CudaBuffer<float> plic_flux_;        // reusable per-direction face flux
+    lbm::utils::CudaBuffer<float> plic_face_vel_;    // reusable per-direction face velocity
+    bool plic_strang_x_first_ = true;
+
     // Utility functions
     void allocateMemory();
     void freeMemory();
+    void advectFillLevelPLIC(const float* d_ux, const float* d_uy, const float* d_uz, float dt);
+    void plicAllocateIfNeeded();
 };
 
 // CUDA kernels for VOF solver

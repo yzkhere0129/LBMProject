@@ -169,6 +169,22 @@ public:
     float computeSubstratePower(float dx, float h_conv, float T_substrate) const;
 
     /**
+     * @brief Apply physics-based temperature safety cap
+     *
+     * Clamps temperature at T_vaporization for all cells. This prevents
+     * unphysical temperature runaway in laser melting simulations when
+     * evaporative cooling (which requires VOF) is not available.
+     *
+     * Physical justification: In reality, strong surface evaporation
+     * self-limits temperature to near T_boil. When VOF is disabled,
+     * this explicit cap provides the same physics constraint.
+     *
+     * @note This is a no-op if material properties are not set
+     * @note Does NOT require VOF -- can be called in thermal-only mode
+     */
+    void applyTemperatureSafetyCap();
+
+    /**
      * @brief Compute temperature field from distribution functions
      */
     void computeTemperature();
@@ -184,6 +200,9 @@ public:
      * @return Const device pointer to temperature array
      */
     const float* getTemperature() const { return d_temperature; }
+
+    /// Get current (post-streaming) D3Q7 distribution pointer
+    float* getDistributionSrc() { return d_g_src; }
 
     /**
      * @brief Copy temperature to host
@@ -217,6 +236,11 @@ public:
      * @param eps Emissivity value (0-1)
      */
     void setEmissivity(float eps) { emissivity_ = eps; }
+
+    /**
+     * @brief Enable periodic boundary in z-direction (for quasi-2D simulations)
+     */
+    void setZPeriodic(bool enable) { z_periodic_ = enable; }
 
     /**
      * @brief Get liquid fraction field (device pointer)
@@ -341,6 +365,7 @@ private:
     float cp_;              ///< Specific heat capacity [J/(kg·K)]
     float emissivity_;      ///< Surface emissivity (0-1)
     float T_initial_;       ///< Initial temperature for energy reference [K]
+    bool z_periodic_;       ///< Use periodic BC in z-direction (for quasi-2D)
 
     // Phase change support (optional)
     PhaseChangeSolver* phase_solver_;  ///< Phase change solver (nullptr if disabled)

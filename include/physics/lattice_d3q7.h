@@ -18,12 +18,14 @@
 namespace lbm {
 namespace physics {
 
-// Forward declaration of device constant memory arrays
+// Forward declaration of device memory arrays
 // These are defined in lattice_d3q7.cu
-extern __constant__ int tex[7];
-extern __constant__ int tey[7];
-extern __constant__ int tez[7];
-extern __constant__ float tw[7];
+// NOTE: Using __device__ instead of __constant__ for RDC compatibility.
+// cudaMemcpyToSymbol fails with -rdc=true (CUDA separable compilation).
+extern __device__ int tex[7];
+extern __device__ int tey[7];
+extern __device__ int tez[7];
+extern __device__ float tw[7];
 
 /**
  * @brief D3Q7 lattice constants and structure for thermal transport

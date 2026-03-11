@@ -170,6 +170,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(benchmark_thermal_lpbf PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(benchmark_thermal_lpbf lbm_physics lbm_io CUDA::cudart)
 
+    # Visualization: rising bubble
+    add_executable(viz_bubble scripts/viz/viz_bubble.cu)
+    set_target_properties(viz_bubble PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_bubble lbm_physics lbm_core CUDA::cudart)
+
+    # Visualization: Marangoni 1D return flow benchmark
+    add_executable(viz_marangoni_returnflow scripts/viz/viz_marangoni_returnflow.cu)
+    set_target_properties(viz_marangoni_returnflow PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_marangoni_returnflow lbm_physics lbm_core CUDA::cudart)
+
+    # Visualization: Marangoni 2D thermocapillary cavity
+    add_executable(viz_marangoni_cavity scripts/viz/viz_marangoni_cavity.cu)
+    set_target_properties(viz_marangoni_cavity PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_marangoni_cavity lbm_physics lbm_core CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------

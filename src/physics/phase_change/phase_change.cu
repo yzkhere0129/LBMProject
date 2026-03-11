@@ -11,11 +11,44 @@
 #include <stdexcept>
 #include "utils/cuda_check.h"
 
+// Local __device__ variable for material properties in this translation unit.
+//
+// Why __device__ instead of __constant__:
+// With CUDA separable compilation (CUDA_SEPARABLE_COMPILATION ON), each .cu
+// file is compiled as relocatable device code (-rdc=true).  In this mode,
+// cudaMemcpyToSymbol() fails with "invalid device symbol" for __constant__
+// variables because the symbol registration happens at device-link time, not
+// at compile time — the runtime cannot locate the symbol in the module table.
+// cudaGetSymbolAddress() + cudaMemcpy() works correctly in RDC mode.
+//
+// Performance impact: __device__ global memory vs __constant__ cache.
+// MaterialProperties is read once per kernel invocation for initialization
+// of rho_ref/cp_ref locals, so the extra latency is negligible.
+__device__ lbm::physics::MaterialProperties d_phase_material;
+
+// Helper: upload material properties to d_phase_material on the device.
+// Must be file-scope (not inside a namespace) so it can reference the
+// file-scope d_phase_material symbol via cudaGetSymbolAddress.
+static void uploadPhaseMaterial(const lbm::physics::MaterialProperties& mat) {
+    lbm::physics::MaterialProperties* sym_ptr;
+    cudaError_t err = cudaGetSymbolAddress(
+        reinterpret_cast<void**>(&sym_ptr), d_phase_material);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(
+            std::string("cudaGetSymbolAddress(d_phase_material): ") +
+            cudaGetErrorString(err));
+    }
+    err = cudaMemcpy(sym_ptr, &mat, sizeof(lbm::physics::MaterialProperties),
+                     cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(
+            std::string("cudaMemcpy to d_phase_material: ") +
+            cudaGetErrorString(err));
+    }
+}
+
 namespace lbm {
 namespace physics {
-
-// Device constant memory for material properties (defined in material_database.cu)
-// No need to declare here - already declared in material_properties.h
 
 //==============================================================================
 // CUDA Kernels
@@ -44,16 +77,16 @@ __global__ void computeEnthalpyFromTemperatureKernel(
     float T = temperature[idx];
 
     // Compute liquid fraction
-    float fl = d_material.liquidFraction(T);
+    float fl = d_phase_material.liquidFraction(T);
 
     // Use solid density and cp as reference for enthalpy calculation
     // This ensures consistency with the Newton solver
-    float rho_ref = d_material.rho_solid;
-    float cp_ref = d_material.cp_solid;
+    float rho_ref = d_phase_material.rho_solid;
+    float cp_ref = d_phase_material.cp_solid;
 
     // Compute total enthalpy: H = ρ_ref·cp_ref·T + fl·ρ_ref·L_fusion
     // Units: [J/m³] = [kg/m³]·[J/(kg·K)]·[K] + [kg/m³]·[J/kg]
-    float H = rho_ref * cp_ref * T + fl * rho_ref * d_material.L_fusion;
+    float H = rho_ref * cp_ref * T + fl * rho_ref * d_phase_material.L_fusion;
 
     enthalpy[idx] = H;
     liquid_fraction[idx] = fl;
@@ -90,14 +123,14 @@ __global__ void solveTemperatureFromEnthalpyKernel(
     float T = temperature[idx];  // Use current T as initial guess
 
     // Use solid properties as reference (consistent with H calculation)
-    float rho_ref = d_material.rho_solid;
-    float cp_ref = d_material.cp_solid;
+    float rho_ref = d_phase_material.rho_solid;
+    float cp_ref = d_phase_material.cp_solid;
 
     // Determine which phase we're likely in based on enthalpy
     // H_solidus = rho*cp*T_solidus
     // H_liquidus = rho*cp*T_liquidus + rho*L
-    float H_solidus = rho_ref * cp_ref * d_material.T_solidus;
-    float H_liquidus = rho_ref * cp_ref * d_material.T_liquidus + rho_ref * d_material.L_fusion;
+    float H_solidus = rho_ref * cp_ref * d_phase_material.T_solidus;
+    float H_liquidus = rho_ref * cp_ref * d_phase_material.T_liquidus + rho_ref * d_phase_material.L_fusion;
 
     // Better initial guess if current T is far off
     if (H_target < H_solidus) {
@@ -105,20 +138,20 @@ __global__ void solveTemperatureFromEnthalpyKernel(
         T = H_target / (rho_ref * cp_ref);
     } else if (H_target > H_liquidus) {
         // Liquid phase: H = rho*cp*T + rho*L => T = (H - rho*L)/(rho*cp)
-        T = (H_target - rho_ref * d_material.L_fusion) / (rho_ref * cp_ref);
+        T = (H_target - rho_ref * d_phase_material.L_fusion) / (rho_ref * cp_ref);
     } else {
         // Mushy zone: use bisection for initial guess
-        T = (d_material.T_solidus + d_material.T_liquidus) / 2.0f;
+        T = (d_phase_material.T_solidus + d_phase_material.T_liquidus) / 2.0f;
     }
 
     // Newton-Raphson iteration
     bool conv = false;
     for (int iter = 0; iter < max_iterations; ++iter) {
         // Compute current liquid fraction
-        float fl = d_material.liquidFraction(T);
+        float fl = d_phase_material.liquidFraction(T);
 
         // Compute f(T) = ρ_ref·cp_ref·T + fl·ρ_ref·L - H
-        float H_current = rho_ref * cp_ref * T + fl * rho_ref * d_material.L_fusion;
+        float H_current = rho_ref * cp_ref * T + fl * rho_ref * d_phase_material.L_fusion;
         float f = H_current - H_target;
 
         // Check convergence
@@ -129,11 +162,11 @@ __global__ void solveTemperatureFromEnthalpyKernel(
 
         // Compute derivative f'(T) = ρ_ref·cp_ref + (dfl/dT)·ρ_ref·L
         float dfl_dT = 0.0f;
-        if (d_material.isMushy(T)) {
+        if (d_phase_material.isMushy(T)) {
             // In mushy zone: dfl/dT = 1/(T_liquidus - T_solidus)
-            dfl_dT = 1.0f / (d_material.T_liquidus - d_material.T_solidus);
+            dfl_dT = 1.0f / (d_phase_material.T_liquidus - d_phase_material.T_solidus);
         }
-        float df_dT = rho_ref * cp_ref + dfl_dT * rho_ref * d_material.L_fusion;
+        float df_dT = rho_ref * cp_ref + dfl_dT * rho_ref * d_phase_material.L_fusion;
 
         // Newton update
         float dT = f / df_dT;
@@ -142,21 +175,21 @@ __global__ void solveTemperatureFromEnthalpyKernel(
         // CRITICAL FIX: Clamp to prevent thermal runaway
         // T_MAX should be limited to 1.2 * T_boil to prevent temperatures
         // far above the boiling point where the physics model breaks down
-        float T_MAX_SAFE = fminf(T_MAX, 1.2f * d_material.T_vaporization);
+        float T_MAX_SAFE = fminf(T_MAX, 1.2f * d_phase_material.T_vaporization);
         T = fmaxf(T_MIN, fminf(T_MAX_SAFE, T));
     }
 
     // CRITICAL FIX: Bisection fallback if Newton-Raphson failed
     if (!conv) {
         // Use bisection method as robust fallback
-        float T_MAX_SAFE = fminf(T_MAX, 1.2f * d_material.T_vaporization);
+        float T_MAX_SAFE = fminf(T_MAX, 1.2f * d_phase_material.T_vaporization);
         float T_low = T_MIN;
         float T_high = T_MAX_SAFE;
 
         for (int iter = 0; iter < max_iterations; ++iter) {
             T = (T_low + T_high) / 2.0f;
-            float fl = d_material.liquidFraction(T);
-            float H_current = rho_ref * cp_ref * T + fl * rho_ref * d_material.L_fusion;
+            float fl = d_phase_material.liquidFraction(T);
+            float H_current = rho_ref * cp_ref * T + fl * rho_ref * d_phase_material.L_fusion;
             float f = H_current - H_target;
 
             if (fabsf(f) < tolerance * rho_ref * cp_ref) {
@@ -174,7 +207,7 @@ __global__ void solveTemperatureFromEnthalpyKernel(
 
     // Update outputs
     temperature[idx] = T;
-    liquid_fraction[idx] = d_material.liquidFraction(T);
+    liquid_fraction[idx] = d_phase_material.liquidFraction(T);
     converged[idx] = conv ? 1 : 0;
 }
 
@@ -190,7 +223,7 @@ __global__ void updateLiquidFractionKernel(
     if (idx >= num_cells) return;
 
     float T = temperature[idx];
-    liquid_fraction[idx] = d_material.liquidFraction(T);
+    liquid_fraction[idx] = d_phase_material.liquidFraction(T);
 }
 
 /**
@@ -281,6 +314,7 @@ PhaseChangeSolver::PhaseChangeSolver(int nx, int ny, int nz,
     : nx_(nx), ny_(ny), nz_(nz),
       num_cells_(nx * ny * nz),
       material_(material),
+      dx_(1.0f),
       d_enthalpy(nullptr),
       d_liquid_fraction(nullptr),
       d_liquid_fraction_prev_(nullptr),
@@ -291,6 +325,43 @@ PhaseChangeSolver::PhaseChangeSolver(int nx, int ny, int nz,
 
 PhaseChangeSolver::~PhaseChangeSolver() {
     freeMemory();
+}
+
+PhaseChangeSolver::PhaseChangeSolver(PhaseChangeSolver&& other) noexcept
+    : nx_(other.nx_), ny_(other.ny_), nz_(other.nz_),
+      num_cells_(other.num_cells_),
+      material_(other.material_),
+      dx_(other.dx_),
+      d_enthalpy(other.d_enthalpy),
+      d_liquid_fraction(other.d_liquid_fraction),
+      d_liquid_fraction_prev_(other.d_liquid_fraction_prev_),
+      d_dfl_dt_(other.d_dfl_dt_)
+{
+    other.d_enthalpy = nullptr;
+    other.d_liquid_fraction = nullptr;
+    other.d_liquid_fraction_prev_ = nullptr;
+    other.d_dfl_dt_ = nullptr;
+}
+
+PhaseChangeSolver& PhaseChangeSolver::operator=(PhaseChangeSolver&& other) noexcept {
+    if (this != &other) {
+        freeMemory();
+        nx_ = other.nx_;
+        ny_ = other.ny_;
+        nz_ = other.nz_;
+        num_cells_ = other.num_cells_;
+        material_ = other.material_;
+        dx_ = other.dx_;
+        d_enthalpy = other.d_enthalpy;
+        d_liquid_fraction = other.d_liquid_fraction;
+        d_liquid_fraction_prev_ = other.d_liquid_fraction_prev_;
+        d_dfl_dt_ = other.d_dfl_dt_;
+        other.d_enthalpy = nullptr;
+        other.d_liquid_fraction = nullptr;
+        other.d_liquid_fraction_prev_ = nullptr;
+        other.d_dfl_dt_ = nullptr;
+    }
+    return *this;
 }
 
 void PhaseChangeSolver::allocateMemory() {
@@ -316,8 +387,8 @@ void PhaseChangeSolver::freeMemory() {
 }
 
 void PhaseChangeSolver::initializeFromTemperature(const float* temperature) {
-    // Copy material to device constant memory
-    CUDA_CHECK(cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties)));
+    // Upload material properties to device
+    uploadPhaseMaterial(material_);
 
     // Compute initial enthalpy
     int threads = 256;
@@ -335,8 +406,8 @@ void PhaseChangeSolver::initializeFromTemperature(const float* temperature) {
 }
 
 void PhaseChangeSolver::updateEnthalpyFromTemperature(const float* temperature) {
-    // Ensure material is in device constant memory
-    CUDA_CHECK(cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties)));
+    // Ensure material is uploaded to device
+    uploadPhaseMaterial(material_);
 
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;
@@ -349,8 +420,8 @@ void PhaseChangeSolver::updateEnthalpyFromTemperature(const float* temperature) 
 int PhaseChangeSolver::updateTemperatureFromEnthalpy(float* temperature,
                                                       float tolerance,
                                                       int max_iterations) {
-    // Ensure material is in device constant memory
-    CUDA_CHECK(cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties)));
+    // Ensure material is uploaded to device
+    uploadPhaseMaterial(material_);
 
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;
@@ -383,10 +454,8 @@ int PhaseChangeSolver::updateTemperatureFromEnthalpy(float* temperature,
 }
 
 void PhaseChangeSolver::updateLiquidFraction(const float* temperature) {
-    // CRITICAL FIX: Ensure material is in device constant memory
-    // Without this, d_material.T_solidus and d_material.T_liquidus are uninitialized,
-    // causing all temperatures to be classified as solid (f_l = 0.0)
-    CUDA_CHECK(cudaMemcpyToSymbol(d_material, &material_, sizeof(MaterialProperties)));
+    // Ensure material is uploaded to device before kernel reads d_phase_material
+    uploadPhaseMaterial(material_);
 
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;
@@ -423,8 +492,7 @@ float PhaseChangeSolver::computeTotalEnergy() const {
     float* d_partial_sums;
     CUDA_CHECK(cudaMalloc(&d_partial_sums, blocks * sizeof(float)));
 
-    // Assume unit cell volume for now (dx = dy = dz = 1)
-    float cell_volume = 1.0f;
+    float cell_volume = dx_ * dx_ * dx_;
 
     computeTotalEnergyKernel<<<blocks, threads, threads * sizeof(float)>>>(
         d_enthalpy, d_partial_sums, num_cells_, cell_volume);

@@ -97,11 +97,18 @@ constexpr float GHIA_RE400_X[] = {
 };
 
 // V-velocity values at centerline (y = 0.5)
+// NOTE: The value at index 5 (x=0.9063, V=-0.23827) is acknowledged as
+// "probably wrong" in the widely-used compilation by ivan-pi (GitHub gist
+// of Ghia 1982 Table II). It is inconsistent with the monotone spatial
+// profile between x=0.9453 (V=-0.228) and x=0.8594 (V=-0.450).
 constexpr float GHIA_RE400_V[] = {
     0.00000f, -0.12146f, -0.15663f, -0.19254f, -0.22847f, -0.23827f, -0.44993f,
     -0.38598f, 0.05186f, 0.30174f, 0.30203f, 0.28124f, 0.22965f, 0.20920f,
     0.19713f, 0.18360f, 0.00000f
 };
+
+// Index of the suspect V-velocity data point (x=0.9063)
+constexpr int GHIA_RE400_SUSPECT_V_INDEX = 5;
 
 // Primary vortex center location (Re=400)
 constexpr float GHIA_RE400_VORTEX_X = 0.5547f;  // x/L

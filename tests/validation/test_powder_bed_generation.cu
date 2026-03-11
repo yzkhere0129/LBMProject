@@ -179,13 +179,17 @@ bool test_particle_generation() {
     VOFSolver vof(nx, ny, nz, dx);
     vof.initialize(0.0f);  // Start with empty domain
 
-    // Configure powder bed
+    // Configure powder bed.
+    // Use REGULAR_PERTURBED: places particles on a hexagonal grid (deterministic,
+    // no overlaps, ~33% packing for D50=20um in a 100x100x40um domain).
+    // RSA in quasi-2D (layer = 2*D50) is geometrically limited to ~22%.
     PowderBedConfig config;
     config.layer_thickness = 40.0e-6f;  // 40 um
-    config.target_packing = 0.50f;       // 50% (easier to achieve)
-    config.size_dist.D50 = 20.0e-6f;     // Smaller particles for small domain
+    config.target_packing = 0.50f;       // 50% (used for RSA; regular method ignores this)
+    config.size_dist.D50 = 20.0e-6f;     // Particle diameter
     config.size_dist.D_min = 10.0e-6f;
     config.size_dist.D_max = 30.0e-6f;
+    config.generation_method = PowderGenerationMethod::REGULAR_PERTURBED;
     config.seed = 12345;
 
     // Generate powder bed

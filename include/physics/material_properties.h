@@ -14,6 +14,7 @@
 #include <cmath>
 #include <string>
 #include <stdexcept>
+#include <iostream>
 
 namespace lbm {
 namespace physics {
@@ -49,6 +50,7 @@ struct MaterialProperties {
     float T_vaporization;     ///< Vaporization/boiling temperature [K]
     float L_fusion;           ///< Latent heat of fusion [J/kg]
     float L_vaporization;     ///< Latent heat of vaporization [J/kg]
+    float molar_mass;            ///< Molar mass [kg/mol]
 
     // Surface properties
     float surface_tension;    ///< Surface tension at melting point [N/m]
@@ -254,25 +256,6 @@ struct MaterialProperties {
     }
 
     /**
-     * @brief Get effective heat capacity including latent heat effects
-     * @param T Temperature [K]
-     * @param dT Temperature increment for enthalpy method [K]
-     * @return Effective heat capacity [J/(kg·K)]
-     */
-    __host__ __device__ float getEffectiveHeatCapacity(float T, float dT = 1.0f) const {
-        float cp = getSpecificHeat(T);
-
-        // Add latent heat contribution if in phase change region
-        if (isMushy(T) && dT > 0.0f) {
-            // Approximate latent heat contribution
-            float dfl_dT = 1.0f / (T_liquidus - T_solidus);
-            cp += L_fusion * dfl_dT;
-        }
-
-        return cp;
-    }
-
-    /**
      * @brief Validate material properties for physical consistency
      * @return True if all properties are physically reasonable
      */
@@ -289,6 +272,15 @@ struct MaterialProperties {
 
         // Check latent heats
         if (L_fusion <= 0.0f || L_vaporization <= 0.0f) return false;
+
+        // Check molar mass
+        if (molar_mass <= 0.0f) return false;
+
+        // Check mushy zone width (prevents division by zero in getApparentHeatCapacity)
+        if ((T_liquidus - T_solidus) < 0.01f) {
+            std::cerr << "MaterialProperties::validate() WARNING: Mushy zone width "
+                      << (T_liquidus - T_solidus) << "K is extremely narrow" << std::endl;
+        }
 
         // Check optical properties
         if (absorptivity_solid < 0.0f || absorptivity_solid > 1.0f) return false;
@@ -439,10 +431,10 @@ namespace MaterialUnits {
 } // namespace physics
 } // namespace lbm
 
-// Declare device constant memory for material properties
-// This will be defined in the .cu file
+// Declare device memory for material properties (RDC-compatible)
+// This will be defined in material_database.cu
 #ifdef __CUDACC__
-extern __constant__ lbm::physics::MaterialProperties d_material;
+extern __device__ lbm::physics::MaterialProperties d_material;
 #endif
 
 #endif // MATERIAL_PROPERTIES_H

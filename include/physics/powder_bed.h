@@ -352,6 +352,17 @@ private:
     bool checkCollision(const Particle& p, float min_gap) const;
 
     /**
+     * @brief Check collision with periodic wrapping in x and y
+     * @param p Candidate particle
+     * @param min_gap Minimum gap required [m]
+     * @param Lx Domain length in x [m]
+     * @param Ly Domain length in y [m]
+     * @return True if collision detected
+     */
+    bool checkCollisionPeriodic(const Particle& p, float min_gap,
+                                float Lx, float Ly) const;
+
+    /**
      * @brief Update VOF fill_level field from particle list
      */
     void updateVOFFillLevel();
