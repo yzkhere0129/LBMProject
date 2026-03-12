@@ -93,10 +93,16 @@ static constexpr float CONV_TOL   = 1e-4f;       // relative Nu change
 
 // ======================== CUDA Kernels ========================
 
-// Fused D3Q19 TRT collision + streaming + bounce-back walls + Inamuro BC
-__global__ void fusedFluidStep_D3Q19(
-    const float* __restrict__ f_src,
-    float* __restrict__ f_dst,
+// Pull-based fused D3Q19: pull → macro → TRT collision → write
+// All BCs integrated: no-slip walls (link bounce-back), free surface (Inamuro specular)
+//
+// KEY FIX: In pull-based streaming, the Inamuro specular reflection uses the
+// SURFACE CELL'S OWN post-collision distributions from the previous step.
+// The old push-based approach incorrectly used the INTERIOR cell's distributions
+// that were pushed into the surface cell during streaming, causing ~3× velocity deficit.
+__global__ void pullFluidStep_D3Q19(
+    const float* __restrict__ f_src,  // post-collision from previous step
+    float* __restrict__ f_dst,        // output: post-collision for this step
     float* __restrict__ rho_out,
     float* __restrict__ ux_out,
     float* __restrict__ uy_out,
@@ -114,28 +120,64 @@ __global__ void fusedFluidStep_D3Q19(
     const int id = ix + iy * nx;
 
     // D3Q19 lattice vectors and weights
-    constexpr int ex[19] = {0,1,-1,0,0,0,0,1,-1,1,-1,1,-1,1,-1,0,0,0,0};
-    constexpr int ey[19] = {0,0,0,1,-1,0,0,1,1,-1,-1,0,0,0,0,1,-1,1,-1};
-    constexpr int ez[19] = {0,0,0,0,0,1,-1,0,0,0,0,1,1,-1,-1,1,1,-1,-1};
-    constexpr int opp[19]= {0,2,1,4,3,6,5,10,9,8,7,14,13,12,11,18,17,16,15};
+    constexpr int ex[19]  = {0,1,-1,0,0,0,0,1,-1,1,-1,1,-1,1,-1,0,0,0,0};
+    constexpr int ey[19]  = {0,0,0,1,-1,0,0,1,1,-1,-1,0,0,0,0,1,-1,1,-1};
+    constexpr int ez[19]  = {0,0,0,0,0,1,-1,0,0,0,0,1,1,-1,-1,1,1,-1,-1};
+    constexpr int opp[19] = {0,2,1,4,3,6,5,10,9,8,7,14,13,12,11,18,17,16,15};
+    // y-specular: flip ey component.  q=3↔4, 7↔9, 8↔10, 15↔16, 17↔18
+    constexpr int spec_y[19] = {0,1,2,4,3,5,6,9,10,7,8,11,12,13,14,16,15,18,17};
     constexpr float w[19] = {
-        1.0f/3.0f,                               // rest
-        1.0f/18.0f,1.0f/18.0f,1.0f/18.0f,1.0f/18.0f,1.0f/18.0f,1.0f/18.0f,  // faces
-        1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,  // edges xy
-        1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,  // edges xz
-        1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,1.0f/36.0f   // edges yz
+        1.0f/3.0f,
+        1.0f/18.0f,1.0f/18.0f,1.0f/18.0f,1.0f/18.0f,1.0f/18.0f,1.0f/18.0f,
+        1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,
+        1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,
+        1.0f/36.0f,1.0f/36.0f,1.0f/36.0f,1.0f/36.0f
     };
 
-    // TRT relaxation
-    float omega_plus = 1.0f / tau_v;
-    float tau_minus = 0.5f + lambda / (tau_v - 0.5f);
-    float omega_minus = 1.0f / tau_minus;
-
-    // 1. Read distributions and compute macroscopic
+    // ---- 1. Pull streaming with integrated BCs ----
     float f[19];
+
+    // Marangoni stress (precompute for free surface cells)
+    bool is_surface = (iy == ny - 1) && (ix > 0) && (ix < nx - 1);
+    float delta_f = 0.0f;
+    if (is_surface) {
+        float T_plus  = temperature[id + 1];
+        float T_minus = temperature[id - 1];
+        float dTdx = (T_plus - T_minus) * 0.5f;
+        float tau_s = -gamma_T * dTdx;
+        delta_f = tau_s / (2.0f * ce_factor);
+    }
+
+    for (int q = 0; q < 19; q++) {
+        int ix_s = ix - ex[q];
+        int iy_s = iy - ey[q];
+        // z: periodic with NZ=1 → always iz=0
+
+        if (iy_s >= ny) {
+            // Source above domain → free surface: specular reflection
+            // Uses THIS cell's own post-collision outgoing (upward) distribution
+            int q_spec = spec_y[q];
+            f[q] = f_src[id + q_spec * nc];
+            // Marangoni stress on xy-diagonal directions
+            if (is_surface) {
+                if (q == 9)       f[q] += delta_f;   // (+1,-1,0) ← (+1,+1,0)
+                else if (q == 10) f[q] -= delta_f;   // (-1,-1,0) ← (-1,+1,0)
+            }
+        }
+        else if (ix_s < 0 || ix_s >= nx || iy_s < 0) {
+            // Source outside domain → no-slip wall: link bounce-back
+            f[q] = f_src[id + opp[q] * nc];
+        }
+        else {
+            // Normal pull from neighbor
+            int src_id = ix_s + iy_s * nx;
+            f[q] = f_src[src_id + q * nc];
+        }
+    }
+
+    // ---- 2. Compute macroscopic quantities ----
     float m_rho = 0, m_ux = 0, m_uy = 0, m_uz = 0;
     for (int q = 0; q < 19; q++) {
-        f[q] = f_src[id + q * nc];
         m_rho += f[q];
         m_ux += ex[q] * f[q];
         m_uy += ey[q] * f[q];
@@ -146,211 +188,32 @@ __global__ void fusedFluidStep_D3Q19(
     m_uy *= inv_rho;
     m_uz *= inv_rho;
 
-    // Store macroscopic
     rho_out[id] = m_rho;
     ux_out[id] = m_ux;
     uy_out[id] = m_uy;
     uz_out[id] = m_uz;
 
-    // 2. TRT collision
+    // ---- 3. TRT collision (read-only f[], write to f_dst) ----
+    float omega_plus = 1.0f / tau_v;
+    float tau_minus = 0.5f + lambda / (tau_v - 0.5f);
+    float omega_minus = 1.0f / tau_minus;
+
     float usq = m_ux*m_ux + m_uy*m_uy + m_uz*m_uz;
     for (int q = 0; q < 19; q++) {
-        float cu = ex[q]*m_ux + ey[q]*m_uy + ez[q]*m_uz;
-        float feq = w[q] * m_rho * (1.0f + 3.0f*cu + 4.5f*cu*cu - 1.5f*usq);
-
         int qo = opp[q];
-        float cu_opp = ex[qo]*m_ux + ey[qo]*m_uy + ez[qo]*m_uz;
+        float cu     = (float)ex[q]*m_ux  + (float)ey[q]*m_uy  + (float)ez[q]*m_uz;
+        float cu_opp = (float)ex[qo]*m_ux + (float)ey[qo]*m_uy + (float)ez[qo]*m_uz;
+        float feq     = w[q]  * m_rho * (1.0f + 3.0f*cu     + 4.5f*cu*cu         - 1.5f*usq);
         float feq_opp = w[qo] * m_rho * (1.0f + 3.0f*cu_opp + 4.5f*cu_opp*cu_opp - 1.5f*usq);
 
-        float f_sym  = 0.5f * (f[q] + f[qo]);
-        float feq_sym = 0.5f * (feq + feq_opp);
-        float f_asym  = 0.5f * (f[q] - f[qo]);
+        float f_sym    = 0.5f * (f[q] + f[qo]);
+        float feq_sym  = 0.5f * (feq + feq_opp);
+        float f_asym   = 0.5f * (f[q] - f[qo]);
         float feq_asym = 0.5f * (feq - feq_opp);
 
-        f[q] -= omega_plus * (f_sym - feq_sym) + omega_minus * (f_asym - feq_asym);
+        f_dst[id + q * nc] = f[q] - omega_plus * (f_sym - feq_sym)
+                                   - omega_minus * (f_asym - feq_asym);
     }
-
-    // 3. Streaming with boundary handling
-    bool is_wall = (ix == 0 || ix == nx-1 || iy == 0);
-    bool is_top  = (iy == ny - 1);
-
-    if (is_wall) {
-        // Bounce-back: post-collision populations reflect back
-        for (int q = 1; q < 19; q++) {
-            int qo = opp[q];
-            f_dst[id + qo * nc] = f[q];
-        }
-        f_dst[id] = f[0];
-    } else if (is_top && ix > 0 && ix < nx - 1) {
-        // Inamuro specular + Marangoni stress at free surface
-        // Stream interior directions normally
-        for (int q = 0; q < 19; q++) {
-            int nx_dst = ix + ex[q];
-            int ny_dst = iy + ey[q];
-
-            if (ny_dst >= ny) {
-                // Would go above: specular reflect handled below
-                continue;
-            }
-            if (nx_dst >= 0 && nx_dst < nx && ny_dst >= 0) {
-                int dst_id = nx_dst + ny_dst * nx;
-                f_dst[dst_id + q * nc] = f[q];
-            }
-        }
-
-        // Specular reflections for upward-going populations
-        // q=3 (+y) → q=4 (-y)
-        f_dst[id + 4 * nc] = f[3];
-        // q=7 (+x,+y) → q=9 (+x,-y) but with Marangoni stress
-        // q=8 (-x,+y) → q=10 (-x,-y) but with Marangoni stress
-
-        // Compute Marangoni stress
-        float T_plus  = temperature[id + 1];
-        float T_minus = temperature[id - 1];
-        float dTdx = (T_plus - T_minus) * 0.5f;
-        float tau_s = -gamma_T * dTdx;
-        float delta_f = tau_s / (2.0f * ce_factor);
-
-        f_dst[id +  9 * nc] = f[7] + delta_f;
-        f_dst[id + 10 * nc] = f[8] - delta_f;
-
-        // q=15 (0,+y,+z) → q=16 (0,-y,+z)
-        // q=17 (0,+y,-z) → q=18 (0,-y,-z)
-        f_dst[id + 16 * nc] = f[15];
-        f_dst[id + 18 * nc] = f[17];
-    } else {
-        // Interior cell: push to neighbors
-        for (int q = 0; q < 19; q++) {
-            int nx_dst = ix + ex[q];
-            int ny_dst = iy + ey[q];
-            // z is periodic for NZ=1 (stays at iz=0)
-
-            if (nx_dst >= 0 && nx_dst < nx && ny_dst >= 0 && ny_dst < ny) {
-                int dst_id = nx_dst + ny_dst * nx;
-                f_dst[dst_id + q * nc] = f[q];
-            }
-            // Distributions going out of bounds bounce back (handled by wall cells)
-        }
-    }
-}
-
-__global__ void applyNoSlipWalls(float* f, int nx, int ny, int nz)
-{
-    static constexpr int ex[19] = {0,1,-1,0,0,0,0,1,-1,1,-1,1,-1,1,-1,0,0,0,0};
-    static constexpr int ey[19] = {0,0,0,1,-1,0,0,1,1,-1,-1,0,0,0,0,1,-1,1,-1};
-    static constexpr int opp[19] = {0,2,1,4,3,6,5,10,9,8,7,14,13,12,11,18,17,16,15};
-
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int n_cells = nx * ny * nz;
-
-    int n_x_wall = 2 * ny * nz;
-    int n_y_bot  = nx * nz;
-    int n_total  = n_x_wall + n_y_bot;
-    if (tid >= n_total) return;
-
-    int ix, iy, iz;
-    unsigned int wall_dirs = 0;
-
-    if (tid < n_x_wall) {
-        int side = tid / (ny * nz);
-        int rem  = tid % (ny * nz);
-        iz = rem / ny;
-        iy = rem % ny;
-        ix = (side == 0) ? 0 : nx - 1;
-        wall_dirs = (side == 0) ? 1u : 2u;
-        if (iy == 0) wall_dirs |= 4u;
-        if (iy == ny - 1) wall_dirs |= 8u;
-    } else {
-        int bid = tid - n_x_wall;
-        iz = bid / nx;
-        ix = bid % nx;
-        iy = 0;
-        wall_dirs = 4u;
-        if (ix == 0) wall_dirs |= 1u;
-        if (ix == nx - 1) wall_dirs |= 2u;
-    }
-
-    int id = ix + iy * nx + iz * nx * ny;
-
-    for (int q = 1; q < 19; q++) {
-        bool needs_bc = false;
-        if ((wall_dirs & 1u) && ex[q] > 0) needs_bc = true;
-        if ((wall_dirs & 2u) && ex[q] < 0) needs_bc = true;
-        if ((wall_dirs & 4u) && ey[q] > 0) needs_bc = true;
-        if ((wall_dirs & 8u) && ey[q] < 0) needs_bc = true;
-        if (needs_bc) {
-            f[id + q * n_cells] = f[id + opp[q] * n_cells];
-        }
-    }
-}
-
-__global__ void applyTopInamuroBC(
-    float* __restrict__ f,
-    const float* __restrict__ temperature,
-    int nx, int ny, int nz,
-    float gamma_T, float ce_factor)
-{
-    int ix = blockIdx.x * blockDim.x + threadIdx.x;
-    int iz = blockIdx.y * blockDim.y + threadIdx.y;
-    if (ix >= nx || iz >= nz) return;
-    if (ix == 0 || ix == nx - 1) return;  // wall corners: keep bounce-back
-
-    const int n_cells = nx * ny * nz;
-    const int id = ix + (ny - 1) * nx + iz * nx * ny;
-
-    // Central difference ∂T/∂x
-    float T_plus  = temperature[id + 1];
-    float T_minus = temperature[id - 1];
-    float dTdx = (T_plus - T_minus) * 0.5f;
-
-    // Marangoni stress τ_s = ∂σ/∂x = −γ_T · ∂T/∂x
-    float tau_s   = -gamma_T * dTdx;
-    float delta_f = tau_s / (2.0f * ce_factor);
-
-    // q=4 (0,-1,0) ← specular of q=3 (0,+1,0)
-    f[id + 4 * n_cells] = f[id + 3 * n_cells];
-
-    // q=9 (1,-1,0) ← specular of q=7 (1,+1,0) + stress
-    // q=10 (-1,-1,0) ← specular of q=8 (-1,+1,0) - stress
-    float f7 = f[id + 7 * n_cells];
-    float f8 = f[id + 8 * n_cells];
-    f[id +  9 * n_cells] = f7 + delta_f;
-    f[id + 10 * n_cells] = f8 - delta_f;
-
-    // q=16 (0,-1,+1) ← specular of q=15 (0,+1,+1)
-    // q=18 (0,-1,-1) ← specular of q=17 (0,+1,-1)
-    f[id + 16 * n_cells] = f[id + 15 * n_cells];
-    f[id + 18 * n_cells] = f[id + 17 * n_cells];
-}
-
-__global__ void computeMacroKernel(
-    const float* __restrict__ f,
-    float* __restrict__ rho,
-    float* __restrict__ ux,
-    float* __restrict__ uy,
-    float* __restrict__ uz,
-    int n_cells)
-{
-    static constexpr int ex[19] = {0,1,-1,0,0,0,0,1,-1,1,-1,1,-1,1,-1,0,0,0,0};
-    static constexpr int ey[19] = {0,0,0,1,-1,0,0,1,1,-1,-1,0,0,0,0,1,-1,1,-1};
-    static constexpr int ez[19] = {0,0,0,0,0,1,-1,0,0,0,0,1,1,-1,-1,1,1,-1,-1};
-
-    int id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (id >= n_cells) return;
-
-    float m_rho = 0.0f, m_ux = 0.0f, m_uy = 0.0f, m_uz = 0.0f;
-    for (int q = 0; q < 19; q++) {
-        float fq = f[id + q * n_cells];
-        m_rho += fq;
-        m_ux += ex[q] * fq;
-        m_uy += ey[q] * fq;
-        m_uz += ez[q] * fq;
-    }
-    float inv_rho = 1.0f / fmaxf(m_rho, 1e-12f);
-    rho[id] = m_rho;
-    ux[id]  = m_ux * inv_rho;
-    uy[id]  = m_uy * inv_rho;
-    uz[id]  = m_uz * inv_rho;
 }
 
 // Moment-based Dirichlet BC for D3Q7:
@@ -565,23 +428,7 @@ int main() {
                     T_HOT + (T_COLD - T_HOT) * ix / (float)(NX - 1);
     thermal.initialize(T_init.data());
 
-    // Kernel configs
-    dim3 blk_top(128, 1);
-    dim3 grd_top((NX + blk_top.x - 1) / blk_top.x, NZ);
-
-    int n_wall_nodes = 2 * NY * NZ + NX * NZ;
-    int blk_wall = 256;
-    int grd_wall = (n_wall_nodes + blk_wall - 1) / blk_wall;
-
-    int blk_macro = 256;
-    int grd_macro = (NC + blk_macro - 1) / blk_macro;
-
-    // Moment-based Dirichlet BC launch config (NY*NZ threads per face)
-    int n_face = NY * NZ;
-    int blk_dirichlet = 256;
-    int grd_dirichlet = (n_face + blk_dirichlet - 1) / blk_dirichlet;
-
-    // Custom rho/velocity arrays (avoid FluidLBM's internal boundary zeroing)
+    // Custom rho/velocity arrays
     float *d_rho_c, *d_ux_c, *d_uy_c, *d_uz_c;
     CUDA_CHECK(cudaMalloc(&d_rho_c, NC * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_ux_c,  NC * sizeof(float)));
@@ -601,7 +448,16 @@ int main() {
     float* d_g_src = d_g_A;
     float* d_g_dst = d_g_B;
 
-    // Fused kernel launch config (2D: NX × NY threads)
+    // D3Q19 fluid: own two distribution buffers for pull-based kernel
+    float *d_f_A, *d_f_B;
+    CUDA_CHECK(cudaMalloc(&d_f_A, NC * 19 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_f_B, NC * 19 * sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d_f_A, fluid.getDistributionSrc(),
+                          NC * 19 * sizeof(float), cudaMemcpyDeviceToDevice));
+    float* d_f_src = d_f_A;
+    float* d_f_dst = d_f_B;
+
+    // 2D kernel launch config (NX × NY threads)
     dim3 blk_fused(16, 16);
     dim3 grd_fused((NX + 15) / 16, (NY + 15) / 16);
     float omega_T = 1.0f / TAU_T;
@@ -635,16 +491,11 @@ int main() {
         applyBCsAndComputeT_D3Q7<<<grd_fused, blk_fused>>>(
             d_g_src, d_temperature, T_HOT, T_COLD, NX, NY, NZ);
 
-        // 2. Fluid: TRT collision → streaming → walls → Inamuro → macro
-        fluid.collisionTRT(0.0f, 0.0f, 0.0f, LAMBDA);
-        fluid.streaming();
-        applyNoSlipWalls<<<grd_wall, blk_wall>>>(
-            fluid.getDistributionSrc(), NX, NY, NZ);
-        applyTopInamuroBC<<<grd_top, blk_top>>>(
-            fluid.getDistributionSrc(), d_temperature,
-            NX, NY, NZ, GAMMA_T, CE_FACTOR);
-        computeMacroKernel<<<grd_macro, blk_macro>>>(
-            fluid.getDistributionSrc(), d_rho_c, d_ux_c, d_uy_c, d_uz_c, NC);
+        // 2. Fluid: pull-based fused step (pull + macro + TRT collision)
+        pullFluidStep_D3Q19<<<grd_fused, blk_fused>>>(
+            d_f_src, d_f_dst, d_rho_c, d_ux_c, d_uy_c, d_uz_c,
+            d_temperature, TAU_V, LAMBDA, GAMMA_T, CE_FACTOR, NX, NY, NZ);
+        { float* tmp = d_f_src; d_f_src = d_f_dst; d_f_dst = tmp; }
 
         // 3. NaN check (early steps only)
         if (step <= 5 || (step <= 100 && step % 20 == 0)) {
@@ -817,5 +668,7 @@ int main() {
     cudaFree(d_uz_c);
     cudaFree(d_g_A);
     cudaFree(d_g_B);
+    cudaFree(d_f_A);
+    cudaFree(d_f_B);
     return 0;
 }
