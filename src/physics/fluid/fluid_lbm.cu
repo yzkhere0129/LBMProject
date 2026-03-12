@@ -554,6 +554,38 @@ void FluidLBM::computeMacroscopic(const float* force_x,
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+void FluidLBM::computeMacroscopic(const float* force_x,
+                                   const float* force_y,
+                                   const float* force_z,
+                                   const float* darcy_coeff) {
+    int block_size = 256;
+    int grid_size = (num_cells_ + block_size - 1) / block_size;
+
+    computeMacroscopicSemiImplicitDarcyKernel<<<grid_size, block_size>>>(
+        d_f_src, d_rho, d_ux, d_uy, d_uz,
+        force_x, force_y, force_z, darcy_coeff, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    // Compute pressure
+    computePressureKernel<<<grid_size, block_size>>>(
+        d_rho, d_pressure, rho0_, D3Q19::CS2, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    // Enforce correct velocity at boundary nodes
+    if (n_boundary_nodes_ > 0) {
+        int wall_grid_size = (n_boundary_nodes_ + block_size - 1) / block_size;
+        setBoundaryVelocityKernel<<<wall_grid_size, block_size>>>(
+            d_ux, d_uy, d_uz,
+            d_boundary_nodes_,
+            n_boundary_nodes_,
+            nx_, ny_, nz_
+        );
+        CUDA_CHECK_KERNEL();
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
 // Compute buoyancy force
 void FluidLBM::computeBuoyancyForce(const float* temperature,
                                    float T_ref,
@@ -1658,6 +1690,90 @@ __global__ void computeMacroscopicWithForceKernel(
         u_z = m_uz * inv_rho + 0.5f * force_z[id] * inv_rho;
 
         // Velocity clamping for stability
+        const float U_MAX = 0.3f;
+        float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
+        if (u_mag > U_MAX) {
+            float scale = U_MAX / u_mag;
+            u_x *= scale;
+            u_y *= scale;
+            u_z *= scale;
+        }
+    }
+
+    ux[id] = u_x;
+    uy[id] = u_y;
+    uz[id] = u_z;
+}
+
+/**
+ * @brief Semi-implicit Darcy treatment in macroscopic velocity computation
+ *
+ * Standard Guo:    u = [m + 0.5·F] / ρ
+ * Semi-implicit:   u = [m + 0.5·F_other] / (ρ + 0.5·K)
+ *
+ * where m = Σ(ci·fi), F_other = non-Darcy forces (lattice units),
+ * K = Darcy drag coefficient (lattice units).
+ *
+ * Physics: Darcy force is F_darcy = -K·u. Substituting into Guo definition
+ * and solving for u gives the semi-implicit form. When K → ∞ (solid),
+ * u → 0 smoothly without NaN or sign reversal.
+ *
+ * Reference: Voller & Prakash (1987), Brent et al. (1988)
+ */
+__global__ void computeMacroscopicSemiImplicitDarcyKernel(
+    const float* f,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
+    int num_cells)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= num_cells) return;
+
+    // Compute density
+    float m_rho = 0.0f;
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        m_rho += f[id + q * num_cells];
+    }
+
+    // Compute momentum from distributions
+    float m_ux = 0.0f;
+    float m_uy = 0.0f;
+    float m_uz = 0.0f;
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float fq = f[id + q * num_cells];
+        m_ux += ex[q] * fq;
+        m_uy += ey[q] * fq;
+        m_uz += ez[q] * fq;
+    }
+
+    // Store density
+    rho[id] = m_rho;
+
+    float u_x = 0.0f;
+    float u_y = 0.0f;
+    float u_z = 0.0f;
+
+    if (m_rho > 1e-10f && !isnan(m_rho)) {
+        // Semi-implicit Darcy:
+        //   u = [Σ(ci·fi) + 0.5·F_other] / (ρ + 0.5·K)
+        //
+        // K = 0 (liquid):  reduces to standard Guo u = m/ρ + 0.5·F/ρ
+        // K → ∞ (solid):   u → 0 smoothly, no NaN
+        float K = darcy_coeff[id];
+        float denom = m_rho + 0.5f * K;
+        float inv_denom = 1.0f / denom;
+
+        u_x = (m_ux + 0.5f * force_x[id]) * inv_denom;
+        u_y = (m_uy + 0.5f * force_y[id]) * inv_denom;
+        u_z = (m_uz + 0.5f * force_z[id]) * inv_denom;
+
+        // Velocity clamping for safety (rarely needed with semi-implicit)
         const float U_MAX = 0.3f;
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {

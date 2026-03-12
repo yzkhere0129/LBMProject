@@ -185,6 +185,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(viz_marangoni_cavity PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(viz_marangoni_cavity lbm_physics lbm_core CUDA::cudart)
 
+    # Visualization: Rayleigh-Taylor instability (PLIC-VOF + TRT + Guo)
+    add_executable(viz_rt_plic scripts/viz/viz_rt_plic.cu)
+    set_target_properties(viz_rt_plic PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_rt_plic lbm_physics lbm_core CUDA::cudart)
+
+    # Visualization: Darcy semi-implicit diagnostics
+    add_executable(viz_darcy_diagnostics scripts/viz/viz_darcy_diagnostics.cu)
+    set_target_properties(viz_darcy_diagnostics PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_darcy_diagnostics lbm_physics lbm_core CUDA::cudart)
+
+    # LaserMeltingIron post-mortem VTK dump
+    add_executable(viz_laser_melting_postmortem scripts/viz/viz_laser_melting_postmortem.cu)
+    set_target_properties(viz_laser_melting_postmortem PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_laser_melting_postmortem lbm_physics lbm_io CUDA::cudart)
+
     # Stefan problem benchmark (pure metal, enthalpy source term validation)
     # Uses a minimal thermal-only library to avoid fluid solver dependencies
     add_library(lbm_thermal_only STATIC

@@ -210,6 +210,33 @@ public:
                                   float ramp_factor);
 
     /**
+     * @brief Compute Darcy coefficient field for semi-implicit treatment
+     *
+     * Computes K_LU = C·(1-fl)²/(fl³+ε)·ρ·dt per cell in lattice units.
+     * This field is NOT added to the force arrays. Instead, it is passed
+     * to FluidLBM::computeMacroscopic(fx, fy, fz, darcy_coeff) for
+     * semi-implicit velocity update:
+     *   u = [Σ(ci·fi) + 0.5·F_other] / (ρ + 0.5·K)
+     *
+     * @param liquid_fraction Liquid fraction field (0=solid, 1=liquid)
+     * @param darcy_coeff Physical Darcy coefficient C [1/s]
+     * @param rho Physical density [kg/m³]
+     * @param dx Lattice spacing [m]
+     * @param dt Time step [s]
+     * @note K_LU has units of lattice density (dimensionless), matching ρ_LU
+     *       in the denominator (ρ + 0.5·K).
+     */
+    void computeDarcyCoefficientField(const float* liquid_fraction,
+                                       float darcy_coeff, float rho,
+                                       float dx, float dt);
+
+    /**
+     * @brief Get Darcy coefficient field (for semi-implicit macroscopic computation)
+     * @return Device pointer to K_darcy array, or nullptr if not computed
+     */
+    const float* getDarcyCoefficient() const { return d_darcy_K_; }
+
+    /**
      * @brief Get force arrays (const access for solver)
      */
     const float* getFx() const { return d_fx_; }
@@ -258,6 +285,9 @@ private:
     float* d_fx_;  // X-component of force
     float* d_fy_;  // Y-component of force
     float* d_fz_;  // Z-component of force
+
+    // Device memory: Darcy coefficient field for semi-implicit treatment
+    float* d_darcy_K_;  // K per cell (lattice units), allocated on first use
 
     // Diagnostic tracking: Maximum magnitude of each force type
     // Updated after each addXXXForce() call for debugging

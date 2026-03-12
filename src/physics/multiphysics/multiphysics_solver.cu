@@ -1907,7 +1907,18 @@ void MultiphysicsSolver::fluidStep(float dt) {
     // In Guo forcing: u = Σ(ci*fi)/ρ + 0.5*F/ρ
     // Without force correction, velocity from moments alone misses the forcing
     // contribution, causing forces to appear ineffective after streaming.
-    fluid_->computeMacroscopic(d_force_x_, d_force_y_, d_force_z_);
+    //
+    // Semi-implicit Darcy: when enable_darcy is active, use the 4-arg overload
+    // that absorbs Darcy drag into the velocity denominator:
+    //   u = [m + 0.5·F_other] / (ρ + 0.5·K)
+    const float* darcy_K = (config_.enable_darcy && force_accumulator_) ?
+        force_accumulator_->getDarcyCoefficient() : nullptr;
+
+    if (darcy_K) {
+        fluid_->computeMacroscopic(d_force_x_, d_force_y_, d_force_z_, darcy_K);
+    } else {
+        fluid_->computeMacroscopic(d_force_x_, d_force_y_, d_force_z_);
+    }
 }
 
 // ForceAccumulator-based implementation
@@ -2016,7 +2027,18 @@ void MultiphysicsSolver::computeTotalForce() {
         }
     }
 
-    // 2e. Darcy damping (velocity-dependent, must use current velocity)
+    // 2e. Darcy damping — semi-implicit treatment (NOT added to force arrays)
+    //
+    // Instead of adding explicit Darcy force F = -K·u (which causes NaN when
+    // K → ∞ in solid regions), we compute the Darcy coefficient field K_LU
+    // and pass it to computeMacroscopic() for semi-implicit velocity update:
+    //   u = [Σ(ci·fi) + 0.5·F_other] / (ρ + 0.5·K)
+    //
+    // The collision step sees only F_other (no Darcy). The Darcy penalty
+    // acts purely through the velocity definition. This is unconditionally
+    // stable: when K → ∞, u → 0 smoothly.
+    //
+    // Reference: Voller & Prakash (1987), Brent et al. (1988)
     if (config_.enable_darcy && fluid_) {
         const float* liquid_fraction = nullptr;
         if (thermal_) {
@@ -2027,15 +2049,9 @@ void MultiphysicsSolver::computeTotalForce() {
         }
 
         if (liquid_fraction) {
-            // Get current velocity (lattice units)
-            const float* vx = fluid_->getVelocityX();
-            const float* vy = fluid_->getVelocityY();
-            const float* vz = fluid_->getVelocityZ();
-
-            force_accumulator_->addDarcyDamping(
-                liquid_fraction, vx, vy, vz,
-                config_.darcy_coefficient,
-                config_.dx, config_.dt, config_.density);
+            force_accumulator_->computeDarcyCoefficientField(
+                liquid_fraction, config_.darcy_coefficient,
+                config_.density, config_.dx, config_.dt);
         }
     }
 

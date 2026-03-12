@@ -243,6 +243,26 @@ public:
     void computeMacroscopic(const float* force_x, const float* force_y, const float* force_z);
 
     /**
+     * @brief Compute macroscopic quantities with semi-implicit Darcy damping
+     *
+     * Semi-implicit treatment of Darcy drag in the Guo velocity definition:
+     *   u = [Σ(ci·fi) + 0.5·F_other] / (ρ + 0.5·K_darcy)
+     *
+     * When K_darcy → ∞ (solid), velocity → 0 smoothly. No NaN or oscillation.
+     * When K_darcy = 0 (liquid), reduces to standard Guo correction.
+     *
+     * Reference: Voller & Prakash (1987), Brent et al. (1988)
+     *
+     * @param force_x Device array of x-force (lattice units, excluding Darcy)
+     * @param force_y Device array of y-force (lattice units, excluding Darcy)
+     * @param force_z Device array of z-force (lattice units, excluding Darcy)
+     * @param darcy_coeff Device array of Darcy coefficient K per cell (lattice units)
+     *                    K = C·(1-fl)²/(fl³+ε)·ρ_phys·dt, or 0 for liquid cells
+     */
+    void computeMacroscopic(const float* force_x, const float* force_y,
+                            const float* force_z, const float* darcy_coeff);
+
+    /**
      * @brief Compute buoyancy force using Boussinesq approximation
      * @param temperature Device array of temperature field [K]
      * @param T_ref Reference temperature [K]
@@ -570,6 +590,26 @@ __global__ void computeMacroscopicWithForceKernel(
     const float* force_x,
     const float* force_y,
     const float* force_z,
+    int num_cells);
+
+/**
+ * @brief CUDA kernel for semi-implicit Darcy treatment in macroscopic velocity
+ *
+ * u = [Σ(ci·fi) + 0.5·F_other] / (ρ + 0.5·K_darcy)
+ *
+ * This avoids the catastrophic explicit Darcy force that causes NaN when
+ * K → ∞ in solid regions. Instead, velocity smoothly → 0.
+ */
+__global__ void computeMacroscopicSemiImplicitDarcyKernel(
+    const float* f,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
     int num_cells);
 
 /**

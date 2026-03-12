@@ -561,6 +561,47 @@ __global__ void addRecoilPressureForceKernel(
 }
 
 /**
+ * @brief Compute Darcy coefficient field K for semi-implicit velocity update
+ *
+ * K_LU = C·(1-fl)²/(fl³+ε) · ρ_phys · dt
+ *
+ * This gives a dimensionless coefficient that appears alongside ρ_LU
+ * in the denominator: u = [m + 0.5·F_other] / (ρ_LU + 0.5·K_LU)
+ *
+ * Derivation: In physical units, Darcy force per volume is
+ *   F_darcy = -K_CK · ρ · u_phys  where K_CK = C·(1-fl)²/(fl³+ε) [1/s]
+ * In lattice units:
+ *   F_darcy_LU = F_darcy · dt²/dx = -K_CK · ρ · (u_LU · dx/dt) · dt²/dx
+ *              = -K_CK · ρ · dt · u_LU
+ * The semi-implicit form absorbs this as:
+ *   0.5·K_LU·u = 0.5·K_CK·ρ·dt·u  →  K_LU = K_CK · ρ · dt
+ */
+__global__ void computeDarcyCoefficientKernel(
+    const float* liquid_fraction,
+    float* darcy_K,
+    float darcy_coeff,
+    float rho,
+    float dt,
+    int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+
+    float fl = liquid_fraction[idx];
+
+    // Clamp liquid fraction to [0, 1]
+    fl = fmaxf(0.0f, fminf(1.0f, fl));
+
+    // Carman-Kozeny: K_factor = C·(1-fl)²/(fl³+ε)
+    const float eps = 1e-3f;
+    float one_minus_fl = 1.0f - fl;
+    float K_factor = darcy_coeff * one_minus_fl * one_minus_fl / (fl * fl * fl + eps);
+
+    // Convert to lattice units: K_LU = K_factor · ρ_phys · dt
+    darcy_K[idx] = K_factor * rho * dt;
+}
+
+/**
  * @brief Convert forces from physical units to lattice units
  * F_lattice = F_physical · (dt² / dx) [dimensionless]
  */
@@ -763,7 +804,7 @@ __global__ void computeForceMagnitudeKernel(
 
 ForceAccumulator::ForceAccumulator(int nx, int ny, int nz)
     : nx_(nx), ny_(ny), nz_(nz), num_cells_(nx * ny * nz),
-      d_fx_(nullptr), d_fy_(nullptr), d_fz_(nullptr)
+      d_fx_(nullptr), d_fy_(nullptr), d_fz_(nullptr), d_darcy_K_(nullptr)
 {
     allocateMemory();
 }
@@ -806,10 +847,12 @@ void ForceAccumulator::freeMemory() {
     if (d_fx_) cudaFree(d_fx_);
     if (d_fy_) cudaFree(d_fy_);
     if (d_fz_) cudaFree(d_fz_);
+    if (d_darcy_K_) cudaFree(d_darcy_K_);
 
     d_fx_ = nullptr;
     d_fy_ = nullptr;
     d_fz_ = nullptr;
+    d_darcy_K_ = nullptr;
 }
 
 void ForceAccumulator::reset() {
@@ -909,6 +952,31 @@ void ForceAccumulator::addDarcyDamping(
 
     // Update diagnostic
     darcy_mag_ = getMaxForceMagnitude();
+}
+
+void ForceAccumulator::computeDarcyCoefficientField(
+    const float* liquid_fraction, float darcy_coeff, float rho,
+    float dx, float dt)
+{
+    // Lazy-allocate the Darcy coefficient buffer
+    if (!d_darcy_K_) {
+        cudaError_t err = cudaMalloc(&d_darcy_K_, num_cells_ * sizeof(float));
+        if (err != cudaSuccess) {
+            throw std::runtime_error(
+                "ForceAccumulator::computeDarcyCoefficientField: "
+                "Failed to allocate d_darcy_K_: " +
+                std::string(cudaGetErrorString(err)));
+        }
+    }
+
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    computeDarcyCoefficientKernel<<<blocks, threads>>>(
+        liquid_fraction, d_darcy_K_, darcy_coeff, rho, dt, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void ForceAccumulator::addSurfaceTensionForce(

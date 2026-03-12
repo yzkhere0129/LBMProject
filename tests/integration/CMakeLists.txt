@@ -158,38 +158,9 @@ set_tests_properties(LaserMeltingIntegration PROPERTIES
     LABELS "integration;physics;phase_change"
 )
 
-# Stefan problem validation test (1D phase change)
-add_executable(test_stefan_1d
-    test_stefan_1d.cu
-)
-
-set_target_properties(test_stefan_1d PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "86"
-)
-
-target_include_directories(test_stefan_1d PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-)
-
-target_link_libraries(test_stefan_1d
-    lbm_physics
-    lbm_core
-    gtest
-    gtest_main
-    CUDA::cudart
-    CUDA::cuda_driver
-)
-
-add_test(NAME StefanProblemValidation
-    COMMAND test_stefan_1d
-)
-
-set_tests_properties(StefanProblemValidation PROPERTIES
-    TIMEOUT 300  # 5 minutes timeout (10000 steps)
-    LABELS "integration;physics;phase_change;validation"
-)
+# Legacy test_stefan_1d (Ti6Al4V, C_app method) removed 2026-03-12.
+# Superseded by test_stefan_problem (pure-metal ESM, <5% error).
+# See: tests/validation/test_stefan_problem.cu
 
 # Poiseuille flow validation test using FluidLBM class
 add_executable(test_poiseuille_flow_fluidlbm
@@ -288,6 +259,42 @@ add_test(NAME LaserMeltingConvectionIntegration
 set_tests_properties(LaserMeltingConvectionIntegration PROPERTIES
     TIMEOUT 300  # 5 minutes timeout
     LABELS "integration;coupling;laser;melting;convection;phase5"
+)
+
+# ========================================
+# DARCY STABILITY INTEGRATION TESTS
+# ========================================
+
+# Test: Semi-implicit Darcy damping stability
+add_executable(test_darcy_stability
+    test_darcy_stability.cu
+)
+
+set_target_properties(test_darcy_stability PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "86"
+)
+
+target_include_directories(test_darcy_stability PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_darcy_stability
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+)
+
+add_test(NAME DarcyStabilityIntegration
+    COMMAND test_darcy_stability
+)
+
+set_tests_properties(DarcyStabilityIntegration PROPERTIES
+    TIMEOUT 120
+    LABELS "integration;darcy;stability;mushy_zone"
 )
 
 # ========================================
