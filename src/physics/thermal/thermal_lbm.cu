@@ -26,6 +26,10 @@ __global__ void applyPhaseChangeCorrectionKernel(float* g, float* temperature,
                                                    const float* fl_curr, const float* fl_prev,
                                                    MaterialProperties material, int num_cells,
                                                    int nx, int ny, int nz);
+__global__ void enthalpySourceTermKernel(float* g, float* temperature,
+                                          float* liquid_fraction,
+                                          const float* liquid_fraction_prev,
+                                          MaterialProperties material, int num_cells);
 
 // Constructor (deprecated - for backward compatibility)
 ThermalLBM::ThermalLBM(int nx, int ny, int nz, float thermal_diffusivity,
@@ -342,8 +346,10 @@ void ThermalLBM::collisionBGK(const float* ux, const float* uy, const float* uz)
                   (ny_ + blockSize.y - 1) / blockSize.y,
                   (nz_ + blockSize.z - 1) / blockSize.z);
 
-    // Enable apparent heat capacity when phase change is active
-    bool use_apparent_cp = has_material_ && (phase_solver_ != nullptr);
+    // Disable apparent Cp when enthalpy source term (ESM) is active.
+    // ESM handles latent heat via post-collision correction; using apparent Cp
+    // on top would double-count the latent heat effect.
+    bool use_apparent_cp = false;
 
     thermalBGKCollisionKernel<<<gridSize, blockSize>>>(
         d_g_src, d_temperature, ux, uy, uz, omega_T_, nx_, ny_, nz_,
@@ -803,16 +809,32 @@ void ThermalLBM::computeTemperature() {
 
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    // Update liquid fraction if phase change is enabled
-    // NOTE: Full latent heat correction via post-step temperature adjustment
-    // is currently disabled due to instability issues. The latent heat for
-    // Ti6Al4V (L/cp = 469 K) is 10× larger than the mushy zone width (45 K),
-    // causing overcorrection that suppresses melting.
+    // ========================================================================
+    // Enthalpy Source Term Method (Jiaung 2001)
+    // ========================================================================
+    // After collision+streaming gives T* = Σg_q, enforce enthalpy conservation:
+    //   1. Compute total enthalpy: H = cp·T* + fl_old·L
+    //   2. Decode (T_new, fl_new) from H via direct mushy-zone formula
+    //   3. Correct distributions: g_q += w_q · (T_new - T*)
     //
-    // TODO: Implement proper enthalpy-based transport or apparent heat capacity
-    // method for accurate phase change modeling.
+    // This ensures latent heat acts as a "thermal brake": in the mushy zone,
+    // heat goes into increasing fl rather than raising T.
+    // ========================================================================
     if (phase_solver_) {
-        phase_solver_->updateLiquidFraction(d_temperature);
+        // Save fl from previous step (used as fl_old in ESM)
+        phase_solver_->storePreviousLiquidFraction();
+
+        // Apply enthalpy source term: corrects T, fl, and g simultaneously
+        enthalpySourceTermKernel<<<gridSize, blockSize>>>(
+            d_g_src,
+            d_temperature,
+            phase_solver_->getLiquidFraction(),
+            phase_solver_->getPreviousLiquidFraction(),
+            material_,
+            num_cells_
+        );
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
 }
 
@@ -2251,7 +2273,89 @@ void ThermalLBM::computeEvaporationMassFlux(float* d_J_evap, const float* fill_l
 }
 
 /**
- * @brief CUDA kernel to apply latent heat correction for phase change
+ * @brief Enthalpy Source Term kernel for phase change (Jiaung 2001)
+ *
+ * After LBM collision+streaming gives T* = Σg_q, this kernel enforces
+ * strict enthalpy conservation by redistributing energy between sensible
+ * heat (temperature) and latent heat (liquid fraction).
+ *
+ * Algorithm:
+ *   1. Compute total specific enthalpy: H = cp·T* + fl_old·L
+ *   2. Decode (T_new, fl_new) from H:
+ *      - Solid:  H < H_sol → T = H/cp, fl = 0
+ *      - Liquid: H > H_liq → T = (H-L)/cp, fl = 1
+ *      - Mushy:  fl = (H - H_sol) / (cp·ΔT + L),  T = T_sol + fl·ΔT
+ *   3. Correct: ΔT = T_new - T*, update g_q += w_q · ΔT
+ *
+ * The mushy-zone formula is derived from H = cp·T + fl·L with fl = (T-T_sol)/ΔT.
+ * Computing fl first (not T) avoids catastrophic cancellation when L/ΔT >> cp.
+ *
+ * Reference: Jiaung, Ho & Lan (2001), "Lattice Boltzmann method for the heat
+ *            conduction problem with phase change", Numer. Heat Transfer B, 39(2).
+ */
+__global__ void enthalpySourceTermKernel(
+    float* g,
+    float* temperature,
+    float* liquid_fraction,
+    const float* liquid_fraction_prev,
+    MaterialProperties material,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    float T_star = temperature[idx];
+    float fl_old = liquid_fraction_prev[idx];
+
+    // Use solid-phase reference properties (constant cp for enthalpy consistency)
+    float cp = material.cp_solid;
+    float T_sol = material.T_solidus;
+    float T_liq = material.T_liquidus;
+    float L = material.L_fusion;
+    float dT_melt = T_liq - T_sol;
+
+    // Guard: skip if no phase change parameters
+    if (dT_melt < 1e-8f || L < 1e-6f) return;
+
+    // Total specific enthalpy [J/kg]: sensible + latent
+    float H = cp * T_star + fl_old * L;
+
+    // Enthalpy bounds for phase detection
+    float H_solidus = cp * T_sol;
+    float H_liquidus = cp * T_liq + L;
+
+    float T_new, fl_new;
+
+    if (H <= H_solidus) {
+        // Pure solid: all energy is sensible
+        T_new = H / cp;
+        fl_new = 0.0f;
+    } else if (H >= H_liquidus) {
+        // Pure liquid: subtract latent heat to get temperature
+        T_new = (H - L) / cp;
+        fl_new = 1.0f;
+    } else {
+        // Mushy zone: compute fl directly for numerical stability
+        // (avoids catastrophic cancellation when L/dT_melt >> cp)
+        fl_new = (H - H_solidus) / (cp * dT_melt + L);
+        fl_new = fmaxf(0.0f, fminf(1.0f, fl_new));
+        T_new = T_sol + fl_new * dT_melt;
+    }
+
+    // Source term correction
+    float dT = T_new - T_star;
+    temperature[idx] = T_new;
+    liquid_fraction[idx] = fl_new;
+
+    // Update distribution functions to maintain consistency with corrected T
+    const float weights[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+    for (int q = 0; q < 7; ++q) {
+        g[q * num_cells + idx] += weights[q] * dT;
+    }
+}
+
+/**
+ * @brief CUDA kernel to apply latent heat correction for phase change (LEGACY)
  *
  * This kernel implements the source term method for phase change:
  * ΔT = -L/(ρ·cp) · Δfl

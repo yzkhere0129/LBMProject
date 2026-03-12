@@ -170,6 +170,24 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(benchmark_thermal_lpbf PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(benchmark_thermal_lpbf lbm_physics lbm_io CUDA::cudart)
 
+    # Stefan problem benchmark (pure metal, enthalpy source term validation)
+    # Uses a minimal thermal-only library to avoid fluid solver dependencies
+    add_library(lbm_thermal_only STATIC
+        src/physics/thermal/thermal_lbm.cu
+        src/physics/thermal/lattice_d3q7.cu
+        src/physics/phase_change/phase_change.cu
+        src/physics/materials/material_database.cu
+    )
+    set_target_properties(lbm_thermal_only PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        POSITION_INDEPENDENT_CODE ON
+    )
+    target_link_libraries(lbm_thermal_only PUBLIC CUDA::cudart)
+
+    add_executable(stefan_benchmark apps/stefan_benchmark.cu)
+    set_target_properties(stefan_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(stefan_benchmark lbm_thermal_only CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------

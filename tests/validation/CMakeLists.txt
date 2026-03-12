@@ -318,8 +318,7 @@ target_include_directories(test_stefan_problem PRIVATE
 )
 
 target_link_libraries(test_stefan_problem
-    lbm_physics
-    lbm_core
+    lbm_thermal_only
     gtest
     gtest_main
     CUDA::cudart
