@@ -394,6 +394,27 @@ private:
 // g[q * num_cells + idx], g[q * num_cells + idx+1], ... (stride-1).
 
 /**
+ * @brief Enthalpy Source Term kernel for phase change (Jiaung 2001)
+ *
+ * After T* = Σg_q, enforces enthalpy conservation:
+ *   H = cp·T* + fl_old·L → decode (T_new, fl_new) → correct g
+ *
+ * @param g Distribution functions (SoA layout, modified in place)
+ * @param temperature Temperature field (modified: T* → T_new)
+ * @param liquid_fraction Current liquid fraction (modified: → fl_new)
+ * @param liquid_fraction_prev Previous step's liquid fraction (fl_old)
+ * @param material Material properties (cp_solid, T_solidus, T_liquidus, L_fusion)
+ * @param num_cells Total number of cells
+ */
+__global__ void enthalpySourceTermKernel(
+    float* g,
+    float* temperature,
+    float* liquid_fraction,
+    const float* liquid_fraction_prev,
+    MaterialProperties material,
+    int num_cells);
+
+/**
  * @brief CUDA kernel for thermal BGK collision with apparent heat capacity
  * @param g_src Distribution functions (SoA layout: g_src[q * num_cells + idx])
  * @param temperature Temperature field
