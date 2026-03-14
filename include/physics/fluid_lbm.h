@@ -228,6 +228,27 @@ public:
                                   float mu_constant);
 
     /**
+     * @brief Compute variable viscosity with per-phase dynamic viscosity
+     *
+     * For two-phase flows with DIFFERENT dynamic viscosities:
+     * - μ(f) = f×μ_heavy + (1-f)×μ_light  (arithmetic interpolation)
+     * - ν(f) = μ(f) / ρ(f)
+     * - τ(f) = ν_lattice(f)/cs² + 0.5
+     * - ω(f) = 1/τ(f)
+     *
+     * @param vof_field VOF fill level field (0=light, 1=heavy)
+     * @param rho_heavy Heavy phase density [kg/m³]
+     * @param rho_light Light phase density [kg/m³]
+     * @param mu_heavy Dynamic viscosity of heavy phase [Pa·s]
+     * @param mu_light Dynamic viscosity of light phase [Pa·s]
+     */
+    void computeVariableViscosity(const float* vof_field,
+                                  float rho_heavy,
+                                  float rho_light,
+                                  float mu_heavy,
+                                  float mu_light);
+
+    /**
      * @brief Perform TRT collision with variable viscosity (variable omega field)
      *
      * Uses per-cell relaxation parameter omega[i] computed by computeVariableViscosity().

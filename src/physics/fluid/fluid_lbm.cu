@@ -959,6 +959,53 @@ void FluidLBM::computeVariableViscosity(const float* vof_field,
     }
 }
 
+// Two-phase variable omega kernel: different μ per phase
+__global__ void computeVariableOmega2PhaseKernel(
+    const float* vof_field,
+    float* omega_field,
+    float rho_heavy,
+    float rho_light,
+    float mu_heavy,
+    float mu_light,
+    float dt,
+    float dx,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    float f = vof_field[idx];
+    float rho_local = f * rho_heavy + (1.0f - f) * rho_light;
+    rho_local = fmaxf(rho_local, 1e-6f);
+
+    float mu_local = f * mu_heavy + (1.0f - f) * mu_light;
+    float nu_local = mu_local / rho_local;
+    float nu_lattice = nu_local * dt / (dx * dx);
+    float tau = nu_lattice / D3Q19::CS2 + 0.5f;
+
+    const float TAU_MIN = 0.556f;
+    tau = fmaxf(tau, TAU_MIN);
+
+    omega_field[idx] = 1.0f / tau;
+}
+
+// Two-phase variable viscosity: per-phase dynamic viscosity
+void FluidLBM::computeVariableViscosity(const float* vof_field,
+                                        float rho_heavy,
+                                        float rho_light,
+                                        float mu_heavy,
+                                        float mu_light) {
+    int block_size = 256;
+    int grid_size = (num_cells_ + block_size - 1) / block_size;
+
+    computeVariableOmega2PhaseKernel<<<grid_size, block_size>>>(
+        vof_field, d_omega_field_,
+        rho_heavy, rho_light, mu_heavy, mu_light,
+        dt_, dx_, num_cells_);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
 // Kernel to fill omega field with uniform value
 __global__ void fillUniformOmegaKernel(float* omega_field, float omega_uniform, int num_cells) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
