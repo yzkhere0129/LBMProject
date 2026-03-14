@@ -94,6 +94,41 @@ __global__ void countInterfaceCellsKernel(
 // ============================================================================
 
 /**
+ * @brief GPU reduction kernel to find max velocity magnitude.
+ * Avoids expensive full-domain D2H copy for CFL check.
+ */
+__global__ void maxVelocityMagnitudeKernel(
+    const float* __restrict__ ux,
+    const float* __restrict__ uy,
+    const float* __restrict__ uz,
+    float* __restrict__ block_max,
+    int n)
+{
+    extern __shared__ float sdata[];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float val = 0.0f;
+    if (idx < n) {
+        float vx = ux[idx], vy = uy[idx], vz = uz[idx];
+        val = sqrtf(vx*vx + vy*vy + vz*vz);
+    }
+    sdata[tid] = val;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] = fmaxf(sdata[tid], sdata[tid + s]);
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        block_max[blockIdx.x] = sdata[0];
+    }
+}
+
+/**
  * @brief FLUX-CONSERVATIVE upwind advection kernel with configurable boundaries
  * @note Guarantees mass conservation for divergence-free velocity fields
  *
@@ -1341,22 +1376,33 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     // To convert to physical units for diagnostics:
     // v_phys [m/s] = v_lattice [dimensionless] × (dx [m] / dt [s])
     //
-    // Check VOF CFL condition before advection
-    // CFL = v_lattice should be < 0.5 for stability (in lattice units)
-    // Sample from TOP LAYER (z = nz-1) where Marangoni flow is active
-    const int top_layer_size = nx_ * ny_;
-    const int top_layer_offset = (nz_ - 1) * nx_ * ny_;  // Start of top layer
-    const int sample_size = std::min(top_layer_size, num_cells_ - top_layer_offset);
+    // Check VOF CFL condition before advection using GPU max-reduction.
+    // BUG FIX: Was sampling only top layer (z=nz-1) = gas phase = zero velocity.
+    // Now uses full-domain GPU reduction — O(N) on device, O(num_blocks) D2H copy.
+    const int reduction_threads = 256;
+    const int reduction_blocks = (num_cells_ + reduction_threads - 1) / reduction_threads;
 
-    std::vector<float> h_ux(sample_size), h_uy(sample_size), h_uz(sample_size);
-    CUDA_CHECK(cudaMemcpy(h_ux.data(), velocity_x + top_layer_offset, sample_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_uy.data(), velocity_y + top_layer_offset, sample_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_uz.data(), velocity_z + top_layer_offset, sample_size * sizeof(float), cudaMemcpyDeviceToHost));
+    // Lazy-allocate reduction buffer (persists across calls)
+    static float* d_block_max = nullptr;
+    static int d_block_max_size = 0;
+    if (d_block_max_size < reduction_blocks) {
+        if (d_block_max) cudaFree(d_block_max);
+        CUDA_CHECK(cudaMalloc(&d_block_max, reduction_blocks * sizeof(float)));
+        d_block_max_size = reduction_blocks;
+    }
+
+    maxVelocityMagnitudeKernel<<<reduction_blocks, reduction_threads,
+                                  reduction_threads * sizeof(float)>>>(
+        velocity_x, velocity_y, velocity_z, d_block_max, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    std::vector<float> h_block_max(reduction_blocks);
+    CUDA_CHECK(cudaMemcpy(h_block_max.data(), d_block_max,
+                          reduction_blocks * sizeof(float), cudaMemcpyDeviceToHost));
 
     float v_max = 0.0f;
-    for (int i = 0; i < sample_size; ++i) {
-        float v_mag = std::sqrt(h_ux[i]*h_ux[i] + h_uy[i]*h_uy[i] + h_uz[i]*h_uz[i]);
-        v_max = std::max(v_max, v_mag);
+    for (int i = 0; i < reduction_blocks; ++i) {
+        v_max = std::max(v_max, h_block_max[i]);
     }
 
     // CFL = v * dt / dx (correct formula for any unit system)

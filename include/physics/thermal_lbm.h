@@ -169,6 +169,19 @@ public:
     float computeSubstratePower(float dx, float h_conv, float T_substrate) const;
 
     /**
+     * @brief Compute power removed by the temperature cap [W]
+     *
+     * The hard temperature cap (T_boil - 100K) removes thermal energy that
+     * represents effective evaporative cooling. This method sums the energy
+     * removed and converts to power: P = Σ(ρ·cp·ΔT·dx³) / dt
+     *
+     * @param dx Grid spacing [m]
+     * @param dt Time step [s]
+     * @return Power removed by cap this step [W]
+     */
+    float computeCapPower(float dx, float dt) const;
+
+    /**
      * @brief Apply physics-based temperature safety cap
      *
      * Clamps temperature at T_vaporization for all cells. This prevents
@@ -379,6 +392,7 @@ private:
     float* d_g_src;         ///< Source distribution (before streaming)
     float* d_g_dst;         ///< Destination distribution (after streaming)
     float* d_temperature;   ///< Temperature field
+    float* d_cap_energy_removed_ = nullptr;  ///< Per-cell energy removed by T cap [K]
 
     // Utility functions
     void allocateMemory();

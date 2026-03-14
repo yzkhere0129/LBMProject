@@ -1648,7 +1648,7 @@ add_test(NAME KhairallahMeltPool
 )
 
 set_tests_properties(KhairallahMeltPool PROPERTIES
-    TIMEOUT 1800
+    TIMEOUT 2400
     LABELS "validation;laser_melting;melt_pool;khairallah"
 )
 

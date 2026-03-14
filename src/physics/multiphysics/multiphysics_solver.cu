@@ -1519,20 +1519,17 @@ void MultiphysicsSolver::vofStep(float dt) {
     }
 
     // DIAGNOSTIC: Verify converted velocity buffers are non-zero
+    // BUG FIX: Was sampling only top layer (gas phase → zero velocity).
+    // Now samples FULL domain to see the actual Marangoni flow at the interface.
     if (diag_count % 500 == 0 && diag_count < 5000) {
-        // Sample top layer to compare with VOF diagnostic
-        const int top_layer_size = config_.nx * config_.ny;
-        const int top_layer_offset = (config_.nz - 1) * config_.nx * config_.ny;
-        const int sample_size = std::min(top_layer_size, 10000);
-
-        std::vector<float> h_ux_lattice(sample_size), h_ux_phys(sample_size);
-        CUDA_CHECK(cudaMemcpy(h_ux_lattice.data(), fluid_->getVelocityX() + top_layer_offset,
-                              sample_size * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_ux_phys.data(), d_velocity_physical_x_ + top_layer_offset,
-                              sample_size * sizeof(float), cudaMemcpyDeviceToHost));
+        std::vector<float> h_ux_lattice(num_cells), h_ux_phys(num_cells);
+        CUDA_CHECK(cudaMemcpy(h_ux_lattice.data(), fluid_->getVelocityX(),
+                              num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_ux_phys.data(), d_velocity_physical_x_,
+                              num_cells * sizeof(float), cudaMemcpyDeviceToHost));
 
         float v_max_lattice = 0.0f, v_max_phys = 0.0f;
-        for (int i = 0; i < sample_size; ++i) {
+        for (int i = 0; i < num_cells; ++i) {
             v_max_lattice = std::max(v_max_lattice, std::abs(h_ux_lattice[i]));
             v_max_phys = std::max(v_max_phys, std::abs(h_ux_phys[i]));
         }
@@ -2569,21 +2566,27 @@ void MultiphysicsSolver::printEnergyBalance() {
     float P_substrate = balance.P_substrate;
     float dE_dt = balance.dE_dt_computed;
 
-    // Energy balance equation: P_laser = P_evap + P_rad + P_substrate + dE/dt
+    // Temperature cap power: energy removed by T_boil-100K hard cap
+    // Physically represents evaporative cooling self-limiting temperature
+    float P_cap = 0.0f;
+    if (thermal_ && config_.enable_evaporation_mass_loss) {
+        P_cap = thermal_->computeCapPower(config_.dx, config_.dt);
+    }
+
+    // Energy balance: P_laser = P_evap + P_rad + P_substrate + P_cap + dE/dt
     float P_in = P_laser;
-    float P_out = P_evap + P_rad + P_substrate;
+    float P_out = P_evap + P_rad + P_substrate + P_cap;
     float P_storage = dE_dt;
 
     float balance_error = P_in - P_out - P_storage;
     float error_percent = (P_in > 1e-6f) ? (std::abs(balance_error) / P_in * 100.0f) : 0.0f;
 
-    // Print formatted output (Week 1 Tuesday: added P_substrate)
     std::cout << "\nEnergy Balance (Step=" << current_step_
               << ", t=" << current_time_*1e6 << " μs):" << std::endl;
 
-    // Use printf-style formatting for consistent column alignment
     printf("  P_laser     = %8.2f W  (absorbed laser power)\n", P_laser);
     printf("  P_evap      = %8.2f W  (evaporation cooling)\n", P_evap);
+    printf("  P_cap       = %8.2f W  (T cap effective evaporation)\n", P_cap);
     printf("  P_rad       = %8.2f W  (radiation cooling)\n", P_rad);
     printf("  P_substrate = %8.2f W  (substrate cooling)\n", P_substrate);
     printf("  dE/dt       = %8.2f W  (thermal energy rate of change)\n", P_storage);
@@ -2591,7 +2594,7 @@ void MultiphysicsSolver::printEnergyBalance() {
 
     std::cout << "  Balance check:" << std::endl;
     printf("    Input:   P_laser = %8.2f W\n", P_in);
-    printf("    Output:  P_evap + P_rad + P_substrate = %8.2f W\n", P_out);
+    printf("    Output:  P_evap + P_rad + P_substrate + P_cap = %8.2f W\n", P_out);
     printf("    Storage: dE/dt = %8.2f W\n", P_storage);
     printf("    Error:   %.1f %%", error_percent);
 

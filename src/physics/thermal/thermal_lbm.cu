@@ -273,6 +273,7 @@ void ThermalLBM::freeMemory() {
     if (d_g_src) cudaFree(d_g_src);
     if (d_g_dst) cudaFree(d_g_dst);
     if (d_temperature) cudaFree(d_temperature);
+    if (d_cap_energy_removed_) cudaFree(d_cap_energy_removed_);
 }
 
 // Swap source and destination distributions
@@ -737,6 +738,7 @@ __global__ void applyTemperatureCapKernel(
     float* g,
     const float* temperature,
     const float* fill_level,
+    float* energy_removed,   // [out] per-cell energy removed [K] (will be summed on host)
     int nx, int ny, int nz,
     MaterialProperties material)
 {
@@ -750,17 +752,25 @@ __global__ void applyTemperatureCapKernel(
 
     // Only apply to liquid/interface cells (f > 0.01)
     float f = fill_level[idx];
-    if (f <= 0.01f) return;
+    if (f <= 0.01f) {
+        energy_removed[idx] = 0.0f;
+        return;
+    }
 
     float T = temperature[idx];
     float T_boil = material.T_vaporization;
 
     // Hard temperature cap: T_max = T_boil - 100K (e.g., 2990K for steel)
-    // This ensures temperatures stay below the validation threshold of 3000K
+    // Physically: evaporation self-limits temperature near T_boil.
+    // Energy removed by this cap represents effective evaporative cooling.
     const float T_max_allowed = T_boil - 100.0f;
 
     if (T > T_max_allowed) {
-        float dT = T_max_allowed - T;
+        float dT = T_max_allowed - T;  // negative
+
+        // Track energy removed: dE = rho * cp * |dT| * dx^3 per cell
+        // Store |dT| here; host multiplies by rho*cp*dx^3 to get Watts
+        energy_removed[idx] = -dT;  // positive value = energy removed [K]
 
         // Apply temperature correction to all distributions
         const float weights[D3Q7::Q] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
@@ -768,6 +778,8 @@ __global__ void applyTemperatureCapKernel(
         for (int q = 0; q < D3Q7::Q; ++q) {
             g[q * num_cells + idx] += weights[q] * dT;
         }
+    } else {
+        energy_removed[idx] = 0.0f;
     }
 }
 
@@ -790,9 +802,16 @@ void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
 
+    // Allocate energy tracking buffer (lazy init, persistent)
+    if (!d_cap_energy_removed_) {
+        CUDA_CHECK(cudaMalloc(&d_cap_energy_removed_, num_cells_ * sizeof(float)));
+    }
+
     // Apply hard temperature cap to ensure T < T_boil
+    // Track energy removed for energy balance accounting
     applyTemperatureCapKernel<<<gridSize, blockSize>>>(
         d_g_src, d_temperature, fill_level,
+        d_cap_energy_removed_,
         nx_, ny_, nz_, material_
     );
     CUDA_CHECK_KERNEL();
@@ -2170,6 +2189,29 @@ float ThermalLBM::computeSubstratePower(float dx, float h_conv, float T_substrat
     cudaFree(d_power);
 
     return total_power;
+}
+
+float ThermalLBM::computeCapPower(float dx, float dt) const {
+    if (!d_cap_energy_removed_) return 0.0f;
+    if (!has_material_) return 0.0f;
+
+    // d_cap_energy_removed_[i] contains |ΔT| removed at cell i [K]
+    // Power = Σ (ρ · cp · |ΔT| · dx³) / dt  [W]
+    std::vector<float> h_dT(num_cells_);
+    CUDA_CHECK(cudaMemcpy(h_dT.data(), d_cap_energy_removed_,
+                          num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Use liquid-phase properties (cap only fires in liquid/mush cells)
+    float rho = material_.rho_liquid;
+    float cp = material_.cp_liquid;
+    float cell_vol = dx * dx * dx;
+
+    double total_energy = 0.0;  // Use double for summation accuracy
+    for (int i = 0; i < num_cells_; ++i) {
+        total_energy += static_cast<double>(h_dT[i]);
+    }
+
+    return static_cast<float>(total_energy * rho * cp * cell_vol / dt);
 }
 
 // ============================================================================

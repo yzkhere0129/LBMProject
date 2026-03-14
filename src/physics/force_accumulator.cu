@@ -564,9 +564,14 @@ __global__ void addRecoilPressureForceKernel(
         return;  // No interface
     }
 
-    // Recoil force: F = P_recoil · n · |∇f| / h (volumetric force)
-    // Direction: INTO liquid (along -n, since n points liquid->gas)
-    float coeff = P_recoil * grad_f_mag / (smoothing_width * dx);
+    // Recoil force (CSF formulation): F = -P_recoil · n · |∇f|  [N/m³]
+    // |∇f| is the CSF delta function that converts surface pressure to volumetric force.
+    // Units: [Pa] × [1/m] = [N/m³]. No extra normalization needed.
+    //
+    // BUG FIX: Was dividing by (smoothing_width × dx) which added an extra
+    // [1/m] factor, amplifying force ~250000× for dx=2μm. This matches
+    // recoil_pressure.cu (lines 192, 274) which correctly uses F = P × |∇f|.
+    float coeff = P_recoil * grad_f_mag;
 
     fx[idx] += -coeff * n.x;  // Negative: force pushes INTO liquid
     fy[idx] += -coeff * n.y;

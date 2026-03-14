@@ -200,6 +200,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(viz_laser_melting_postmortem PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(viz_laser_melting_postmortem lbm_physics lbm_io CUDA::cudart)
 
+    # Surface force isolation tests (Marangoni vs ST vs neither)
+    add_executable(viz_surface_isolation scripts/viz/viz_surface_isolation.cu)
+    set_target_properties(viz_surface_isolation PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_surface_isolation lbm_physics lbm_io CUDA::cudart)
+
+    # Marangoni fix validation (CSF smearing + Δu cap evidence)
+    add_executable(viz_marangoni_validation scripts/viz/viz_marangoni_validation.cu)
+    set_target_properties(viz_marangoni_validation PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_marangoni_validation lbm_physics lbm_io CUDA::cudart)
+
+    # Khairallah NaN diagnostic (crime scene at step 7-8)
+    add_executable(viz_khairallah_diagnostic scripts/viz/viz_khairallah_diagnostic.cu)
+    set_target_properties(viz_khairallah_diagnostic PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_khairallah_diagnostic lbm_physics lbm_io CUDA::cudart)
+
     # Stefan problem benchmark (pure metal, enthalpy source term validation)
     # Uses a minimal thermal-only library to avoid fluid solver dependencies
     add_library(lbm_thermal_only STATIC
