@@ -296,7 +296,9 @@ TEST(MultiphysicsSolverTest, Step3_SurfaceDeformation) {
     for (int i = 0; i < num_cells; ++i) {
         float change = std::abs(h_fill_final[i] - h_fill_initial[i]);
         max_change = std::max(max_change, change);
-        if (change > 0.01f) {
+        // Threshold lowered from 0.01f: force conversion fix (dt²/(dx*rho)) makes
+        // surface tension ~7900× weaker (correct physics), so fill changes are smaller.
+        if (change > 1e-5f) {
             n_changed++;
         }
     }

@@ -319,7 +319,9 @@ bool test_realistic_velocity() {
     // smaller. This test verifies that laser heating drives Marangoni flow (v > 0)
     // and the simulation remains stable (no runaway/NaN).
     // Physical validation with actual dsigma_dT is in test_marangoni_velocity.cu.
-    float v_min_expected = 0.001f;  // Non-zero Marangoni flow
+    // Threshold lowered from 0.001: force conversion fix (dt²/(dx*rho)) makes forces
+    // ~7900× smaller (correct physics), so velocities are proportionally smaller.
+    float v_min_expected = 1e-6f;   // Non-zero Marangoni flow
     float v_max_expected = 100.0f;  // No runaway instability
 
     bool pass = (v_max > v_min_expected && v_max < v_max_expected);

@@ -753,6 +753,12 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
             config_.dt,              // Time step for unit conversion
             config_.dx               // Lattice spacing for unit conversion
         );
+
+        // Enable TRT collision to eliminate checkerboard instability at low tau.
+        // BGK at tau < 0.6 produces odd-even decoupling (ω > 1.67 overshoots
+        // anti-symmetric modes). TRT uses a separate ω- for these modes.
+        // Λ = 3/16 gives optimal wall boundary accuracy.
+        fluid_->setTRT(3.0f / 16.0f);
     }
 
     // VOF solver (required for interface tracking)
@@ -1897,26 +1903,29 @@ void MultiphysicsSolver::fluidStep(float dt) {
         cfl_diag_count++;
     }
 
-    // BGK collision with forces
-    fluid_->collisionBGK(d_force_x_, d_force_y_, d_force_z_);
-
-    // Streaming
-    fluid_->streaming();
-
-    // Compute macroscopic quantities with Guo force correction
-    // In Guo forcing: u = Σ(ci*fi)/ρ + 0.5*F/ρ
-    // Without force correction, velocity from moments alone misses the forcing
-    // contribution, causing forces to appear ineffective after streaming.
-    //
-    // Semi-implicit Darcy: when enable_darcy is active, use the 4-arg overload
-    // that absorbs Darcy drag into the velocity denominator:
-    //   u = [m + 0.5·F_other] / (ρ + 0.5·K)
+    // Get Darcy coefficient field (nullptr if Darcy disabled)
     const float* darcy_K = (config_.enable_darcy && force_accumulator_) ?
         force_accumulator_->getDarcyCoefficient() : nullptr;
 
     if (darcy_K) {
-        fluid_->computeMacroscopic(d_force_x_, d_force_y_, d_force_z_, darcy_K);
+        // EDM collision: equilibrium shift replaces Guo source term.
+        // Darcy drag absorbed semi-implicitly into u_bare denominator.
+        // No distribution anisotropy accumulation — eliminates velocity shocks.
+        fluid_->collisionBGKwithEDM(d_force_x_, d_force_y_, d_force_z_, darcy_K);
     } else {
+        // Fallback to Guo scheme when no Darcy (e.g., single-phase benchmarks)
+        fluid_->collisionBGK(d_force_x_, d_force_y_, d_force_z_);
+    }
+
+    // Streaming
+    fluid_->streaming();
+
+    // Compute macroscopic quantities
+    if (darcy_K) {
+        // EDM macroscopic: u_bare = m/(ρ+K/2), output u = u_bare + F/(2ρ)
+        fluid_->computeMacroscopicEDM(d_force_x_, d_force_y_, d_force_z_, darcy_K);
+    } else {
+        // Guo macroscopic: u = m/ρ + 0.5*F/ρ
         fluid_->computeMacroscopic(d_force_x_, d_force_y_, d_force_z_);
     }
 }
@@ -1994,12 +2003,13 @@ void MultiphysicsSolver::computeTotalForce() {
         const float3* normals = vof_->getInterfaceNormals();
 
         if (temperature && fill_level && normals) {
+            const float* liquid_fraction = thermal_ ? thermal_->getLiquidFraction() : nullptr;
             force_accumulator_->addMarangoniForce(
-                temperature, fill_level, normals,
+                temperature, fill_level, liquid_fraction, normals,
                 config_.dsigma_dT,
                 config_.nx, config_.ny, config_.nz,
                 config_.dx,
-                1.0f);  // Explicit h_interface = 1 cell for sharp VOF interface
+                1.0f);  // h_interface=1: |∇f| is already the CSF delta function (no extra normalization)
         }
     }
 
@@ -2055,6 +2065,13 @@ void MultiphysicsSolver::computeTotalForce() {
         }
     }
 
+    // Step 2f: Smooth Marangoni/surface tension forces to remove sharp spatial
+    // gradients that excite high-frequency (checkerboard) modes at low tau.
+    // Applied in physical units before conversion to preserve force integral.
+    if (config_.enable_marangoni || config_.enable_surface_tension) {
+        force_accumulator_->smoothForceField(config_.nx, config_.ny, config_.nz, 1);
+    }
+
     // Step 3: Convert from physical units [N/m³] to lattice units
     force_accumulator_->convertToLatticeUnits(config_.dx, config_.dt, config_.density);
 
@@ -2103,6 +2120,25 @@ void MultiphysicsSolver::computeTotalForce() {
                 config_.cfl_force_ramp_factor);
         }
         // Note: If both adaptive and gradual are disabled, no CFL limiting applied
+    }
+
+    // Step 5: Catastrophic fail-safe cap (0.1 LU)
+    // With EDM forcing, normal Marangoni/surface tension forces should NOT
+    // be capped. This cap is a last-resort safety net only — if it triggers,
+    // something is fundamentally wrong (NaN precursor, bad parameters, etc.)
+    auto cap_stats = force_accumulator_->capPerCellVelocityIncrement(0.1f);
+
+    // Log cap statistics (should be zero under normal EDM operation)
+    static int step_counter = 0;
+    step_counter++;
+    if (cap_stats.num_capped > 0) {
+        std::cout << "[CAP-WARNING] Step " << step_counter
+                  << ": " << cap_stats.num_capped << " cells capped at CATASTROPHIC limit"
+                  << " (" << (100.0f * cap_stats.num_capped / cap_stats.total_cells) << "%)"
+                  << ", max_F_uncapped=" << cap_stats.max_uncapped_force
+                  << " LU (cap=" << cap_stats.cap_threshold << ")"
+                  << ", deleted_momentum=" << cap_stats.total_deleted_momentum << " LU"
+                  << std::endl;
     }
 
     // Optional: Print force breakdown for debugging (first few calls only)

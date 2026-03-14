@@ -113,14 +113,54 @@ public:
                      float force_z = 0.0f);
 
     /**
-     * @brief Perform BGK collision with spatially-varying forces
-     * @param force_x Device array of force x-component [m/s²]
-     * @param force_y Device array of force y-component [m/s²]
-     * @param force_z Device array of force z-component [m/s²]
+     * @brief Perform BGK collision with spatially-varying forces (Guo scheme)
+     * @param force_x Device array of force x-component [lattice units]
+     * @param force_y Device array of force y-component [lattice units]
+     * @param force_z Device array of force z-component [lattice units]
      */
     void collisionBGK(const float* force_x,
                      const float* force_y,
                      const float* force_z);
+
+    /**
+     * @brief Perform BGK collision with EDM (Exact Difference Method) forcing
+     *
+     * Replaces Guo source term with equilibrium shift:
+     *   f_new = f - ω(f - f_eq(ρ, u_bare)) + [f_eq(ρ, u_bare+Δu) - f_eq(ρ, u_bare)]
+     *
+     * where u_bare = m/(ρ+K/2) (semi-implicit Darcy) and Δu = F/ρ.
+     * The EDM shift lives in equilibrium subspace — no distribution anisotropy
+     * accumulation, eliminating Guo/Darcy velocity shocks.
+     *
+     * Reference: Kupershtokh et al., Comput. Math. Appl. 58:862-872 (2009)
+     *
+     * @param force_x Device array of non-Darcy force x-component [lattice units]
+     * @param force_y Device array of non-Darcy force y-component [lattice units]
+     * @param force_z Device array of non-Darcy force z-component [lattice units]
+     * @param darcy_coeff Device array of Darcy K per cell [lattice units]
+     */
+    void collisionBGKwithEDM(const float* force_x,
+                              const float* force_y,
+                              const float* force_z,
+                              const float* darcy_coeff);
+
+    /**
+     * @brief Enable TRT mode for subsequent collisionBGKwithEDM calls
+     *
+     * Computes omega_minus from the magic parameter Λ:
+     *   tau_minus = 0.5 + Λ / (tau - 0.5)
+     *   omega_minus = 1 / tau_minus
+     *
+     * With Λ = 3/16 (default), checkerboard instability is suppressed at low
+     * tau while the physical (even) relaxation rate is unchanged. Call once
+     * after construction; collisionBGKwithEDM will automatically dispatch to
+     * fluidTRTCollisionEDMKernel when omega_minus > 0.
+     *
+     * To revert to BGK+EDM, call setTRT(0): omega_minus_ is set to 0.
+     *
+     * @param magic_parameter Λ = (τ+ - 0.5)(τ- - 0.5), default 3/16
+     */
+    void setTRT(float magic_parameter = 3.0f / 16.0f);
 
     /**
      * @brief Perform TRT collision step with uniform force
@@ -261,6 +301,21 @@ public:
      */
     void computeMacroscopic(const float* force_x, const float* force_y,
                             const float* force_z, const float* darcy_coeff);
+
+    /**
+     * @brief Compute macroscopic quantities for EDM scheme with semi-implicit Darcy
+     *
+     * In EDM, forcing is handled by the equilibrium shift in collision, not by
+     * the +0.5*F/ρ Guo correction in macroscopic computation. The output
+     * velocity includes F/(2ρ) for second-order accurate physical velocity.
+     *
+     * @param force_x Device array of non-Darcy force [lattice units]
+     * @param force_y Device array of non-Darcy force [lattice units]
+     * @param force_z Device array of non-Darcy force [lattice units]
+     * @param darcy_coeff Device array of Darcy K per cell [lattice units]
+     */
+    void computeMacroscopicEDM(const float* force_x, const float* force_y,
+                                const float* force_z, const float* darcy_coeff);
 
     /**
      * @brief Compute buoyancy force using Boussinesq approximation
@@ -417,6 +472,7 @@ private:
     float rho0_;            ///< Reference density [kg/m³]
     float omega_;           ///< BGK relaxation parameter (1/tau)
     float tau_;             ///< BGK relaxation time
+    float omega_minus_;     ///< TRT anti-symmetric relaxation (0 = BGK mode)
 
     // Boundary configuration
     BoundaryType boundary_x_;  ///< Boundary type in x-direction
@@ -601,6 +657,72 @@ __global__ void computeMacroscopicWithForceKernel(
  * K → ∞ in solid regions. Instead, velocity smoothly → 0.
  */
 __global__ void computeMacroscopicSemiImplicitDarcyKernel(
+    const float* f,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
+    int num_cells);
+
+/**
+ * @brief CUDA kernel for BGK collision with EDM (Exact Difference Method)
+ *
+ * f_new = f - ω(f - f_eq(ρ, u_bare)) + [f_eq(ρ, u_bare+Δu) - f_eq(ρ, u_bare)]
+ * where u_bare = m/(ρ+K/2), Δu = F/ρ
+ */
+__global__ void fluidBGKCollisionEDMKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
+    float omega,
+    int nx, int ny, int nz);
+
+/**
+ * @brief CUDA kernel for TRT collision with EDM (Exact Difference Method) forcing
+ *
+ * TRT extension of BGK+EDM: symmetric non-equilibrium relaxed with omega+,
+ * anti-symmetric non-equilibrium relaxed with omega_minus. EDM shift added
+ * identically to BGK+EDM (lives in equilibrium subspace, unaffected by split).
+ *
+ * Eliminates checkerboard instability at low tau without touching the physical
+ * (even) relaxation rate that controls viscosity.
+ *
+ * @param omega     ω+ — even/symmetric relaxation (= 1/tau, controls viscosity)
+ * @param omega_minus ω- — odd/anti-symmetric relaxation (from magic parameter Λ)
+ */
+__global__ void fluidTRTCollisionEDMKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
+    float omega,
+    float omega_minus,
+    int nx, int ny, int nz);
+
+/**
+ * @brief CUDA kernel for semi-implicit Darcy macroscopic with EDM scheme
+ *
+ * u_bare = m/(ρ+K/2), u_phys = u_bare + F/(2ρ) for output only.
+ * No Guo +0.5*F correction — EDM handles forcing in collision.
+ */
+__global__ void computeMacroscopicSemiImplicitDarcyEDMKernel(
     const float* f,
     float* rho,
     float* ux,

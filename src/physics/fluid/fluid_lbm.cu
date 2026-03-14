@@ -46,6 +46,7 @@ FluidLBM::FluidLBM(int nx, int ny, int nz,
       d_f_src(nullptr), d_f_dst(nullptr),
       d_rho(nullptr), d_ux(nullptr), d_uy(nullptr), d_uz(nullptr),
       d_pressure(nullptr),
+      omega_minus_(0.0f),
       d_omega_field_(nullptr),
       d_boundary_nodes_(nullptr),
       n_boundary_nodes_(0)
@@ -352,6 +353,73 @@ void FluidLBM::collisionBGK(const float* force_x,
     }
 
     swapDistributions();
+}
+
+// BGK collision with EDM (Exact Difference Method) forcing
+// Forces are in lattice units, darcy_coeff is per-cell K field
+void FluidLBM::collisionBGKwithEDM(const float* force_x,
+                                     const float* force_y,
+                                     const float* force_z,
+                                     const float* darcy_coeff) {
+    dim3 block(8, 8, 8);
+    dim3 grid((nx_ + block.x - 1) / block.x,
+             (ny_ + block.y - 1) / block.y,
+             (nz_ + block.z - 1) / block.z);
+
+    if (omega_minus_ > 0.0f) {
+        fluidTRTCollisionEDMKernel<<<grid, block>>>(
+            d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+            force_x, force_y, force_z, darcy_coeff, omega_, omega_minus_,
+            nx_, ny_, nz_);
+    } else {
+        fluidBGKCollisionEDMKernel<<<grid, block>>>(
+            d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+            force_x, force_y, force_z, darcy_coeff, omega_,
+            nx_, ny_, nz_);
+    }
+    CUDA_CHECK_KERNEL();
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("FluidLBM collision kernel (EDM) failed: " +
+                               std::string(cudaGetErrorString(error)));
+    }
+
+    swapDistributions();
+}
+
+// Compute macroscopic quantities for EDM scheme with semi-implicit Darcy
+void FluidLBM::computeMacroscopicEDM(const float* force_x,
+                                       const float* force_y,
+                                       const float* force_z,
+                                       const float* darcy_coeff) {
+    int block_size = 256;
+    int grid_size = (num_cells_ + block_size - 1) / block_size;
+
+    computeMacroscopicSemiImplicitDarcyEDMKernel<<<grid_size, block_size>>>(
+        d_f_src, d_rho, d_ux, d_uy, d_uz,
+        force_x, force_y, force_z, darcy_coeff, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    // Compute pressure
+    computePressureKernel<<<grid_size, block_size>>>(
+        d_rho, d_pressure, rho0_, D3Q19::CS2, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    // Enforce correct velocity at boundary nodes
+    if (n_boundary_nodes_ > 0) {
+        int wall_grid_size = (n_boundary_nodes_ + block_size - 1) / block_size;
+        setBoundaryVelocityKernel<<<wall_grid_size, block_size>>>(
+            d_ux, d_uy, d_uz,
+            d_boundary_nodes_,
+            n_boundary_nodes_,
+            nx_, ny_, nz_
+        );
+        CUDA_CHECK_KERNEL();
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // TRT collision with uniform force
@@ -1124,7 +1192,7 @@ __global__ void fluidBGKCollisionKernel(
     }
 }
 
-// Fluid BGK collision with spatially-varying forces
+// Fluid BGK collision with spatially-varying forces (Guo forcing scheme)
 __global__ void fluidBGKCollisionVaryingForceKernel(
     const float* f_src,
     float* f_dst,
@@ -1215,6 +1283,343 @@ __global__ void fluidBGKCollisionVaryingForceKernel(
 
         f_dst[id + q * n_cells] = f - omega * (f - feq) + force_term;
     }
+}
+
+// ============================================================================
+// EDM (Exact Difference Method / Kupershtokh forcing) collision kernel
+// ============================================================================
+// Replaces Guo source term with equilibrium shift:
+//   f_i = f_i - ω(f_i - f_eq(ρ, u_bare)) + [f_eq(ρ, u_bare+Δu) - f_eq(ρ, u_bare)]
+//
+// where:
+//   u_bare = Σ(ci·fi) / (ρ + 0.5·K_darcy)  (momentum / effective density)
+//   Δu = F / ρ  (velocity increment from non-Darcy forces)
+//
+// Key advantage over Guo: The EDM shift lives entirely in the equilibrium
+// subspace, so no distribution anisotropy can accumulate. This eliminates
+// the velocity shock when Darcy drag drops (fl→1, K→0).
+//
+// Reference: Kupershtokh et al., Comput. Math. Appl. 58:862-872 (2009)
+// ============================================================================
+__global__ void fluidBGKCollisionEDMKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
+    float omega,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Read local forces (lattice units, non-Darcy only)
+    float fx = force_x[id];
+    float fy = force_y[id];
+    float fz = force_z[id];
+
+    // Compute macroscopic quantities from distribution functions
+    float m_rho = 0.0f;
+    float mx = 0.0f;  // momentum = Σ(ci·fi)
+    float my = 0.0f;
+    float mz = 0.0f;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f = f_src[id + q * n_cells];
+        m_rho += f;
+        mx += ex[q] * f;
+        my += ey[q] * f;
+        mz += ez[q] * f;
+    }
+
+    // Semi-implicit Darcy: u_bare = m / (ρ + 0.5·K)
+    // This is the velocity that enters the equilibrium in the collision step.
+    // Darcy drag is absorbed into the denominator — no explicit force needed.
+    const float RHO_MIN = 1e-6f;
+    float K = darcy_coeff[id];
+    float denom = fmaxf(m_rho + 0.5f * K, RHO_MIN);
+    float inv_denom = 1.0f / denom;
+
+    float u_bare_x = mx * inv_denom;
+    float u_bare_y = my * inv_denom;
+    float u_bare_z = mz * inv_denom;
+
+    // EDM velocity increment: Δu = F / ρ
+    float inv_rho = 1.0f / fmaxf(m_rho, RHO_MIN);
+    float du_x = fx * inv_rho;
+    float du_y = fy * inv_rho;
+    float du_z = fz * inv_rho;
+
+    // Physical velocity for output: u_phys = u_bare + F/(2ρ)
+    // This is the second-order accurate velocity (Guo-compatible definition)
+    float u_phys_x = u_bare_x + 0.5f * du_x;
+    float u_phys_y = u_bare_y + 0.5f * du_y;
+    float u_phys_z = u_bare_z + 0.5f * du_z;
+
+    // Velocity clamping for safety (catastrophic fail-safe)
+    const float U_MAX = 0.3f;
+    float u_bare_mag = sqrtf(u_bare_x*u_bare_x + u_bare_y*u_bare_y + u_bare_z*u_bare_z);
+    if (u_bare_mag > U_MAX) {
+        float scale = U_MAX / u_bare_mag;
+        u_bare_x *= scale;
+        u_bare_y *= scale;
+        u_bare_z *= scale;
+        u_phys_x = u_bare_x + 0.5f * du_x;
+        u_phys_y = u_bare_y + 0.5f * du_y;
+        u_phys_z = u_bare_z + 0.5f * du_z;
+    }
+
+    // Store macroscopic quantities (physical velocity for output/diagnostics)
+    rho[id] = m_rho;
+    ux[id] = u_phys_x;
+    uy[id] = u_phys_y;
+    uz[id] = u_phys_z;
+
+    // Shifted velocity for EDM
+    float u_shifted_x = u_bare_x + du_x;
+    float u_shifted_y = u_bare_y + du_y;
+    float u_shifted_z = u_bare_z + du_z;
+
+    // BGK collision with EDM forcing
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f = f_src[id + q * n_cells];
+
+        // Equilibrium at u_bare (for BGK relaxation)
+        float feq_bare = D3Q19::computeEquilibrium(q, m_rho, u_bare_x, u_bare_y, u_bare_z);
+
+        // Equilibrium at u_bare + Δu (shifted)
+        float feq_shifted = D3Q19::computeEquilibrium(q, m_rho, u_shifted_x, u_shifted_y, u_shifted_z);
+
+        // EDM: f_new = f - ω(f - f_eq(u_bare)) + [f_eq(u_bare+Δu) - f_eq(u_bare)]
+        f_dst[id + q * n_cells] = f - omega * (f - feq_bare) + (feq_shifted - feq_bare);
+    }
+}
+
+// ============================================================================
+// TRT+EDM collision kernel
+// ============================================================================
+// Combines Two-Relaxation-Time (TRT) collision with EDM forcing.
+//
+// TRT relaxes the symmetric (even) non-equilibrium with omega+ and the
+// anti-symmetric (odd) non-equilibrium with omega_minus independently:
+//   f_new = f - ω+ × f_s_neq - ω- × f_a_neq + (feq_shifted - feq_bare)
+//
+// where:
+//   f_s_neq = 0.5 * [(f_q - feq_bare_q) + (f_q̄ - feq_bare_q̄)]   symmetric non-eq
+//   f_a_neq = 0.5 * [(f_q - feq_bare_q) - (f_q̄ - feq_bare_q̄)]   anti-symmetric non-eq
+//
+// The EDM shift (feq_shifted - feq_bare) is the same as in BGK+EDM —
+// it lives in the equilibrium subspace and is unaffected by TRT splitting.
+//
+// For q=0 (rest direction, self-opposite): f_a_neq = 0, reduces to BGK.
+//
+// Advantage over TRT+Guo: No distribution anisotropy accumulation from
+// Darcy drag interacting with the odd relaxation channel.
+//
+// Reference: Ginzburg et al. (2008), Kupershtokh et al. (2009)
+// ============================================================================
+__global__ void fluidTRTCollisionEDMKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
+    float omega,
+    float omega_minus,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Read local forces (lattice units, non-Darcy only)
+    float fx = force_x[id];
+    float fy = force_y[id];
+    float fz = force_z[id];
+
+    // Compute macroscopic quantities from distribution functions
+    float m_rho = 0.0f;
+    float mx = 0.0f;
+    float my = 0.0f;
+    float mz = 0.0f;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f = f_src[id + q * n_cells];
+        m_rho += f;
+        mx += ex[q] * f;
+        my += ey[q] * f;
+        mz += ez[q] * f;
+    }
+
+    // Semi-implicit Darcy: u_bare = m / (ρ + 0.5·K)
+    const float RHO_MIN = 1e-6f;
+    float K = darcy_coeff[id];
+    float denom = fmaxf(m_rho + 0.5f * K, RHO_MIN);
+    float inv_denom = 1.0f / denom;
+
+    float u_bare_x = mx * inv_denom;
+    float u_bare_y = my * inv_denom;
+    float u_bare_z = mz * inv_denom;
+
+    // EDM velocity increment: Δu = F / ρ
+    float inv_rho = 1.0f / fmaxf(m_rho, RHO_MIN);
+    float du_x = fx * inv_rho;
+    float du_y = fy * inv_rho;
+    float du_z = fz * inv_rho;
+
+    // Physical velocity for output: u_phys = u_bare + F/(2ρ)
+    float u_phys_x = u_bare_x + 0.5f * du_x;
+    float u_phys_y = u_bare_y + 0.5f * du_y;
+    float u_phys_z = u_bare_z + 0.5f * du_z;
+
+    // Velocity clamping for safety (catastrophic fail-safe)
+    const float U_MAX = 0.3f;
+    float u_bare_mag = sqrtf(u_bare_x*u_bare_x + u_bare_y*u_bare_y + u_bare_z*u_bare_z);
+    if (u_bare_mag > U_MAX) {
+        float scale = U_MAX / u_bare_mag;
+        u_bare_x *= scale;
+        u_bare_y *= scale;
+        u_bare_z *= scale;
+        u_phys_x = u_bare_x + 0.5f * du_x;
+        u_phys_y = u_bare_y + 0.5f * du_y;
+        u_phys_z = u_bare_z + 0.5f * du_z;
+    }
+
+    // Store macroscopic quantities
+    rho[id] = m_rho;
+    ux[id] = u_phys_x;
+    uy[id] = u_phys_y;
+    uz[id] = u_phys_z;
+
+    // Shifted velocity for EDM
+    float u_shifted_x = u_bare_x + du_x;
+    float u_shifted_y = u_bare_y + du_y;
+    float u_shifted_z = u_bare_z + du_z;
+
+    // TRT+EDM collision
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f_q = f_src[id + q * n_cells];
+        int q_bar = opposite[q];
+        float f_qbar = f_src[id + q_bar * n_cells];
+
+        // Equilibria at u_bare for TRT relaxation
+        float feq_bare_q    = D3Q19::computeEquilibrium(q,     m_rho, u_bare_x, u_bare_y, u_bare_z);
+        float feq_bare_qbar = D3Q19::computeEquilibrium(q_bar, m_rho, u_bare_x, u_bare_y, u_bare_z);
+
+        // Non-equilibrium split into symmetric and anti-symmetric parts
+        float neq_q    = f_q    - feq_bare_q;
+        float neq_qbar = f_qbar - feq_bare_qbar;
+        float f_s_neq  = 0.5f * (neq_q + neq_qbar);  // even (symmetric)
+        float f_a_neq  = 0.5f * (neq_q - neq_qbar);  // odd  (anti-symmetric)
+
+        // EDM shift at u_bare + Δu
+        float feq_shifted = D3Q19::computeEquilibrium(q, m_rho, u_shifted_x, u_shifted_y, u_shifted_z);
+
+        // TRT+EDM: relax even with ω+, odd with ω-, add EDM equilibrium shift
+        f_dst[id + q * n_cells] = f_q
+            - omega       * f_s_neq
+            - omega_minus * f_a_neq
+            + (feq_shifted - feq_bare_q);
+    }
+}
+
+// Semi-implicit Darcy macroscopic kernel for EDM
+// In EDM scheme, forcing is handled by the equilibrium shift in collision,
+// NOT by the +0.5*F/ρ Guo correction. So the macroscopic velocity after
+// streaming is just:
+//   u = Σ(ci·fi) / (ρ + 0.5·K)
+// The F/(2ρ) correction is NOT added here — it was already applied in the
+// collision kernel's output velocity and will be re-applied next collision.
+__global__ void computeMacroscopicSemiImplicitDarcyEDMKernel(
+    const float* f,
+    float* rho,
+    float* ux,
+    float* uy,
+    float* uz,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
+    int num_cells)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= num_cells) return;
+
+    // Compute density
+    float m_rho = 0.0f;
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        m_rho += f[id + q * num_cells];
+    }
+
+    // Compute momentum from distributions
+    float mx = 0.0f;
+    float my = 0.0f;
+    float mz = 0.0f;
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float fq = f[id + q * num_cells];
+        mx += ex[q] * fq;
+        my += ey[q] * fq;
+        mz += ez[q] * fq;
+    }
+
+    // Store density
+    rho[id] = m_rho;
+
+    float u_x = 0.0f;
+    float u_y = 0.0f;
+    float u_z = 0.0f;
+
+    if (m_rho > 1e-10f && !isnan(m_rho)) {
+        // Semi-implicit Darcy: u_bare = m / (ρ + 0.5·K)
+        float K = darcy_coeff[id];
+        float denom = m_rho + 0.5f * K;
+        float inv_denom = 1.0f / denom;
+
+        float u_bare_x = mx * inv_denom;
+        float u_bare_y = my * inv_denom;
+        float u_bare_z = mz * inv_denom;
+
+        // Physical velocity = u_bare + F/(2ρ) for output
+        float inv_rho = 1.0f / m_rho;
+        u_x = u_bare_x + 0.5f * force_x[id] * inv_rho;
+        u_y = u_bare_y + 0.5f * force_y[id] * inv_rho;
+        u_z = u_bare_z + 0.5f * force_z[id] * inv_rho;
+
+        // Velocity clamping for safety
+        const float U_MAX = 0.3f;
+        float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
+        if (u_mag > U_MAX) {
+            float scale = U_MAX / u_mag;
+            u_x *= scale;
+            u_y *= scale;
+            u_z *= scale;
+        }
+    }
+
+    ux[id] = u_x;
+    uy[id] = u_y;
+    uz[id] = u_z;
 }
 
 // TRT collision kernel with uniform force
@@ -2114,6 +2519,13 @@ __global__ void fluidTRTCollisionVariableOmegaKernel(
         // Reconstruct post-collision distribution with forcing
         f_dst[id + q * n_cells] = (float)(f_plus_new_d + f_minus_new_d + force_term_d);
     }
+}
+
+// Set TRT mode: compute omega_minus from magic parameter Λ and current tau_
+// Λ = (tau+ - 0.5) * (tau- - 0.5) → tau- = 0.5 + Λ / (tau+ - 0.5)
+void FluidLBM::setTRT(float magic_parameter) {
+    float tau_minus = 0.5f + magic_parameter / (tau_ - 0.5f);
+    omega_minus_ = 1.0f / tau_minus;
 }
 
 } // namespace physics

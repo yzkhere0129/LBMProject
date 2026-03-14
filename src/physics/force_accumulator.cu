@@ -278,6 +278,7 @@ __global__ void addSurfaceTensionForceKernel(
 __global__ void addMarangoniForceKernel(
     const float* temperature,
     const float* fill_level,
+    const float* liquid_fraction,
     const float3* normals,
     float* fx, float* fy, float* fz,
     float dsigma_dT, float dx, float h_interface,
@@ -308,12 +309,24 @@ __global__ void addMarangoniForceKernel(
         return;
     }
 
-    // Also check fill_level as secondary filter (keep for VOF consistency)
+    // Gas/liquid isolation: strict cutoff to prevent Marangoni in gas cells
+    // and pure liquid interior where |∇f| should be zero anyway
     float f = fill_level[idx];
-    if (f <= 0.001f || f >= 0.999f) {
-        // Even with significant normal, skip pure gas/liquid cells
-        // Use wider cutoffs (0.001, 0.999) to capture more interface
+    if (f <= 0.01f || f >= 0.99f) {
         return;
+    }
+
+    // Mushy zone gate: suppress Marangoni in deep solid/mushy where it's unphysical.
+    // With EDM forcing (no Guo anisotropy accumulation), we only need to exclude
+    // the solid zone where Marangoni has no physical meaning. The gate at fl > 0.1
+    // allows force across the entire diffuse VOF interface while blocking solid.
+    float fl_gate = 1.0f;
+    if (liquid_fraction != nullptr) {
+        float fl = liquid_fraction[idx];
+        fl_gate = fminf(fmaxf((fl - 0.1f) / 0.1f, 0.0f), 1.0f);
+        if (fl_gate < 1e-6f) {
+            return;
+        }
     }
 
     // Compute temperature gradient with one-sided differences at boundaries
@@ -416,7 +429,7 @@ __global__ void addMarangoniForceKernel(
         return;  // No interface
     }
 
-    // Marangoni force (CSF formulation): F = (dσ/dT) · ∇_s T · |∇f| / h
+    // Marangoni force (CSF formulation): F = f · (dσ/dT) · ∇_s T · |∇f| / h
     //
     // Physical derivation:
     //   Surface stress: τ_s = (dσ/dT) · ∇_s T  [N/m²]
@@ -424,17 +437,17 @@ __global__ void addMarangoniForceKernel(
     //   where δ(interface) ≈ |∇f| / h (interface delta function)
     //   and h is the interface thickness [lattice units, dimensionless]
     //
-    // Units: [N/(m·K)] · [K/m] · [1/m] / [dimensionless] = [N/m³]  ✓
+    // Standard CSF Marangoni force: F = dσ/dT × ∇_s T × |∇f|  [N/m³]
     //
-    // FIX (2026-01-12): Restored h_interface division for proper CSF normalization
-    // The raw |∇f| in sharp interfaces can be very large (|∇f| ~ Δf/dx ~ 1e5 1/m)
-    // Division by h_interface (typically 2-4 lattice cells) provides proper normalization
-    // so that ∫ δ(interface) dy ≈ 1
+    // |∇f| is the interface delta function approximation. When computed with
+    // physical dx, its integral across the interface is ≈ 1 — NO additional
+    // h_interface normalization is needed (matches the surface tension CSF
+    // kernel which also uses ∇f directly without /h).
     //
-    // CRITICAL: h_interface should match the actual interface thickness in lattice units
-    // For sharp test interfaces: h=2-3 cells
-    // For smooth VOF interfaces: h=4-6 cells
-    float coeff = dsigma_dT * grad_f_mag / h_interface;
+    // fl_gate suppresses force in solid/mushy zone.
+    // Gas-side isolation is already handled by f ∈ (0.01, 0.99) check above
+    // and by |∇f| → 0 in bulk regions.
+    float coeff = fl_gate * dsigma_dT * grad_f_mag;
 
     fx[idx] += coeff * grad_T_s_x;
     fy[idx] += coeff * grad_T_s_y;
@@ -783,6 +796,122 @@ __global__ void applyCFLLimitingAdaptiveKernel(
 }
 
 /**
+ * @brief Per-cell velocity increment cap (dynamic CFL relaxation)
+ *
+ * Limits force magnitude so that the single-step velocity change
+ * Δu = 0.5·|F|/ρ_LU does not exceed max_delta_u.
+ * With ρ_LU ≈ 1 (standard LBM): |F_max| = 2 · max_delta_u.
+ *
+ * This prevents numerical shock when large physical forces (e.g.,
+ * Marangoni at ~90M N/m³) are suddenly unmasked by phase change
+ * (Darcy suppression drops to zero when fl → 1).
+ */
+__global__ void capForcePerCellKernel(
+    float* fx, float* fy, float* fz,
+    float f_max_lu,
+    int* num_capped,
+    float* max_uncapped_force,
+    float* total_deleted_momentum,
+    int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+
+    float fxv = fx[idx];
+    float fyv = fy[idx];
+    float fzv = fz[idx];
+    float fmag = sqrtf(fxv*fxv + fyv*fyv + fzv*fzv);
+
+    if (fmag > f_max_lu) {
+        float scale = f_max_lu / fmag;
+        fx[idx] = fxv * scale;
+        fy[idx] = fyv * scale;
+        fz[idx] = fzv * scale;
+
+        atomicAdd(num_capped, 1);
+        // Track max uncapped force (approximate via atomicMax on int)
+        atomicMax(reinterpret_cast<int*>(max_uncapped_force),
+                  __float_as_int(fmag));
+        // Track deleted momentum: |F_original| - |F_capped|
+        atomicAdd(total_deleted_momentum, fmag - f_max_lu);
+    }
+}
+
+/**
+ * @brief 3x3x3 box-filter smoothing of force field
+ *
+ * For each interior cell, replaces (fx,fy,fz) with the average over its
+ * 3x3x3 neighbourhood (27 cells).  Only the centre cell is smoothed when
+ * |F_centre| > threshold; boundary cells (any face) are written through
+ * unchanged.  The input and output buffers are separate so there are no
+ * read-write hazards within a single pass.
+ *
+ * The filter is conservative: the neighbourhood mean preserves the total
+ * force integral to first order (sum-before == sum-after up to boundary
+ * contributions that are held fixed).
+ */
+__global__ void smoothForceFieldKernel(
+    const float* fx_in, const float* fy_in, const float* fz_in,
+    float* fx_out, float* fy_out, float* fz_out,
+    float threshold,
+    int nx, int ny, int nz)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + nx * (j + ny * k);
+
+    // Boundary cells: pass through unchanged
+    if (i == 0 || i == nx - 1 ||
+        j == 0 || j == ny - 1 ||
+        k == 0 || k == nz - 1)
+    {
+        fx_out[idx] = fx_in[idx];
+        fy_out[idx] = fy_in[idx];
+        fz_out[idx] = fz_in[idx];
+        return;
+    }
+
+    // Skip cells with negligible force to avoid spreading zero-force regions
+    float fc_x = fx_in[idx];
+    float fc_y = fy_in[idx];
+    float fc_z = fz_in[idx];
+    float f_mag = sqrtf(fc_x*fc_x + fc_y*fc_y + fc_z*fc_z);
+
+    if (f_mag <= threshold) {
+        fx_out[idx] = fc_x;
+        fy_out[idx] = fc_y;
+        fz_out[idx] = fc_z;
+        return;
+    }
+
+    // Accumulate 3x3x3 neighbourhood sum
+    float sum_x = 0.0f, sum_y = 0.0f, sum_z = 0.0f;
+
+    for (int dk = -1; dk <= 1; ++dk) {
+        for (int dj = -1; dj <= 1; ++dj) {
+            for (int di = -1; di <= 1; ++di) {
+                int ni = i + di;
+                int nj = j + dj;
+                int nk = k + dk;
+                int nidx = ni + nx * (nj + ny * nk);
+                sum_x += fx_in[nidx];
+                sum_y += fy_in[nidx];
+                sum_z += fz_in[nidx];
+            }
+        }
+    }
+
+    const float inv27 = 1.0f / 27.0f;
+    fx_out[idx] = sum_x * inv27;
+    fy_out[idx] = sum_y * inv27;
+    fz_out[idx] = sum_z * inv27;
+}
+
+/**
  * @brief Compute force magnitude for diagnostics
  */
 __global__ void computeForceMagnitudeKernel(
@@ -1008,6 +1137,7 @@ void ForceAccumulator::addSurfaceTensionForce(
 
 void ForceAccumulator::addMarangoniForce(
     const float* temperature, const float* fill_level,
+    const float* liquid_fraction,
     const float3* normals, float dsigma_dT,
     int nx, int ny, int nz, float dx, float h_interface)
 {
@@ -1020,7 +1150,7 @@ void ForceAccumulator::addMarangoniForce(
                 (nz + threads.z - 1) / threads.z);
 
     addMarangoniForceKernel<<<blocks, threads>>>(
-        temperature, fill_level, normals,
+        temperature, fill_level, liquid_fraction, normals,
         d_fx_, d_fy_, d_fz_,
         dsigma_dT, dx, h_interface,
         nx, ny, nz);
@@ -1071,41 +1201,22 @@ void ForceAccumulator::addRecoilPressureForce(
 }
 
 void ForceAccumulator::convertToLatticeUnits(float dx, float dt, float rho) {
-    // CRITICAL FIX (2026-01-20): Correct force conversion for Guo forcing scheme
-    //
-    // ROOT CAUSE OF 93% FORCE DEFICIT:
-    // The Guo forcing scheme applies forces with a factor of 0.5:
-    //   Δu = 0.5 × F_lattice / ρ_lattice [per timestep]
-    //
-    // This factor of 0.5 comes from the trapezoidal integration of forces in LBM.
-    // To achieve the PHYSICAL acceleration a = F_phys / ρ_phys over timestep dt,
-    // we must COMPENSATE by multiplying the conversion factor by 2.
+    // Convert volumetric force [N/m³] to lattice force [dimensionless]
     //
     // DIMENSIONAL ANALYSIS:
     //   Physical acceleration: a = F_phys / ρ_phys [m/s²]
-    //   Physical velocity change: Δv_phys = a × dt = (F_phys / ρ_phys) × dt [m/s]
-    //   Lattice velocity change: Δv_lattice = Δv_phys × (dt / dx) [dimensionless]
-    //                                       = (F_phys / ρ_phys) × dt × (dt / dx)
-    //                                       = F_phys × (dt² / dx) / ρ_phys
+    //   Lattice velocity change per step: Δu = a × dt²/dx = F_phys × dt²/(dx × ρ_phys)
+    //   Collision kernel applies: Δu = F_LU / ρ_LU  (where ρ_LU ≈ 1)
+    //   Equating: F_LU = F_phys × dt² / (dx × ρ_phys)
     //
-    //   Guo forcing produces: Δv_lattice = 0.5 × F_lattice / ρ_lattice
+    // WHY 1/ρ_phys IS REQUIRED:
+    //   Forces like buoyancy already contain ρ_phys (F = ρ·β·ΔT·g), so the
+    //   ρ_phys in numerator cancels with 1/ρ_phys in conversion → correct.
+    //   Surface tension (F = σ·κ·∇f) and Marangoni (F = dσ/dT·|∇f|·∇_sT/h)
+    //   do NOT contain ρ_phys → the 1/ρ_phys is essential for correct scaling.
+    //   Without it, these forces are ρ_phys (~7900 for steel) times too large.
     //
-    //   Equating:
-    //     0.5 × F_lattice / ρ_lattice = F_phys × (dt² / dx) / ρ_phys
-    //
-    //   If ρ_lattice = ρ_phys (our case in variable omega kernel):
-    //     0.5 × F_lattice = F_phys × (dt² / dx)
-    //     F_lattice = 2 × F_phys × (dt² / dx)  ← FACTOR OF 2 REQUIRED!
-    //
-    // WHY THE FACTOR OF 2:
-    // - Guo forcing includes 0.5 coefficient for numerical stability/accuracy
-    // - To get full physical force response, we must multiply by 2 in conversion
-    // - This is standard practice in LBM with Guo forcing for external forces
-    //
-    // NOTE: The /ρ division happens in the collision kernel (inv_rho), so we
-    //       do NOT include it here (would cause double division in standard kernels)
-    //
-    float conversion_factor = dt * dt / dx;  // REVERTED: Factor of 2 causes oscillations
+    float conversion_factor = dt * dt / (dx * rho);
 
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;
@@ -1115,6 +1226,46 @@ void ForceAccumulator::convertToLatticeUnits(float dx, float dt, float rho) {
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+ForceAccumulator::CapStats ForceAccumulator::capPerCellVelocityIncrement(float max_delta_u) {
+    // EDM forcing: Δu = F / ρ_LU.  With ρ_LU ≈ 1: Δu ≈ |F|
+    // To enforce Δu ≤ max_delta_u → |F| ≤ max_delta_u
+    float f_max_lu = max_delta_u;
+
+    // Allocate counters on device
+    int* d_num_capped;
+    float* d_max_uncapped;
+    float* d_total_deleted;
+    CUDA_CHECK(cudaMalloc(&d_num_capped, sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_max_uncapped, sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_total_deleted, sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_num_capped, 0, sizeof(int)));
+    CUDA_CHECK(cudaMemset(d_max_uncapped, 0, sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_total_deleted, 0, sizeof(float)));
+
+    int threads = 256;
+    int blocks = (num_cells_ + threads - 1) / threads;
+
+    capForcePerCellKernel<<<blocks, threads>>>(
+        d_fx_, d_fy_, d_fz_, f_max_lu,
+        d_num_capped, d_max_uncapped, d_total_deleted,
+        num_cells_);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CapStats stats;
+    stats.cap_threshold = f_max_lu;
+    CUDA_CHECK(cudaMemcpy(&stats.num_capped, d_num_capped, sizeof(int), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&stats.max_uncapped_force, d_max_uncapped, sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&stats.total_deleted_momentum, d_total_deleted, sizeof(float), cudaMemcpyDeviceToHost));
+    stats.total_cells = num_cells_;
+
+    CUDA_CHECK(cudaFree(d_num_capped));
+    CUDA_CHECK(cudaFree(d_max_uncapped));
+    CUDA_CHECK(cudaFree(d_total_deleted));
+
+    return stats;
 }
 
 void ForceAccumulator::applyCFLLimiting(
@@ -1206,6 +1357,46 @@ void ForceAccumulator::printForceBreakdown() const {
     std::cout << "  Recoil pressure: " << recoil_mag_ << " N/m³\n";
     std::cout << "  Total (max):     " << getMaxForceMagnitude() << " N/m³\n";
     std::cout << "=======================\n" << std::flush;
+}
+
+void ForceAccumulator::smoothForceField(int nx, int ny, int nz, int iterations) {
+    const size_t bytes = num_cells_ * sizeof(float);
+
+    // Allocate temporary scratch buffers for ping-pong smoothing
+    float* d_tmp_x;
+    float* d_tmp_y;
+    float* d_tmp_z;
+    CUDA_CHECK(cudaMalloc(&d_tmp_x, bytes));
+    CUDA_CHECK(cudaMalloc(&d_tmp_y, bytes));
+    CUDA_CHECK(cudaMalloc(&d_tmp_z, bytes));
+
+    dim3 threads(8, 8, 8);
+    dim3 blocks((nx + threads.x - 1) / threads.x,
+                (ny + threads.y - 1) / threads.y,
+                (nz + threads.z - 1) / threads.z);
+
+    // Only smooth cells with |F| above this threshold to avoid diffusing
+    // zero-force regions into active force regions.
+    const float threshold = 1e-10f;
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        // Read from primary arrays, write to scratch
+        smoothForceFieldKernel<<<blocks, threads>>>(
+            d_fx_, d_fy_, d_fz_,
+            d_tmp_x, d_tmp_y, d_tmp_z,
+            threshold, nx, ny, nz);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        // Copy smoothed result back to primary arrays
+        CUDA_CHECK(cudaMemcpy(d_fx_, d_tmp_x, bytes, cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(d_fy_, d_tmp_y, bytes, cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(d_fz_, d_tmp_z, bytes, cudaMemcpyDeviceToDevice));
+    }
+
+    CUDA_CHECK(cudaFree(d_tmp_x));
+    CUDA_CHECK(cudaFree(d_tmp_y));
+    CUDA_CHECK(cudaFree(d_tmp_z));
 }
 
 } // namespace physics

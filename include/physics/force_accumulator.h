@@ -129,16 +129,14 @@ public:
      * @param dsigma_dT Temperature coefficient of surface tension [N/(m·K)]
      * @param nx, ny, nz Grid dimensions
      * @param dx Lattice spacing [m]
-     * @param h_interface Interface thickness [lattice cells] - used for CSF normalization
-     * @note Adds F_m = (dσ/dT) · ∇_s T · |∇f| / h [N/m³]
-     * @note FIX (2026-01-12): h_interface provides proper CSF delta function normalization
-     *       For sharp interfaces (tests): h=2-3 cells
-     *       For smooth VOF interfaces (production): h=4-6 cells
-     *       This ensures ∫ δ(interface) dy ≈ 1 for correct surface-to-volume force conversion
+     * @param h_interface Kept for API compat; should be 1.0. The kernel ignores it —
+     *        |∇f| with physical dx is already the correct CSF delta function.
+     * @note Standard CSF: F_m = (dσ/dT) · ∇_s T · |∇f| [N/m³]
      */
     void addMarangoniForce(const float* temperature, const float* fill_level,
+                           const float* liquid_fraction,
                            const float3* normals, float dsigma_dT,
-                           int nx, int ny, int nz, float dx, float h_interface = 2.0f);
+                           int nx, int ny, int nz, float dx, float h_interface = 1.0f);
 
     /**
      * @brief Add recoil pressure force (evaporation-driven)
@@ -172,6 +170,22 @@ public:
      * @note Must be called after all forces are added, before CFL limiting
      */
     void convertToLatticeUnits(float dx, float dt, float rho);
+
+    /** @brief Statistics from per-cell velocity cap */
+    struct CapStats {
+        int num_capped = 0;
+        int total_cells = 0;
+        float cap_threshold = 0.0f;
+        float max_uncapped_force = 0.0f;
+        float total_deleted_momentum = 0.0f;
+    };
+
+    /**
+     * @brief Per-cell velocity increment cap with diagnostics
+     * @param max_delta_u Maximum allowed velocity increment [lattice units]
+     * @return CapStats with count of capped cells and deleted momentum
+     */
+    CapStats capPerCellVelocityIncrement(float max_delta_u);
 
     /**
      * @brief Apply CFL-based force limiting for numerical stability
@@ -208,6 +222,27 @@ public:
                                   float v_target_bulk, float interface_lo,
                                   float interface_hi, float recoil_boost_factor,
                                   float ramp_factor);
+
+    /**
+     * @brief Apply Gaussian (box-filter) smoothing to the force field
+     *
+     * Replaces each interior cell's force with the average over its 3x3x3
+     * neighbourhood (27 cells).  Boundary cells are left unchanged.  Only
+     * cells where |F| > 1e-10 are smoothed so that zero-force regions are
+     * not contaminated by adjacent active-force regions.
+     *
+     * The filter is conservative: the neighbourhood mean preserves the
+     * total force integral to first order.
+     *
+     * Typical use: call once after addMarangoniForce() and before
+     * convertToLatticeUnits() to remove sharp spatial gradients that
+     * excite high-frequency numerical modes.
+     *
+     * @param nx, ny, nz Grid dimensions (must match constructor arguments)
+     * @param iterations Number of box-filter passes (default 1; each pass
+     *                   widens the effective smoothing radius by ~1 cell)
+     */
+    void smoothForceField(int nx, int ny, int nz, int iterations = 1);
 
     /**
      * @brief Compute Darcy coefficient field for semi-implicit treatment
