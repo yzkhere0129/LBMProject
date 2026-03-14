@@ -777,6 +777,13 @@ private:
     // J_evap [kg/(m^2*s)] computed from thermal solver, applied to VOF
     float* d_evap_mass_flux_;
 
+    // Hydrodynamic-only smoothed fields (thermodynamic fl/T remain pristine)
+    // Used exclusively for Darcy coefficient and Marangoni force computation
+    // to prevent mushy-zone parasitic current feedback loop.
+    float* d_fl_smoothed_;      ///< 27-point smoothed liquid fraction (for Darcy/Marangoni)
+    float* d_T_smoothed_;       ///< 27-point smoothed temperature (for Marangoni ∇T)
+    float* d_darcy_K_prev_;     ///< Previous Darcy coefficient (for under-relaxation)
+
     // Current simulation time
     float current_time_;
 

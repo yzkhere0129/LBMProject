@@ -96,6 +96,91 @@ __global__ void checkNaNKernel(const float* data, int* has_nan, int n) {
     }
 }
 
+/**
+ * @brief 27-point (Moore neighborhood) isotropic smoothing kernel
+ *
+ * Full 3×3×3 stencil with isotropic weights:
+ *   Center (1):      w=8/64
+ *   Face neighbors (6):  w=4/64 each
+ *   Edge neighbors (12): w=2/64 each
+ *   Corner neighbors (8): w=1/64 each
+ *   Total: 8 + 6×4 + 12×2 + 8×1 = 64/64 = 1 (normalized)
+ *
+ * This weight distribution recovers the isotropic Laplacian to O(h²),
+ * compensating for D3Q7's directional bias in thermal diffusion.
+ */
+static __global__ void smoothField27Kernel(
+    const float* __restrict__ src,
+    float* __restrict__ dst,
+    int nx, int ny, int nz)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + nx * (j + ny * k);
+
+    // Boundary cells: pass through (zero-gradient implicitly)
+    if (i == 0 || i == nx-1 || j == 0 || j == ny-1 || k == 0 || k == nz-1) {
+        dst[idx] = src[idx];
+        return;
+    }
+
+    // 27-point isotropic stencil
+    float sum = 0.0f;
+
+    // Center: weight 8
+    sum += 8.0f * src[idx];
+
+    // 6 face neighbors: weight 4 each
+    sum += 4.0f * (src[(i-1) + nx*(j   + ny*k    )] +
+                   src[(i+1) + nx*(j   + ny*k    )] +
+                   src[i     + nx*((j-1)+ ny*k   )] +
+                   src[i     + nx*((j+1)+ ny*k   )] +
+                   src[i     + nx*(j    + ny*(k-1))] +
+                   src[i     + nx*(j    + ny*(k+1))]);
+
+    // 12 edge neighbors: weight 2 each
+    sum += 2.0f * (src[(i-1) + nx*((j-1)+ ny*k    )] +
+                   src[(i+1) + nx*((j-1)+ ny*k    )] +
+                   src[(i-1) + nx*((j+1)+ ny*k    )] +
+                   src[(i+1) + nx*((j+1)+ ny*k    )] +
+                   src[(i-1) + nx*(j    + ny*(k-1))] +
+                   src[(i+1) + nx*(j    + ny*(k-1))] +
+                   src[(i-1) + nx*(j    + ny*(k+1))] +
+                   src[(i+1) + nx*(j    + ny*(k+1))] +
+                   src[i     + nx*((j-1)+ ny*(k-1))] +
+                   src[i     + nx*((j+1)+ ny*(k-1))] +
+                   src[i     + nx*((j-1)+ ny*(k+1))] +
+                   src[i     + nx*((j+1)+ ny*(k+1))]);
+
+    // 8 corner neighbors: weight 1 each
+    sum += 1.0f * (src[(i-1) + nx*((j-1)+ ny*(k-1))] +
+                   src[(i+1) + nx*((j-1)+ ny*(k-1))] +
+                   src[(i-1) + nx*((j+1)+ ny*(k-1))] +
+                   src[(i+1) + nx*((j+1)+ ny*(k-1))] +
+                   src[(i-1) + nx*((j-1)+ ny*(k+1))] +
+                   src[(i+1) + nx*((j-1)+ ny*(k+1))] +
+                   src[(i-1) + nx*((j+1)+ ny*(k+1))] +
+                   src[(i+1) + nx*((j+1)+ ny*(k+1))]);
+
+    dst[idx] = sum / 64.0f;
+}
+
+/**
+ * @brief Darcy under-relaxation kernel: K_new = α·K_computed + (1-α)·K_old
+ */
+static __global__ void darcyUnderRelaxKernel(
+    float* __restrict__ K_current,
+    const float* __restrict__ K_prev,
+    float alpha, int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    K_current[idx] = alpha * K_current[idx] + (1.0f - alpha) * K_prev[idx];
+}
+
 // TODO: These local kernels duplicate functionality in force_accumulator.cu.
 // They exist because ForceAccumulator's versions are not linkable from this TU.
 // Remove once ForceAccumulator exposes these via public API or shared header.
@@ -940,6 +1025,14 @@ void MultiphysicsSolver::allocateMemory() {
     CUDA_CHECK(cudaMalloc(&d_evap_mass_flux_, num_cells * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_evap_mass_flux_, 0, num_cells * sizeof(float)));
 
+    // Allocate hydrodynamic smoothing buffers (mushy-zone stabilization)
+    CUDA_CHECK(cudaMalloc(&d_fl_smoothed_, num_cells * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_T_smoothed_, num_cells * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_darcy_K_prev_, num_cells * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_fl_smoothed_, 0, num_cells * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_T_smoothed_, 0, num_cells * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_darcy_K_prev_, 0, num_cells * sizeof(float)));
+
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         throw std::runtime_error("Failed to allocate device memory: " +
@@ -966,6 +1059,9 @@ void MultiphysicsSolver::freeMemory() {
     if (d_evap_mass_flux_) cudaFree(d_evap_mass_flux_);
     if (d_energy_temp_) cudaFree(d_energy_temp_);
     if (d_saturation_pressure_) cudaFree(d_saturation_pressure_);
+    if (d_fl_smoothed_) cudaFree(d_fl_smoothed_);
+    if (d_T_smoothed_) cudaFree(d_T_smoothed_);
+    if (d_darcy_K_prev_) cudaFree(d_darcy_K_prev_);
 }
 
 // ============================================================================
@@ -1993,20 +2089,46 @@ void MultiphysicsSolver::computeTotalForce() {
     }
 
     // 2c. Marangoni force (thermocapillary)
+    //
+    // FIX: Use 27-point smoothed temperature for ∇T computation to remove
+    // D3Q7 anisotropic noise that causes parasitic Marangoni currents.
+    // The thermodynamic temperature field remains pristine.
     if (config_.enable_marangoni && marangoni_ && vof_) {
-        const float* temperature = config_.enable_thermal ?
+        const float* temperature_raw = config_.enable_thermal ?
             thermal_->getTemperature() : d_temperature_static_;
         const float* fill_level = vof_->getFillLevel();
         const float3* normals = vof_->getInterfaceNormals();
 
-        if (temperature && fill_level && normals) {
-            const float* liquid_fraction = thermal_ ? thermal_->getLiquidFraction() : nullptr;
+        if (temperature_raw && fill_level && normals) {
+            // Smooth temperature with 27-point isotropic kernel (for ∇T only)
+            dim3 blk(8, 8, 8);
+            dim3 grd((config_.nx+7)/8, (config_.ny+7)/8, (config_.nz+7)/8);
+            smoothField27Kernel<<<grd, blk>>>(
+                temperature_raw, d_T_smoothed_,
+                config_.nx, config_.ny, config_.nz);
+            CUDA_CHECK_KERNEL();
+            CUDA_CHECK(cudaDeviceSynchronize());
+
+            // Use smoothed fl for mushy-zone gating
+            const float* fl_for_marangoni = nullptr;
+            if (thermal_) {
+                const float* fl_raw = thermal_->getLiquidFraction();
+                if (fl_raw) {
+                    smoothField27Kernel<<<grd, blk>>>(
+                        fl_raw, d_fl_smoothed_,
+                        config_.nx, config_.ny, config_.nz);
+                    CUDA_CHECK_KERNEL();
+                    CUDA_CHECK(cudaDeviceSynchronize());
+                    fl_for_marangoni = d_fl_smoothed_;
+                }
+            }
+
             force_accumulator_->addMarangoniForce(
-                temperature, fill_level, liquid_fraction, normals,
+                d_T_smoothed_, fill_level, fl_for_marangoni, normals,
                 config_.dsigma_dT,
                 config_.nx, config_.ny, config_.nz,
                 config_.dx,
-                1.0f);  // h_interface=1: |∇f| is already the CSF delta function (no extra normalization)
+                1.0f);
         }
     }
 
@@ -2046,6 +2168,17 @@ void MultiphysicsSolver::computeTotalForce() {
     // stable: when K → ∞, u → 0 smoothly.
     //
     // Reference: Voller & Prakash (1987), Brent et al. (1988)
+    // 2e. Darcy damping with hydrodynamic smoothing + under-relaxation
+    //
+    // FIX: The Carman-Kozeny function K = C·(1-fl)²/(fl³+ε) is catastrophically
+    // nonlinear — a single-cell fl difference of 0.01→0.1 creates 810× K gradient.
+    // This shatters the velocity field in the mushy zone, feeding back into thermal
+    // advection → more fl noise → exponential instability.
+    //
+    // Three-pronged stabilization:
+    // 1. Use 27-point smoothed fl (not thermodynamic fl) for Darcy computation
+    // 2. Under-relax K: K_new = α·K(fl_smooth) + (1-α)·K_old with α=0.3
+    // 3. Thermodynamic fl remains pristine (no energy conservation violation)
     if (config_.enable_darcy && fluid_) {
         const float* liquid_fraction = nullptr;
         if (thermal_) {
@@ -2056,9 +2189,37 @@ void MultiphysicsSolver::computeTotalForce() {
         }
 
         if (liquid_fraction) {
+            // Step 1: Smooth fl with 27-point isotropic kernel
+            dim3 blk(8, 8, 8);
+            dim3 grd((config_.nx+7)/8, (config_.ny+7)/8, (config_.nz+7)/8);
+            smoothField27Kernel<<<grd, blk>>>(
+                liquid_fraction, d_fl_smoothed_,
+                config_.nx, config_.ny, config_.nz);
+            CUDA_CHECK_KERNEL();
+            CUDA_CHECK(cudaDeviceSynchronize());
+
+            // Step 2: Compute Darcy K from smoothed fl
             force_accumulator_->computeDarcyCoefficientField(
-                liquid_fraction, config_.darcy_coefficient,
+                d_fl_smoothed_, config_.darcy_coefficient,
                 config_.density, config_.dx, config_.dt);
+
+            // Step 3: Under-relax K with previous step (α=0.3)
+            int num_cells = config_.nx * config_.ny * config_.nz;
+            const float darcy_alpha = 0.3f;
+            float* d_darcy_K = const_cast<float*>(force_accumulator_->getDarcyCoefficient());
+            if (d_darcy_K && d_darcy_K_prev_) {
+                int threads = 256;
+                int blocks = (num_cells + threads - 1) / threads;
+                darcyUnderRelaxKernel<<<blocks, threads>>>(
+                    d_darcy_K, d_darcy_K_prev_, darcy_alpha, num_cells);
+                CUDA_CHECK_KERNEL();
+                CUDA_CHECK(cudaDeviceSynchronize());
+
+                // Save current K for next step's under-relaxation
+                CUDA_CHECK(cudaMemcpy(d_darcy_K_prev_, d_darcy_K,
+                                      num_cells * sizeof(float),
+                                      cudaMemcpyDeviceToDevice));
+            }
         }
     }
 
