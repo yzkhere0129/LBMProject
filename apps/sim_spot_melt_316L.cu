@@ -103,15 +103,18 @@ int main() {
     config.laser_scan_vx            = 0.0f;         // Stationary
     config.laser_scan_vy            = 0.0f;
 
-    // --- Fluid: lattice viscosity for tau ≈ 0.6 ---
-    // nu_phys(316L liquid) ≈ μ/ρ = 6e-3/6900 ≈ 8.7e-7 m²/s
-    // nu_lattice = nu_phys * dt/dx² = 8.7e-7 * 1e-7 / 4e-12 = 0.0218
-    // tau = 3*0.0218 + 0.5 = 0.565 (safe with TRT)
-    config.kinematic_viscosity      = 0.0218f;      // Lattice units
+    // --- Fluid: increased lattice viscosity for smoother mushy zone ---
+    // Physical nu = 8.7e-7 m²/s → nu_LU = 0.0218 → tau = 0.565
+    // Increased 3× to nu_LU = 0.065 → tau = 0.695 to damp parasitic
+    // currents at the mushy-zone boundary without freezing bulk Marangoni.
+    config.kinematic_viscosity      = 0.065f;       // Lattice units (tau ≈ 0.7)
     config.density                  = config.material.rho_liquid;
 
-    // --- Darcy mushy-zone damping ---
-    config.darcy_coefficient        = 1.0e6f;       // Strong enough to freeze mushy zone
+    // --- Darcy mushy-zone damping (softened) ---
+    // K=1e6 causes acoustic shock when Marangoni flow hits the mushy zone.
+    // K=5e4 creates a thicker, more permeable transition that cushions the
+    // momentum discontinuity and prevents velocity checkerboarding.
+    config.darcy_coefficient        = 5.0e4f;
 
     // --- Thermal ---
     config.thermal_diffusivity      = config.material.getThermalDiffusivity(1700.0f);
@@ -164,9 +167,11 @@ int main() {
     config.enable_vof_mass_correction  = false;  // PLIC is conservative
 
     // --- Timing ---
-    const float t_total  = 500.0e-6f;   // 500 μs dwell time
+    // Stop at 150 μs — beyond this, the melt front hits domain boundaries
+    // and adiabatic walls trap heat, invalidating the physics.
+    const float t_total  = 150.0e-6f;   // 150 μs (clean transient window)
     const int num_steps  = static_cast<int>(t_total / config.dt);
-    const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);   // VTK every 50 μs
+    const int vtk_every  = static_cast<int>(25.0e-6f / config.dt);   // VTK every 25 μs
     const int diag_every = 1000;  // Console diagnostics every 1000 steps
 
     // ==================================================================
