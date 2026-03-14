@@ -185,6 +185,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(viz_marangoni_cavity PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(viz_marangoni_cavity lbm_physics lbm_core CUDA::cudart)
 
+    # Phase inversion diagnostic (oil rising in water, PLIC-VOF + TRT)
+    add_executable(viz_phase_inversion scripts/viz/viz_phase_inversion.cu)
+    set_target_properties(viz_phase_inversion PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_phase_inversion lbm_physics lbm_core CUDA::cudart)
+
     # Visualization: Rayleigh-Taylor instability (PLIC-VOF + TRT + Guo)
     add_executable(viz_rt_plic scripts/viz/viz_rt_plic.cu)
     set_target_properties(viz_rt_plic PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

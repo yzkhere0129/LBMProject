@@ -2748,11 +2748,12 @@ __global__ void computePlicFluxKernel(
     // -------------------------------------------------------------------------
     float vol_flux;
 
-    // Bulk cells and out-of-range f (from Strang splitting overshoot):
-    // For f outside [0,1], use upwind flux = f*d so the excess/deficit
-    // is properly advected rather than trapped.  This guarantees mass
-    // conservation even without a post-sweep clamp.
-    if (f <= 0.0f || f >= 1.0f) {
+    // Near-uniform and out-of-range cells: use simple upwind flux = f*d.
+    // PLIC reconstruction is ill-conditioned for f ≈ 0 or f ≈ 1 because
+    // the interface normal is dominated by floating-point noise, producing
+    // spurious confetti fragments. The 1e-6 threshold catches these cases.
+    // For f outside [0,1] (Strang overshoot), upwind preserves the excess.
+    if (f < 1e-6f || f > (1.0f - 1e-6f)) {
         vol_flux = f * d;
     } else {
         // Interface cell: compute volume in departure slab
