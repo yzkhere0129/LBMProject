@@ -1450,6 +1450,9 @@ void MultiphysicsSolver::thermalStep(float dt) {
         thermal_->setVOFFillLevel(vof_->getFillLevel());
     }
 
+    // Keyhole mode: disable hard T cap when recoil pressure handles evaporation
+    thermal_->setSkipTemperatureCap(config_.enable_recoil_pressure);
+
     // Thermal-fluid coupling: pass velocity for advection term v*nabla(T)
     const float* ux = config_.enable_thermal_advection && fluid_ ? fluid_->getVelocityX() : nullptr;
     const float* uy = config_.enable_thermal_advection && fluid_ ? fluid_->getVelocityY() : nullptr;

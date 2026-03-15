@@ -116,7 +116,7 @@ int main() {
     config.enable_surface_tension   = true;
     config.enable_buoyancy          = true;
     config.enable_evaporation_mass_loss = true;
-    config.enable_recoil_pressure   = false;
+    config.enable_recoil_pressure   = true;   // KEYHOLE: recoil pushes surface down
     config.enable_radiation_bc      = true;
 
     // --- Moving laser ---

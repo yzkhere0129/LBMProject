@@ -810,13 +810,18 @@ void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_
 
     // Apply hard temperature cap to ensure T < T_boil
     // Track energy removed for energy balance accounting
-    applyTemperatureCapKernel<<<gridSize, blockSize>>>(
-        d_g_src, d_temperature, fill_level,
-        d_cap_energy_removed_,
-        nx_, ny_, nz_, material_
-    );
-    CUDA_CHECK_KERNEL();
-    CUDA_CHECK(cudaDeviceSynchronize());
+    // SKIP in keyhole mode: recoil pressure + evaporation naturally limit T
+    if (!skip_temperature_cap_) {
+        applyTemperatureCapKernel<<<gridSize, blockSize>>>(
+            d_g_src, d_temperature, fill_level,
+            d_cap_energy_removed_,
+            nx_, ny_, nz_, material_
+        );
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+    } else if (d_cap_energy_removed_) {
+        CUDA_CHECK(cudaMemset(d_cap_energy_removed_, 0, num_cells_ * sizeof(float)));
+    }
 
     // Update temperature field
     computeTemperature();
@@ -858,9 +863,11 @@ void ThermalLBM::applyTemperatureSafetyCap() {
     float T_boil = material_.T_vaporization;
     if (T_boil <= 0.0f) return;  // No boiling point defined
 
-    // Allow a small margin above T_boil for numerical smoothness
-    // Physical: evaporation creates ~100K superheat before equilibrium
-    float T_max_allowed = T_boil + 100.0f;
+    // Safety margin above T_boil. In keyhole mode (skip_temperature_cap_),
+    // allow much higher temperatures for deep keyhole dynamics.
+    float T_max_allowed = skip_temperature_cap_ ?
+        T_boil + 2000.0f :  // Keyhole: allow up to ~5000K
+        T_boil + 100.0f;    // Conduction: tight cap
 
     int blockSize = 256;
     int gridSize = (num_cells_ + blockSize - 1) / blockSize;

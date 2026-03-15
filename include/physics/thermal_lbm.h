@@ -399,6 +399,11 @@ public:
     /// Set VOF fill_level pointer for ESM gas masking (called by MultiphysicsSolver)
     void setVOFFillLevel(const float* fill_level) { d_vof_fill_level_ = fill_level; }
 
+    /// Disable the hard temperature cap at T_boil-100K for keyhole mode.
+    /// When recoil pressure is active, evaporation physics naturally limits T.
+    bool skip_temperature_cap_ = false;
+    void setSkipTemperatureCap(bool skip) { skip_temperature_cap_ = skip; }
+
 private:
     // Utility functions
     void allocateMemory();
