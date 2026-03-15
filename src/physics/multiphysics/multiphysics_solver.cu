@@ -874,6 +874,11 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
             config_.boundaries.vofBCZ()
         );
 
+        // PLIC geometric advection: sharp interface (1 cell width),
+        // exactly mass-conservative. Replaces default UPWIND which is
+        // first-order diffusive and smears the interface over 15+ cells.
+        vof_->setAdvectionScheme(VOFAdvectionScheme::PLIC);
+
         // Enable mass conservation correction to prevent 90% mass loss
         // This redistributes numerical mass loss back to interface cells
         if (config_.enable_vof_mass_correction) {
