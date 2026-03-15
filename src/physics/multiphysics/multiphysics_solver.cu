@@ -169,6 +169,24 @@ static __global__ void smoothField27Kernel(
 }
 
 /**
+ * @brief Zero Darcy coefficient in gas cells (VOF fill < threshold)
+ *
+ * Without this, K = C·(1-fl) applies maximum penalty in the gas phase
+ * (fl=0 in gas → K=C), turning the inert atmosphere into concrete and
+ * trapping Marangoni flow sub-surface.
+ */
+static __global__ void darcyZeroInGasKernel(
+    float* __restrict__ darcy_K,
+    const float* __restrict__ fill_level,
+    float threshold, int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    if (fill_level[idx] < threshold)
+        darcy_K[idx] = 0.0f;
+}
+
+/**
  * @brief Darcy under-relaxation kernel: K_new = α·K_computed + (1-α)·K_old
  */
 static __global__ void darcyUnderRelaxKernel(
@@ -2240,6 +2258,18 @@ void MultiphysicsSolver::computeTotalForce() {
             force_accumulator_->computeDarcyCoefficientField(
                 d_fl_smoothed_, config_.darcy_coefficient,
                 config_.density, config_.dx, config_.dt);
+
+            // Step 2b: Zero Darcy in gas phase (VOF fill < 0.5)
+            // Without this, K = C·(1-fl) freezes the gas (fl=0 → K=C_max)
+            if (vof_) {
+                int num_cells_local = config_.nx * config_.ny * config_.nz;
+                float* d_darcy_K_local = const_cast<float*>(
+                    force_accumulator_->getDarcyCoefficient());
+                darcyZeroInGasKernel<<<(num_cells_local+255)/256, 256>>>(
+                    d_darcy_K_local, vof_->getFillLevel(), 0.5f, num_cells_local);
+                CUDA_CHECK_KERNEL();
+                CUDA_CHECK(cudaDeviceSynchronize());
+            }
 
             // Step 3: Under-relax K with previous step (α=0.3)
             int num_cells = config_.nx * config_.ny * config_.nz;
