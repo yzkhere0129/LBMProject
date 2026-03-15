@@ -3036,11 +3036,13 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    // NO clamp and NO mass correction: the conservative update
-    // f_new = f - (Φ+ - Φ-) with proper out-of-range flux (f*d)
-    // guarantees exact mass conservation by flux telescoping.
-    // Out-of-range f values from Strang splitting are advected away
-    // naturally rather than clipped.
+    // Final [0,1] clamp after all 3 Strang sweeps.
+    // PLIC Strang splitting can produce extreme overshoots (f up to 6+)
+    // when multiple directional fluxes accumulate in a cell. These are
+    // NOT advected away naturally — they persist and corrupt fill_level.
+    plicFinalClampKernel<<<(N + 255) / 256, 256>>>(d_fill_level_, N);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Legacy mass correction (disabled by default):
     if (mass_correction_enabled_) {
