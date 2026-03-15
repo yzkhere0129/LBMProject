@@ -36,7 +36,7 @@ SNAPSHOTS = [
 
 # Quiver subsampling stride and melt pool gate
 QUIVER_STRIDE  = 4         # subsample every N cells in x and z
-LF_GATE        = 0.1       # show vectors only where liquid_fraction > this value
+LF_GATE        = 0.1       # show vectors only where fill_level > this value (metal, not gas)
 # Quiver scale: arrow length in plot µm per m/s of velocity.
 # At stride=4 cells = 8µm spacing, a scale of 0.6 makes v=5m/s arrows ~8µm long.
 QUIVER_SCALE   = 0.6       # (m/s) per µm  →  arrow_length_µm = v_ms / QUIVER_SCALE
@@ -222,10 +222,10 @@ def main():
                         linewidths=1.2, linestyles='-')
 
         # Quiver: subsample, gate to melt pool
-        lf_q  = lf[sz, sx]
+        fl_q  = fl[sz, sx]   # Use VOF fill_level (metal=1, gas=0), NOT liquid_fraction
         vx_q  = vx_ms[sz, sx]
         vz_q  = vz_ms[sz, sx]
-        mask  = lf_q > LF_GATE
+        mask  = fl_q > LF_GATE
 
         if mask.any():
             vx_masked = np.where(mask, vx_q, np.nan)
