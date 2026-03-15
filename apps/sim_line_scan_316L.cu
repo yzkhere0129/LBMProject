@@ -239,14 +239,18 @@ int main() {
     int num_cells = config.nx * config.ny * config.nz;
     std::vector<float> h_lf(num_cells), h_fl(num_cells);
 
+    // Initial mass (for conservation tracking)
+    float initial_mass = solver.getTotalMass();
+    printf("Initial metal volume (Σfill): %.0f\n\n", initial_mass);
+
     // ==================================================================
     // Console header
     // ==================================================================
-    printf("%-6s %7s %7s %7s %7s %7s %7s %9s\n",
-           "Step", "t[μs]", "T_max", "v_max", "Depth", "Length", "Width", "Laser_x");
-    printf("%-6s %7s %7s %7s %7s %7s %7s %9s\n",
-           "", "", "[K]", "[m/s]", "[μm]", "[μm]", "[μm]", "[μm]");
-    printf("--------------------------------------------------------------\n");
+    printf("%-6s %7s %7s %7s %7s %7s %7s %9s %8s\n",
+           "Step", "t[μs]", "T_max", "v_max", "Depth", "Length", "Width", "Laser_x", "MassΔ%");
+    printf("%-6s %7s %7s %7s %7s %7s %7s %9s %8s\n",
+           "", "", "[K]", "[m/s]", "[μm]", "[μm]", "[μm]", "[μm]", "");
+    printf("----------------------------------------------------------------------\n");
     fflush(stdout);
 
     // ==================================================================
@@ -274,10 +278,13 @@ int main() {
                 h_lf.data(), h_fl.data(),
                 config.nx, config.ny, config.nz, config.dx, interface_z);
 
-            printf("%-6d %7.1f %7.0f %7.3f %7.1f %7.1f %7.1f %9.1f\n",
+            float current_mass = solver.getTotalMass();
+            float mass_delta = (current_mass - initial_mass) / initial_mass * 100.0f;
+
+            printf("%-6d %7.1f %7.0f %7.3f %7.1f %7.1f %7.1f %9.1f %+7.3f%%\n",
                    step, t * 1e6f, T_max, v_max,
                    mp.depth_um, mp.length_um, mp.width_um,
-                   laser_x * 1e6f);
+                   laser_x * 1e6f, mass_delta);
             fflush(stdout);
 
             if (solver.checkNaN()) {

@@ -1357,11 +1357,53 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     // ========================================================================
     // PLIC geometric advection dispatch
     // ========================================================================
-    // PLIC bypasses the upwind/TVD subcycling loop entirely.
-    // Operator-split directional sweeps with full geometric reconstruction
-    // are inherently mass-conservative and naturally bounded in [0,1].
+    // PLIC with CFL-based sub-stepping.
+    // PLIC geometric fluxes require CFL < 1 per sweep direction. When the
+    // fluid velocity exceeds dx/dt, the departure slab exceeds one cell and
+    // the geometric intersection is invalid — producing overshoots that the
+    // final clamp deletes, causing permanent mass loss.
+    //
+    // Fix: dynamically compute n_subs = ceil(CFL / CFL_target) and split
+    // the advection into n_subs sub-steps of dt_sub = dt / n_subs.
     if (advection_scheme_ == VOFAdvectionScheme::PLIC) {
-        advectFillLevelPLIC(velocity_x, velocity_y, velocity_z, dt);
+        // Compute max CFL from velocity field (GPU reduction already exists)
+        const int rt = 256;
+        const int rb = (num_cells_ + rt - 1) / rt;
+
+        static float* d_block_max = nullptr;
+        static int d_block_max_size = 0;
+        if (d_block_max_size < rb) {
+            if (d_block_max) cudaFree(d_block_max);
+            CUDA_CHECK(cudaMalloc(&d_block_max, rb * sizeof(float)));
+            d_block_max_size = rb;
+        }
+
+        maxVelocityMagnitudeKernel<<<rb, rt, rt * sizeof(float)>>>(
+            velocity_x, velocity_y, velocity_z, d_block_max, num_cells_);
+        CUDA_CHECK_KERNEL();
+
+        std::vector<float> h_bmax(rb);
+        CUDA_CHECK(cudaMemcpy(h_bmax.data(), d_block_max,
+                              rb * sizeof(float), cudaMemcpyDeviceToHost));
+        float v_max = 0.0f;
+        for (int i = 0; i < rb; ++i)
+            v_max = std::max(v_max, h_bmax[i]);
+
+        float cfl = v_max * dt / dx_;
+        const float cfl_target = 0.3f;
+        int n_subs = std::max(1, static_cast<int>(std::ceil(cfl / cfl_target)));
+        float dt_sub = dt / n_subs;
+
+        static int call_count = 0;
+        if (call_count % 500 == 0 || n_subs > 1) {
+            printf("[VOF PLIC] Call %d: v_max=%.4f, CFL=%.3f, n_subs=%d, dt_sub=%.2e\n",
+                   call_count, v_max, cfl, n_subs, dt_sub);
+        }
+        call_count++;
+
+        for (int sub = 0; sub < n_subs; ++sub) {
+            advectFillLevelPLIC(velocity_x, velocity_y, velocity_z, dt_sub);
+        }
         return;
     }
 
@@ -2880,18 +2922,16 @@ __global__ void updateVofFromFluxKernel(
         u_minus = u_face[fm];
     }
 
-    // Conservative VOF update (exact mass conservation by flux telescoping):
-    //   f_new = f - (Φ+ - Φ-)
+    // Weymouth-Yue (2010) divergence-corrected VOF update:
+    //   f_new = f * (1 + δ) - (Φ+ - Φ-)
+    //   where δ = dt * (u_face+ - u_face-) / dx  (local velocity divergence)
     //
-    // NOTE: The Weymouth-Yue (2010) correction f*(1+δ) was REMOVED because
-    // it assumes ∇·u = 0 (incompressible).  LBM velocity fields are weakly
-    // compressible (∇·u ~ O(Ma²)), and the stretching term Σ(f*δ) causes
-    // systematic mass drift proportional to Ma² per step.
-    //
-    // The simple conservative form guarantees Σf_new = Σf_old exactly
-    // (to floating-point precision) for any velocity field, because the
-    // face fluxes telescope over the domain.
-    float f_new = f - (flux_plus - flux_minus);
+    // Without this correction, weakly compressible LBM velocity fields
+    // (∇·u ~ O(Ma²)) cause systematic mass loss of ~3% over 4000 steps.
+    // The δ term compensates for the cell "stretching" due to divergence,
+    // keeping the volume fraction consistent with the actual fluid volume.
+    float delta = dt * (u_plus - u_minus) / dx;
+    float f_new = f * (1.0f + delta) - (flux_plus - flux_minus);
 
     fill_new[idx] = f_new;
 }
@@ -3036,13 +3076,25 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    // Final [0,1] clamp after all 3 Strang sweeps.
-    // PLIC Strang splitting can produce extreme overshoots (f up to 6+)
-    // when multiple directional fluxes accumulate in a cell. These are
-    // NOT advected away naturally — they persist and corrupt fill_level.
-    plicFinalClampKernel<<<(N + 255) / 256, 256>>>(d_fill_level_, N);
-    CUDA_CHECK_KERNEL();
-    CUDA_CHECK(cudaDeviceSynchronize());
+    // Diagnostic: measure mass before and after clamp to quantify loss
+    static int plic_call = 0;
+    if (plic_call % 500 == 0) {
+        float mass_before = computeTotalMass();
+        plicFinalClampKernel<<<(N + 255) / 256, 256>>>(d_fill_level_, N);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+        float mass_after = computeTotalMass();
+        float clamp_loss = mass_before - mass_after;
+        printf("[PLIC CLAMP] Call %d: mass_before=%.1f, mass_after=%.1f, "
+               "clamp_deleted=%.4f (%.4f%%)\n",
+               plic_call, mass_before, mass_after,
+               clamp_loss, clamp_loss / mass_before * 100.0f);
+    } else {
+        plicFinalClampKernel<<<(N + 255) / 256, 256>>>(d_fill_level_, N);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+    plic_call++;
 
     // Legacy mass correction (disabled by default):
     if (mass_correction_enabled_) {
