@@ -94,7 +94,10 @@ int main() {
     config.enable_radiation_bc      = true;   // Stefan-Boltzmann
 
     // --- Laser: stationary spot at domain center ---
-    config.laser_power              = 150.0f;       // 150 W
+    // P=80W keeps T_max below T_boil (3090K), preserving the full surface
+    // ∇T gradient for Marangoni driving. At P=150W the T cap flattened
+    // the center temperature, killing the outward thermocapillary force.
+    config.laser_power              = 80.0f;        // 80 W (conduction mode)
     config.laser_spot_radius        = 50.0e-6f;     // 50 μm (1/e² radius)
     config.laser_absorptivity       = 0.40f;        // 40% absorption
     config.laser_penetration_depth  = 10.0e-6f;     // Beer-Lambert depth
@@ -183,12 +186,27 @@ int main() {
            (int)(config.ny * config.dx * 1e6f),
            (int)(config.nz * config.dx * 1e6f));
     printf("dx = %.0f μm, dt = %.0f ns\n", config.dx * 1e6f, config.dt * 1e9f);
-    printf("Material: %s\n", config.material.name);
+    printf("\nMaterial: %s\n", config.material.name);
+    printf("  ρ_solid = %.0f kg/m³, ρ_liquid = %.0f kg/m³\n",
+           config.material.rho_solid, config.material.rho_liquid);
+    printf("  cp_solid = %.0f J/(kg·K), cp_liquid = %.0f J/(kg·K)\n",
+           config.material.cp_solid, config.material.cp_liquid);
+    printf("  k_solid = %.1f W/(m·K), k_liquid = %.1f W/(m·K)\n",
+           config.material.k_solid, config.material.k_liquid);
+    printf("  μ_liquid = %.1e Pa·s\n", config.material.mu_liquid);
     printf("  T_solidus = %.0f K, T_liquidus = %.0f K, T_boil = %.0f K\n",
            config.material.T_solidus, config.material.T_liquidus,
            config.material.T_vaporization);
-    printf("  σ = %.2f N/m, dσ/dT = %.1e N/(m·K)\n",
-           config.surface_tension_coeff, config.dsigma_dT);
+    printf("  L_fusion = %.0f J/kg, L_vap = %.0f J/kg\n",
+           config.material.L_fusion, config.material.L_vaporization);
+    printf("  σ(T_m) = %.2f N/m\n", config.material.surface_tension);
+    printf("  dσ/dT = %.1e N/(m·K) [%s → %s flow]\n",
+           config.dsigma_dT,
+           config.dsigma_dT < 0 ? "NEGATIVE" : "POSITIVE",
+           config.dsigma_dT < 0 ? "OUTWARD radial" : "INWARD");
+    printf("  absorptivity: solid=%.2f, liquid=%.2f\n",
+           config.material.absorptivity_solid, config.material.absorptivity_liquid);
+    printf("  emissivity = %.2f\n", config.material.emissivity);
     printf("Laser: P = %.0f W, r₀ = %.0f μm, η = %.0f%%\n",
            config.laser_power, config.laser_spot_radius * 1e6f,
            config.laser_absorptivity * 100.0f);
