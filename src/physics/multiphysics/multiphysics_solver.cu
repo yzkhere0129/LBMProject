@@ -2123,16 +2123,14 @@ void MultiphysicsSolver::computeTotalForce() {
             // Removes D3Q7 anisotropic ∇T noise that drives parasitic currents.
             dim3 blk(8, 8, 8);
             dim3 grd((config_.nx+7)/8, (config_.ny+7)/8, (config_.nz+7)/8);
-            int num_cells = config_.nx * config_.ny * config_.nz;
 
-            // Pass 1: raw → smoothed
+            // 3-pass ping-pong: raw→T_sm, T_sm→fl_sm(temp), fl_sm→T_sm
             smoothField27Kernel<<<grd, blk>>>(
                 temperature_raw, d_T_smoothed_,
                 config_.nx, config_.ny, config_.nz);
             CUDA_CHECK_KERNEL();
-            // Pass 2: smoothed → fl_smoothed (temp buffer), pass 3: back → smoothed
             smoothField27Kernel<<<grd, blk>>>(
-                d_T_smoothed_, d_fl_smoothed_,  // reuse fl_smoothed as temp
+                d_T_smoothed_, d_fl_smoothed_,
                 config_.nx, config_.ny, config_.nz);
             CUDA_CHECK_KERNEL();
             smoothField27Kernel<<<grd, blk>>>(
@@ -2141,46 +2139,18 @@ void MultiphysicsSolver::computeTotalForce() {
             CUDA_CHECK_KERNEL();
             CUDA_CHECK(cudaDeviceSynchronize());
 
-            // Smooth fl for mushy-zone gating (3 passes)
-            const float* fl_for_marangoni = nullptr;
-            if (thermal_) {
-                const float* fl_raw = thermal_->getLiquidFraction();
-                if (fl_raw) {
-                    smoothField27Kernel<<<grd, blk>>>(
-                        fl_raw, d_fl_smoothed_,
-                        config_.nx, config_.ny, config_.nz);
-                    CUDA_CHECK_KERNEL();
-                    // 2 more passes (ping-pong via d_T_smoothed_ as temp)
-                    smoothField27Kernel<<<grd, blk>>>(
-                        d_fl_smoothed_, d_T_smoothed_,
-                        config_.nx, config_.ny, config_.nz);
-                    CUDA_CHECK_KERNEL();
-                    smoothField27Kernel<<<grd, blk>>>(
-                        d_T_smoothed_, d_fl_smoothed_,
-                        config_.nx, config_.ny, config_.nz);
-                    CUDA_CHECK_KERNEL();
-                    CUDA_CHECK(cudaDeviceSynchronize());
-                    fl_for_marangoni = d_fl_smoothed_;
-
-                    // Restore T_smoothed (was used as temp buffer for fl passes)
-                    smoothField27Kernel<<<grd, blk>>>(
-                        temperature_raw, d_T_smoothed_,
-                        config_.nx, config_.ny, config_.nz);
-                    CUDA_CHECK_KERNEL();
-                    smoothField27Kernel<<<grd, blk>>>(
-                        d_T_smoothed_, d_fl_smoothed_,
-                        config_.nx, config_.ny, config_.nz);
-                    CUDA_CHECK_KERNEL();
-                    smoothField27Kernel<<<grd, blk>>>(
-                        d_fl_smoothed_, d_T_smoothed_,
-                        config_.nx, config_.ny, config_.nz);
-                    CUDA_CHECK_KERNEL();
-                    CUDA_CHECK(cudaDeviceSynchronize());
-                }
-            }
-
+            // CRITICAL FIX: Do NOT pass liquid_fraction to Marangoni.
+            //
+            // The fl_gate (fl > 0.1) was killing the force at the gas-metal
+            // free surface because gas-side interface cells have fl=0. This
+            // trapped Marangoni flow sub-surface at the melting front instead
+            // of the correct free surface.
+            //
+            // Marangoni must act at the VOF gas-metal interface (where ∇f ≠ 0),
+            // NOT gated by the thermal phase state. Solid surface suppression
+            // is already handled by Darcy damping (K > 0 where fl < 1).
             force_accumulator_->addMarangoniForce(
-                d_T_smoothed_, fill_level, fl_for_marangoni, normals,
+                d_T_smoothed_, fill_level, nullptr, normals,
                 config_.dsigma_dT,
                 config_.nx, config_.ny, config_.nz,
                 config_.dx,
