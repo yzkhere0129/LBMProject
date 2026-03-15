@@ -32,6 +32,7 @@ __global__ void applyPhaseChangeCorrectionKernel(float* g, float* temperature,
 __global__ void enthalpySourceTermKernel(float* g, float* temperature,
                                           float* liquid_fraction,
                                           const float* liquid_fraction_prev,
+                                          const float* fill_level,
                                           MaterialProperties material, int num_cells);
 
 // Constructor (deprecated - for backward compatibility)
@@ -901,11 +902,13 @@ void ThermalLBM::computeTemperature() {
         phase_solver_->storePreviousLiquidFraction();
 
         // Apply enthalpy source term: corrects T, fl, and g simultaneously
+        // VOF fill_level masks gas cells (no phase change in inert atmosphere)
         enthalpySourceTermKernel<<<gridSize, blockSize>>>(
             d_g_src,
             d_temperature,
             phase_solver_->getLiquidFraction(),
             phase_solver_->getPreviousLiquidFraction(),
+            d_vof_fill_level_,   // nullptr if no VOF → no masking (backward compat)
             material_,
             num_cells_
         );
@@ -2352,11 +2355,34 @@ __global__ void enthalpySourceTermKernel(
     float* temperature,
     float* liquid_fraction,
     const float* liquid_fraction_prev,
+    const float* fill_level,      // VOF field (nullptr = no masking)
     MaterialProperties material,
     int num_cells)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
+
+    // ========================================================================
+    // VOF MASK: Phase change only occurs in metal, not in gas.
+    //
+    // Without this, hot gas above T_liquidus gets fl=1 and absorbs the full
+    // latent heat of fusion — a 260 kJ/kg energy black hole that artificially
+    // cools the melt pool and corrupts material properties in the gas phase.
+    //
+    // For interface cells (0 < fill < 1), scale latent heat by the metal
+    // fraction: only the metal portion of the cell undergoes phase change.
+    // ========================================================================
+    float metal_fraction = 1.0f;
+    if (fill_level != nullptr) {
+        float f = fill_level[idx];
+        if (f < 0.01f) {
+            // Pure gas cell: no phase change, fl = 0
+            liquid_fraction[idx] = 0.0f;
+            return;
+        }
+        // Interface cell: scale latent heat by metal fraction
+        metal_fraction = fminf(f, 1.0f);
+    }
 
     float T_star = temperature[idx];
     float fl_old = liquid_fraction_prev[idx];
@@ -2365,11 +2391,11 @@ __global__ void enthalpySourceTermKernel(
     float cp = material.cp_solid;
     float T_sol = material.T_solidus;
     float T_liq = material.T_liquidus;
-    float L = material.L_fusion;
+    float L = material.L_fusion * metal_fraction;  // Scale latent heat by metal fraction
     float dT_melt = T_liq - T_sol;
 
     // Guard: skip if no phase change parameters
-    if (dT_melt < 1e-8f || L < 1e-6f) return;
+    if (dT_melt < 1e-8f || material.L_fusion < 1e-6f) return;
 
     // Total specific enthalpy [J/kg]: sensible + latent
     float H = cp * T_star + fl_old * L;
@@ -2390,7 +2416,6 @@ __global__ void enthalpySourceTermKernel(
         fl_new = 1.0f;
     } else {
         // Mushy zone: compute fl directly for numerical stability
-        // (avoids catastrophic cancellation when L/dT_melt >> cp)
         fl_new = (H - H_solidus) / (cp * dT_melt + L);
         fl_new = fmaxf(0.0f, fminf(1.0f, fl_new));
         T_new = T_sol + fl_new * dT_melt;

@@ -1440,6 +1440,11 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
 void MultiphysicsSolver::thermalStep(float dt) {
     if (!thermal_) return;
 
+    // Set VOF fill_level for ESM gas masking (prevents phase change in gas)
+    if (vof_) {
+        thermal_->setVOFFillLevel(vof_->getFillLevel());
+    }
+
     // Thermal-fluid coupling: pass velocity for advection term v*nabla(T)
     const float* ux = config_.enable_thermal_advection && fluid_ ? fluid_->getVelocityX() : nullptr;
     const float* uy = config_.enable_thermal_advection && fluid_ ? fluid_->getVelocityY() : nullptr;

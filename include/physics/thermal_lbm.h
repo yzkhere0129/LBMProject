@@ -393,7 +393,13 @@ private:
     float* d_g_dst;         ///< Destination distribution (after streaming)
     float* d_temperature;   ///< Temperature field
     float* d_cap_energy_removed_ = nullptr;  ///< Per-cell energy removed by T cap [K]
+    const float* d_vof_fill_level_ = nullptr;  ///< VOF field for ESM gas masking (external, not owned)
 
+public:
+    /// Set VOF fill_level pointer for ESM gas masking (called by MultiphysicsSolver)
+    void setVOFFillLevel(const float* fill_level) { d_vof_fill_level_ = fill_level; }
+
+private:
     // Utility functions
     void allocateMemory();
     void freeMemory();
