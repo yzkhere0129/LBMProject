@@ -184,10 +184,13 @@ def main():
         else:
             ax0.set_yticklabels([])
 
-        # Melt pool boundary: liquid_fraction = 0.5 contour
+        # Melt pool boundary: liquid_fraction = 0.5, masked to metal only
+        # Without masking, hot gas (T > T_liquidus) shows a phantom fl=0.5
+        # contour ballooning into the atmosphere above the free surface.
+        lf_masked = np.ma.masked_where(fl < 0.5, lf)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            ax0.contour(X, Z, lf, levels=[0.5], colors='white',
+            ax0.contour(X, Z, lf_masked, levels=[0.5], colors='white',
                         linewidths=1.2, linestyles='-')
             # Free surface: fill_level = 0.5 contour
             ax0.contour(X, Z, fl, levels=[0.5], colors='cyan',
@@ -215,10 +218,10 @@ def main():
         else:
             ax1.set_yticklabels([])
 
-        # Melt pool boundary contour
+        # Melt pool boundary contour (masked to metal only)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            ax1.contour(X, Z, lf, levels=[0.5], colors='white',
+            ax1.contour(X, Z, lf_masked, levels=[0.5], colors='white',
                         linewidths=1.2, linestyles='-')
 
         # Quiver: subsample, gate to melt pool
