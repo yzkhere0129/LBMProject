@@ -581,18 +581,18 @@ __global__ void addRecoilPressureForceKernel(
 /**
  * @brief Compute Darcy coefficient field K for semi-implicit velocity update
  *
- * K_LU = C·(1-fl)²/(fl³+ε) · ρ_phys · dt
+ * LINEAR MODEL: K_LU = C · (1 - fl) · ρ · dt
  *
- * This gives a dimensionless coefficient that appears alongside ρ_LU
- * in the denominator: u = [m + 0.5·F_other] / (ρ_LU + 0.5·K_LU)
+ * Replaces Carman-Kozeny ((1-fl)²/(fl³+ε)) which is catastrophically stiff:
+ * a fl difference of 0.01→0.1 creates 810× K gradient, causing velocity
+ * checkerboarding at the solidus front on coarse (2μm) grids.
  *
- * Derivation: In physical units, Darcy force per volume is
- *   F_darcy = -K_CK · ρ · u_phys  where K_CK = C·(1-fl)²/(fl³+ε) [1/s]
- * In lattice units:
- *   F_darcy_LU = F_darcy · dt²/dx = -K_CK · ρ · (u_LU · dx/dt) · dt²/dx
- *              = -K_CK · ρ · dt · u_LU
- * The semi-implicit form absorbs this as:
- *   0.5·K_LU·u = 0.5·K_CK·ρ·dt·u  →  K_LU = K_CK · ρ · dt
+ * The linear model provides smooth, monotonic braking:
+ *   fl=0 (solid): K = C·ρ·dt (full resistance)
+ *   fl=0.5 (mushy): K = 0.5·C·ρ·dt (half resistance)
+ *   fl=1 (liquid): K = 0 (free flow)
+ *
+ * Semi-implicit velocity: u = [m + 0.5·F] / (ρ_LU + 0.5·K_LU)
  */
 __global__ void computeDarcyCoefficientKernel(
     const float* liquid_fraction,
@@ -606,14 +606,10 @@ __global__ void computeDarcyCoefficientKernel(
     if (idx >= n) return;
 
     float fl = liquid_fraction[idx];
-
-    // Clamp liquid fraction to [0, 1]
     fl = fmaxf(0.0f, fminf(1.0f, fl));
 
-    // Carman-Kozeny: K_factor = C·(1-fl)²/(fl³+ε)
-    const float eps = 1e-3f;
-    float one_minus_fl = 1.0f - fl;
-    float K_factor = darcy_coeff * one_minus_fl * one_minus_fl / (fl * fl * fl + eps);
+    // Linear Darcy: K = C · (1 - fl)
+    float K_factor = darcy_coeff * (1.0f - fl);
 
     // Convert to lattice units: K_LU = K_factor · ρ_phys · dt
     darcy_K[idx] = K_factor * rho * dt;

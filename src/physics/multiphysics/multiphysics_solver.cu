@@ -2100,16 +2100,30 @@ void MultiphysicsSolver::computeTotalForce() {
         const float3* normals = vof_->getInterfaceNormals();
 
         if (temperature_raw && fill_level && normals) {
-            // Smooth temperature with 27-point isotropic kernel (for ∇T only)
+            // Smooth temperature with 3 passes of 27-point isotropic kernel.
+            // Effective smoothing radius ~3 cells (6 μm at dx=2μm).
+            // Removes D3Q7 anisotropic ∇T noise that drives parasitic currents.
             dim3 blk(8, 8, 8);
             dim3 grd((config_.nx+7)/8, (config_.ny+7)/8, (config_.nz+7)/8);
+            int num_cells = config_.nx * config_.ny * config_.nz;
+
+            // Pass 1: raw → smoothed
             smoothField27Kernel<<<grd, blk>>>(
                 temperature_raw, d_T_smoothed_,
                 config_.nx, config_.ny, config_.nz);
             CUDA_CHECK_KERNEL();
+            // Pass 2: smoothed → fl_smoothed (temp buffer), pass 3: back → smoothed
+            smoothField27Kernel<<<grd, blk>>>(
+                d_T_smoothed_, d_fl_smoothed_,  // reuse fl_smoothed as temp
+                config_.nx, config_.ny, config_.nz);
+            CUDA_CHECK_KERNEL();
+            smoothField27Kernel<<<grd, blk>>>(
+                d_fl_smoothed_, d_T_smoothed_,
+                config_.nx, config_.ny, config_.nz);
+            CUDA_CHECK_KERNEL();
             CUDA_CHECK(cudaDeviceSynchronize());
 
-            // Use smoothed fl for mushy-zone gating
+            // Smooth fl for mushy-zone gating (3 passes)
             const float* fl_for_marangoni = nullptr;
             if (thermal_) {
                 const float* fl_raw = thermal_->getLiquidFraction();
@@ -2118,8 +2132,32 @@ void MultiphysicsSolver::computeTotalForce() {
                         fl_raw, d_fl_smoothed_,
                         config_.nx, config_.ny, config_.nz);
                     CUDA_CHECK_KERNEL();
+                    // 2 more passes (ping-pong via d_T_smoothed_ as temp)
+                    smoothField27Kernel<<<grd, blk>>>(
+                        d_fl_smoothed_, d_T_smoothed_,
+                        config_.nx, config_.ny, config_.nz);
+                    CUDA_CHECK_KERNEL();
+                    smoothField27Kernel<<<grd, blk>>>(
+                        d_T_smoothed_, d_fl_smoothed_,
+                        config_.nx, config_.ny, config_.nz);
+                    CUDA_CHECK_KERNEL();
                     CUDA_CHECK(cudaDeviceSynchronize());
                     fl_for_marangoni = d_fl_smoothed_;
+
+                    // Restore T_smoothed (was used as temp buffer for fl passes)
+                    smoothField27Kernel<<<grd, blk>>>(
+                        temperature_raw, d_T_smoothed_,
+                        config_.nx, config_.ny, config_.nz);
+                    CUDA_CHECK_KERNEL();
+                    smoothField27Kernel<<<grd, blk>>>(
+                        d_T_smoothed_, d_fl_smoothed_,
+                        config_.nx, config_.ny, config_.nz);
+                    CUDA_CHECK_KERNEL();
+                    smoothField27Kernel<<<grd, blk>>>(
+                        d_fl_smoothed_, d_T_smoothed_,
+                        config_.nx, config_.ny, config_.nz);
+                    CUDA_CHECK_KERNEL();
+                    CUDA_CHECK(cudaDeviceSynchronize());
                 }
             }
 
@@ -2227,7 +2265,7 @@ void MultiphysicsSolver::computeTotalForce() {
     // gradients that excite high-frequency (checkerboard) modes at low tau.
     // Applied in physical units before conversion to preserve force integral.
     if (config_.enable_marangoni || config_.enable_surface_tension) {
-        force_accumulator_->smoothForceField(config_.nx, config_.ny, config_.nz, 1);
+        force_accumulator_->smoothForceField(config_.nx, config_.ny, config_.nz, 2);
     }
 
     // Step 3: Convert from physical units [N/m³] to lattice units
