@@ -165,6 +165,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_spot_melt_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_spot_melt_316L lbm_physics lbm_io CUDA::cudart)
 
+    # LPBF line scan simulation (316L, moving laser)
+    add_executable(sim_line_scan_316L apps/sim_line_scan_316L.cu)
+    set_target_properties(sim_line_scan_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_line_scan_316L lbm_physics lbm_io CUDA::cudart)
+
     # Powder bed LPBF demo
     add_executable(demo_powder_bed_lpbf apps/demo_powder_bed_lpbf.cu)
     set_target_properties(demo_powder_bed_lpbf PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
