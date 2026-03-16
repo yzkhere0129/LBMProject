@@ -23,13 +23,14 @@ import sys
 VTK_DIR = Path(__file__).parent.parent.parent / "output_line_scan"
 OUT_FIG = Path(__file__).parent / "melt_pool_dynamics.png"
 
-NX, NY, NZ = 250, 75, 50
+# Auto-detected from VTK header (set by first file read)
+NX, NY, NZ = 0, 0, 0
 DX = 2.0e-6       # m
-DT_SIM = 1.0e-7   # s per step
+DT_SIM = 8.0e-8   # s per step (80 ns for production run)
 LU_TO_MS = DX / DT_SIM  # lattice velocity → m/s
 
-# Free surface z-position (cells)
-Z_SURFACE = 40  # 80% of NZ=50 → z=40 cells = 80 μm
+# Free surface z-position (cells) — 80% of NZ
+Z_SURFACE = 0  # Set after reading first VTK
 
 # Steady-state window for averaging (last N μs)
 SS_WINDOW_US = 100.0
@@ -38,9 +39,20 @@ SS_WINDOW_US = 100.0
 # VTK Parser (lightweight, no external dependencies)
 # ============================================================
 def parse_vtk(filepath):
-    """Parse ASCII VTK STRUCTURED_POINTS file. Returns dict of fields."""
+    """Parse ASCII VTK STRUCTURED_POINTS file. Returns dict of fields.
+       Auto-detects grid dimensions from DIMENSIONS header."""
+    global NX, NY, NZ, Z_SURFACE
+
     with open(filepath) as f:
         lines = f.readlines()
+
+    # Auto-detect grid from DIMENSIONS line
+    for line in lines[:20]:
+        if line.strip().startswith("DIMENSIONS"):
+            parts = line.strip().split()
+            NX, NY, NZ = int(parts[1]), int(parts[2]), int(parts[3])
+            Z_SURFACE = int(0.80 * NZ)
+            break
 
     fields = {}
     n_total = NX * NY * NZ

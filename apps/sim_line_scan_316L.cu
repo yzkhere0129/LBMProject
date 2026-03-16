@@ -21,6 +21,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <chrono>
 #include <sys/stat.h>
 #include <cuda_runtime.h>
 
@@ -83,9 +84,11 @@ static MeltPoolMetrics computeMeltPoolDimensions(
 }
 
 int main() {
+    auto wall_start = std::chrono::high_resolution_clock::now();
+
     printf("\n");
     printf("============================================================\n");
-    printf("  LPBF Single-Track Line Scan: 316L Stainless Steel\n");
+    printf("  LPBF Single-Track Line Scan: 316L (Production Run)\n");
     printf("============================================================\n\n");
 
     // ==================================================================
@@ -93,12 +96,12 @@ int main() {
     // ==================================================================
     MultiphysicsConfig config;
 
-    // --- Domain: 500 × 150 × 100 μm ---
-    config.nx = 250;
+    // --- Domain: 1200 × 150 × 100 μm (production run) ---
+    config.nx = 600;
     config.ny = 75;
     config.nz = 50;
     config.dx = 2.0e-6f;
-    config.dt = 1.0e-7f;   // 100 ns
+    config.dt = 8.0e-8f;   // 80 ns (20% tighter for CFL margin at high v)
 
     // --- Material ---
     config.material = MaterialDatabase::get316L();
@@ -184,13 +187,11 @@ int main() {
     config.vof_subcycles               = 1;
     config.enable_vof_mass_correction  = false;
 
-    // --- Timing ---
-    // Laser travels from x=100 to x=400 μm (300 μm track) at 800 mm/s → 375 μs
-    const float track_length = 300.0e-6f;
-    const float t_total  = track_length / v_scan + 50.0e-6f;  // +50 μs margin
+    // --- Timing: 1.0 ms production run ---
+    const float t_total  = 1000.0e-6f;   // 1.0 ms
     const int num_steps  = static_cast<int>(t_total / config.dt);
     const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);
-    const int diag_every = 500;
+    const int diag_every = 1000;
     const float interface_z = 0.80f * config.nz;  // z=40 cells
 
     // ==================================================================
@@ -214,8 +215,8 @@ int main() {
            config.laser_power, config.laser_spot_radius * 1e6f,
            config.laser_absorptivity * 100.0f);
     printf("  v_scan = %.0f mm/s (+x direction)\n", v_scan * 1e3f);
-    printf("  Start: x=%.0f μm, track length=%.0f μm\n",
-           config.laser_start_x * 1e6f, track_length * 1e6f);
+    printf("  Start: x=%.0f μm, track=%.0f μm (v×t)\n",
+           config.laser_start_x * 1e6f, v_scan * t_total * 1e6f);
 
     printf("\nFluid: ν_LU=%.3f, τ=%.3f\n",
            config.kinematic_viscosity,
@@ -313,25 +314,39 @@ int main() {
     }
 
     // ==================================================================
+    // Performance metrics
+    // ==================================================================
+    auto wall_end = std::chrono::high_resolution_clock::now();
+    double wall_seconds = std::chrono::duration<double>(wall_end - wall_start).count();
+    double wall_minutes = wall_seconds / 60.0;
+
+    long long total_cells = (long long)config.nx * config.ny * config.nz;
+    long long total_updates = total_cells * (long long)num_steps;
+    double GLUPS = total_updates / wall_seconds / 1e9;
+    double MLUPS = total_updates / wall_seconds / 1e6;
+
+    // ==================================================================
     // Final summary
     // ==================================================================
     printf("\n============================================================\n");
     printf("  Line Scan Complete\n");
     printf("============================================================\n");
     printf("  Total steps: %d\n", num_steps);
-    printf("  Total time:  %.0f μs\n", t_total * 1e6f);
+    printf("  Sim time:    %.0f μs\n", t_total * 1e6f);
     printf("  Track: x = %.0f → %.0f μm at %.0f mm/s\n",
            config.laser_start_x * 1e6f,
            (config.laser_start_x + v_scan * t_total) * 1e6f,
            v_scan * 1e3f);
     printf("  T_max: %.0f K\n", solver.getMaxTemperature());
     printf("  v_max: %.3f m/s\n", solver.getMaxVelocity());
+    printf("  Mass:  %+.3f%%\n", (solver.getTotalMass() - initial_mass) / initial_mass * 100.0f);
+    printf("\n  === Performance ===\n");
+    printf("  Wall clock: %.1f s (%.1f min)\n", wall_seconds, wall_minutes);
+    printf("  Grid: %lld cells (%dx%dx%d)\n", total_cells, config.nx, config.ny, config.nz);
+    printf("  Total updates: %.2e\n", (double)total_updates);
+    printf("  Throughput: %.2f MLUPS (%.4f GLUPS)\n", MLUPS, GLUPS);
+    printf("  Steps/sec: %.1f\n", num_steps / wall_seconds);
     printf("\nOutput: output_line_scan/line_scan_*.vtk\n");
-    printf("ParaView:\n");
-    printf("  1. Open file series: line_scan_*.vtk\n");
-    printf("  2. Contour: LiquidFraction=0.5 → comet-shaped melt pool\n");
-    printf("  3. Color by Temperature → thermal gradient along track\n");
-    printf("  4. StreamTracer on Velocity → Marangoni vortex pair\n");
     printf("============================================================\n\n");
 
     return 0;
