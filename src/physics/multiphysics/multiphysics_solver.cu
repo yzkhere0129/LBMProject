@@ -1557,24 +1557,10 @@ void MultiphysicsSolver::thermalStep(float dt) {
     thermal_->computeTemperature();
 
     // ============================================================
-    // PHYSICS-BASED TEMPERATURE SAFETY CAP
-    // ============================================================
-    // When laser heating is active, apply a temperature cap at
-    // T_vaporization + 100K. This prevents unphysical thermal
-    // runaway in ALL modes (with or without VOF/evaporation).
-    //
-    // Physical justification: Strong surface evaporation self-limits
-    // temperature to near T_boil in real AM processes. This cap
-    // enforces that constraint when the evaporation-VOF coupling
-    // is disabled or insufficient.
-    //
-    // When VOF-based evaporation IS active, the tighter cap in
-    // applyEvaporationCooling (T_boil - 100K) dominates, so this
-    // is a no-op in that case.
-    // ============================================================
-    if (config_.enable_laser) {
-        thermal_->applyTemperatureSafetyCap();
-    }
+    // TEMPERATURE REGULATION: Clausius-Clapeyron evaporation only.
+    // ALL artificial caps removed. The exponential growth of P_sat(T)
+    // creates a natural thermostat — at T >> T_boil, evaporation removes
+    // energy faster than the laser adds it. No human intervention needed.
 
     // ============================================================
     // RE-APPLY DIRICHLET BCs AFTER STREAMING

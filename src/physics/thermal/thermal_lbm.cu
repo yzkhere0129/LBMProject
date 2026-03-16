@@ -660,60 +660,41 @@ __global__ void applyEvaporationCoolingKernel(
     // For non-interface cells (f >= 0.99), compute effective evaporation
     // based on temperature excess above boiling point
     if (f >= 0.99f) {
-        // Fully liquid cell - only cool if T > T_boil
         if (T <= T_boil) return;
 
-        // Estimate J from temperature (same model as interface cells)
-        // Calibrated alpha_evap = 0.18 (Anisimov 1995)
+        // Clausius-Clapeyron evaporation rate (Anisimov 1995)
+        // NO artificial caps on T, P_sat, or exponent — let physics self-regulate
         const float alpha_evap = 0.18f;
-        const float M_molar = material.molar_mass;  // Molar mass [kg/mol]
+        const float M_molar = material.molar_mass;
         const float R_gas = 8.314f;
         const float P_ref = 101325.0f;
         const float PI = 3.14159265359f;
 
-        float T_capped = fminf(T, 2.0f * T_boil);
-        float exponent = (L_vap * M_molar / R_gas) * (1.0f / T_boil - 1.0f / T_capped);
-        exponent = fminf(exponent, 20.0f);
+        float exponent = (L_vap * M_molar / R_gas) * (1.0f / T_boil - 1.0f / T);
+        exponent = fminf(exponent, 50.0f);  // Only prevent exp overflow (float32 limit)
         float P_sat = P_ref * expf(exponent);
-        P_sat = fminf(P_sat, 10.0f * P_ref);
 
-        float denominator = sqrtf(2.0f * PI * R_gas * T_capped / M_molar);
+        float denominator = sqrtf(2.0f * PI * R_gas * T / M_molar);
         if (denominator > 1e-10f) {
             J = alpha_evap * P_sat / denominator;
         }
     } else {
-        // Interface cell - use provided J_evap, skip if zero
         if (J <= 0.0f) return;
     }
 
-    // Get material properties
     float rho = material.getDensity(T);
     float cp = material.getSpecificHeat(T);
+    float q_evap = J * L_vap;  // [W/m²]
 
-    // Compute evaporative cooling heat flux
-    // q_evap = J_evap * L_vap  [W/m²]
-    float q_evap = J * L_vap;
-
-    // Convert to temperature change
-    // q [W/m²] → q/dx [W/m³] → ΔT = -(q/dx) * dt / (ρ * cp)
     float rho_cp = rho * cp;
-    if (rho_cp < 1e-6f) return;  // Prevent division by zero
+    if (rho_cp < 1e-6f) return;
 
     float dT = -(q_evap / dx) * dt / rho_cp;
 
-    // Stability limiter: allow up to 50% temperature removal per timestep
-    // Evaporation is a very strong cooling mechanism near boiling point
-    // CRITICAL FIX (2026-01-25): Increased from 20% to 50% for effective cooling
-    float max_cooling = -0.50f * T;
-    if (dT < max_cooling) {
-        dT = max_cooling;
-    }
-
-    // Additional hard cap: Don't cool below boiling point by more than 200K
-    // This prevents over-cooling while ensuring temperature stays near T_boil
+    // ONLY physical limiter: don't cool below T_boil (can't evaporate below boiling)
     float T_after = T + dT;
-    if (T_after < T_boil - 200.0f && T > T_boil) {
-        dT = (T_boil - 200.0f) - T;  // Limit cooling to T_boil - 200K
+    if (T_after < T_boil) {
+        dT = T_boil - T;  // Clamp to exactly T_boil
     }
 
     // Apply temperature change to all distributions (maintains isotropy)
@@ -808,18 +789,12 @@ void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_
         CUDA_CHECK(cudaMalloc(&d_cap_energy_removed_, num_cells_ * sizeof(float)));
     }
 
-    // Apply hard temperature cap to ensure T < T_boil
-    // Track energy removed for energy balance accounting
-    // SKIP in keyhole mode: recoil pressure + evaporation naturally limit T
-    if (!skip_temperature_cap_) {
-        applyTemperatureCapKernel<<<gridSize, blockSize>>>(
-            d_g_src, d_temperature, fill_level,
-            d_cap_energy_removed_,
-            nx_, ny_, nz_, material_
-        );
-        CUDA_CHECK_KERNEL();
-        CUDA_CHECK(cudaDeviceSynchronize());
-    } else if (d_cap_energy_removed_) {
+    // Temperature cap REMOVED — evaporation cooling via Clausius-Clapeyron
+    // is the sole temperature regulator. The exponential growth of P_sat
+    // with T creates a natural thermostat: at T >> T_boil, evaporation
+    // removes energy far faster than the laser can add it, driving T
+    // back toward T_boil. No artificial intervention needed.
+    if (d_cap_energy_removed_) {
         CUDA_CHECK(cudaMemset(d_cap_energy_removed_, 0, num_cells_ * sizeof(float)));
     }
 
