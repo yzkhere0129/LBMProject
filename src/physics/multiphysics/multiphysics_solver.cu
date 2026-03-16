@@ -64,6 +64,29 @@ __global__ void computeVelocityMagnitudeKernel(
 }
 
 /**
+ * @brief Freeze velocity in solid region (T < T_solidus)
+ *
+ * Prevents LBM acoustic shockwaves from advecting the VOF free surface
+ * in the cold solid ahead of the melt pool. The Darcy penalty only
+ * DAMPS velocity; this kernel ZEROES it, making the solid truly rigid.
+ */
+static __global__ void freezeSolidVelocityKernel(
+    float* __restrict__ vx,
+    float* __restrict__ vy,
+    float* __restrict__ vz,
+    const float* __restrict__ temperature,
+    float T_solidus, int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    if (temperature[idx] < T_solidus) {
+        vx[idx] = 0.0f;
+        vy[idx] = 0.0f;
+        vz[idx] = 0.0f;
+    }
+}
+
+/**
  * @brief Convert velocity from lattice units to physical units [m/s]
  *
  * LBM velocity is dimensionless (lattice units), typically O(0.01-0.1)
@@ -1678,11 +1701,25 @@ void MultiphysicsSolver::vofStep(float dt) {
                    num_cells * sizeof(float), cudaMemcpyDeviceToHost);
     }
 
+    // SOLIDUS VELOCITY FREEZE: zero velocity in cold solid (T < T_solidus)
+    // before VOF advection. Without this, LBM acoustic waves from recoil
+    // pressure compress the solid surface ahead of the melt pool.
+    if (thermal_ && config_.enable_phase_change) {
+        freezeSolidVelocityKernel<<<blocks, threads>>>(
+            d_velocity_physical_x_,
+            d_velocity_physical_y_,
+            d_velocity_physical_z_,
+            thermal_->getTemperature(),
+            config_.material.T_solidus,
+            num_cells);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
     // Subcycling for VOF stability
     float dt_sub = dt / config_.vof_subcycles;
 
     for (int i = 0; i < config_.vof_subcycles; ++i) {
-        // Use physical velocity for advection
         vof_->advectFillLevel(d_velocity_physical_x_,
                               d_velocity_physical_y_,
                               d_velocity_physical_z_,

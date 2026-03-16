@@ -2937,10 +2937,31 @@ __global__ void updateVofFromFluxKernel(
 }
 
 // ============================================================================
-// Post-sweep floating-point tolerance clamp for PLIC
+// Post-sweep wall sealing: zero-gradient BC on fill_level at WALL faces
 // ============================================================================
-// Applied ONCE after all 3 Strang sweeps.  Only clips floating-point noise;
-// the geometric pipeline guarantees [0,1] to O(eps) when CFL < 1.
+__global__ void plicWallSealKernel(
+    float* __restrict__ fill,
+    int nx, int ny, int nz,
+    int seal_y, int seal_z)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + nx * (j + ny * k);
+
+    if (seal_y) {
+        if (j == 0)      fill[idx] = fill[i + nx * (1       + ny * k)];
+        if (j == ny - 1) fill[idx] = fill[i + nx * ((ny-2)  + ny * k)];
+    }
+    if (seal_z) {
+        if (k == 0)      fill[idx] = fill[i + nx * (j + ny * 1)];
+    }
+}
+
+// ============================================================================
+// Post-sweep floating-point tolerance clamp for PLIC
 // ============================================================================
 __global__ void plicFinalClampKernel(float* __restrict__ fill, int num_cells)
 {
@@ -3095,6 +3116,22 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         CUDA_CHECK(cudaDeviceSynchronize());
     }
     plic_call++;
+
+    // WALL BOUNDARY SEALING: zero-gradient on fill_level at WALL faces.
+    // Seals Y-walls and Z-min to prevent side fragmentation.
+    {
+        dim3 blk3(8, 8, 8);
+        dim3 grd3((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
+        if (bc_y_ != VOFSolver::BoundaryType::PERIODIC ||
+            bc_z_ != VOFSolver::BoundaryType::PERIODIC) {
+            plicWallSealKernel<<<grd3, blk3>>>(
+                d_fill_level_, nx_, ny_, nz_,
+                (bc_y_ != VOFSolver::BoundaryType::PERIODIC) ? 1 : 0,
+                (bc_z_ != VOFSolver::BoundaryType::PERIODIC) ? 1 : 0);
+            CUDA_CHECK_KERNEL();
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
+    }
 
     // Legacy mass correction (disabled by default):
     if (mass_correction_enabled_) {
