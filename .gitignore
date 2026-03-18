@@ -100,10 +100,12 @@ venv/
 # Test files in root
 test_*.cu
 
-# Output directories
+# Output directories (simulation results — large, reproducible)
+output_*/
 presentation_figures/
 test_reports/
 backups/
+Testing/
 
 # Config files (assuming they are for specific tests and not part of the core config)
 /configs/
