@@ -44,9 +44,9 @@ test_output/
 __pycache__/
 *.pyc
 
-# Core dumps
-core
-core.*
+# Core dumps (only in root, not src/core/ or include/core/)
+/core
+/core.*
 
 # CUDA compiled files
 *.cubin
@@ -97,8 +97,10 @@ venv/
 # Un-ignore documentation source files
 !docs/**/*.md
 
-# Test files in root
-test_*.cu
+# Test executables in root (not source files)
+# NOTE: Do NOT ignore test_*.cu — those are test source files in tests/
+/test_*
+!/tests/
 
 # Output directories (simulation results — large, reproducible)
 output_*/
