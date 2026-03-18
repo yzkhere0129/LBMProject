@@ -264,6 +264,7 @@ static __global__ void computeForceMagnitudeKernelLocal(
  */
 __global__ void computeLaserHeatSourceKernel(
     float* d_heat_source,
+    const float* fill_level,  // VOF field: only deposit heat in metal
     LaserSource laser,
     int nx, int ny, int nz,
     float dx,
@@ -277,22 +278,22 @@ __global__ void computeLaserHeatSourceKernel(
 
     int idx = i + nx * (j + ny * k);
 
-    // Physical coordinates [m]
     float x = i * dx;
     float y = j * dx;
-    float z_lattice = k;  // Lattice coordinate
+    float z_lattice = k;
 
-    // Depth below surface (positive downward)
     float depth = (z_surface - z_lattice) * dx;
 
-    // Only apply heat at or below surface
     if (depth < 0.0f) {
         d_heat_source[idx] = 0.0f;
         return;
     }
 
-    // Compute volumetric heat source from laser
-    d_heat_source[idx] = laser.computeVolumetricHeatSource(x, y, depth);
+    // Modulate by fill_level: laser only heats metal, not gas gaps.
+    // Without this, gas between powder particles absorbs laser energy
+    // and reaches 7000K+ with no evaporation cooling mechanism.
+    float f = (fill_level != nullptr) ? fill_level[idx] : 1.0f;
+    d_heat_source[idx] = f * laser.computeVolumetricHeatSource(x, y, depth);
 }
 
 /**
@@ -1229,6 +1230,26 @@ void MultiphysicsSolver::initialize(const float* temperature_field,
 
     current_time_ = 0.0f;
 
+    // Compute interface_z_ from the actual fill_level field
+    // Find the highest z where fill_level transitions from >0.5 to <0.5
+    // (the powder/gas boundary)
+    {
+        float z_max_interface = 0.0f;
+        for (int k = 0; k < config_.nz; ++k) {
+            for (int j = 0; j < config_.ny; ++j) {
+                for (int i = 0; i < config_.nx; ++i) {
+                    int idx = i + config_.nx * (j + config_.ny * k);
+                    if (fill_level_field[idx] > 0.5f) {
+                        z_max_interface = fmaxf(z_max_interface, static_cast<float>(k));
+                    }
+                }
+            }
+        }
+        interface_z_ = z_max_interface + 1.0f;  // Just above the highest metal cell
+        std::cout << "  Interface z (from fill_level): " << interface_z_
+                  << " cells (" << interface_z_ * config_.dx * 1e6f << " μm)" << std::endl;
+    }
+
     // Register output fields now that all sub-solvers are initialized
     registerOutputFields();
 }
@@ -1445,13 +1466,15 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
     );
 
     // VOF-AWARE SURFACE DETECTION:
-    // Use the actual metal-gas interface position, NOT the domain top!
-    // interface_z_ is set in initialize() based on fill_level = 0.5
-    // Beer-Lambert absorption starts from the metal surface and penetrates DOWN into metal
-    float z_surface = interface_z_;  // Metal surface where laser absorption starts
+    float z_surface = interface_z_;
 
+    // Pass VOF fill_level so laser only heats metal, not gas gaps in powder.
+    // Without this, gas between powder particles absorbs laser energy and
+    // reaches T>7000K with no evaporation cooling mechanism.
+    const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
     computeLaserHeatSourceKernel<<<blocks, threads>>>(
         d_heat_source,
+        fill_ptr,
         *laser_,
         config_.nx, config_.ny, config_.nz,
         config_.dx,
@@ -1460,9 +1483,7 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    // Add heat source to thermal solver
     thermal_->addHeatSource(d_heat_source, dt);
-    // d_heat_source freed automatically by CudaFreeGuard destructor
 }
 
 void MultiphysicsSolver::thermalStep(float dt) {
@@ -2595,11 +2616,12 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
         (config_.nz + threads.z - 1) / threads.z
     );
 
-    // Use current interface position for laser absorption
     float z_surface = interface_z_;
+    const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
 
     computeLaserHeatSourceKernel<<<blocks, threads>>>(
         d_heat_source,
+        fill_ptr,
         *laser_,
         config_.nx, config_.ny, config_.nz,
         config_.dx,
