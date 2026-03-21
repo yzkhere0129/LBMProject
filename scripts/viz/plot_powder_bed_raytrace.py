@@ -210,7 +210,7 @@ def main():
     cb_f = fig.colorbar(im_f, ax=axes[1, :], shrink=0.8, pad=0.02)
     cb_f.set_label('Fill Level', fontsize=10)
 
-    fig.suptitle('LPBF 316L — P=150W, r₀=35μm, v=800mm/s\n'
+    fig.suptitle('LPBF 316L — P=150W, r₀=35μm, v=800mm/s, Gas-Phase Unbound\n'
                  'Ray Tracing α₀=0.35, substrate=60μm, T_base=600K, CFL=0.38LU',
                  fontsize=12, fontweight='bold')
 

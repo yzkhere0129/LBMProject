@@ -262,6 +262,7 @@ public:
      *       in the denominator (ρ + 0.5·K).
      */
     void computeDarcyCoefficientField(const float* liquid_fraction,
+                                       const float* fill_level,
                                        float darcy_coeff, float rho,
                                        float dx, float dt);
 

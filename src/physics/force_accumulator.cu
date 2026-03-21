@@ -596,6 +596,7 @@ __global__ void addRecoilPressureForceKernel(
  */
 __global__ void computeDarcyCoefficientKernel(
     const float* liquid_fraction,
+    const float* fill_level,
     float* darcy_K,
     float darcy_coeff,
     float rho,
@@ -604,6 +605,12 @@ __global__ void computeDarcyCoefficientKernel(
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
+
+    // Gas phase (f < 0.05): zero Darcy resistance. Air is not mushy zone!
+    if (fill_level != nullptr && fill_level[idx] < 0.05f) {
+        darcy_K[idx] = 0.0f;
+        return;
+    }
 
     float fl = liquid_fraction[idx];
     fl = fmaxf(0.0f, fminf(1.0f, fl));
@@ -1085,8 +1092,8 @@ void ForceAccumulator::addDarcyDamping(
 }
 
 void ForceAccumulator::computeDarcyCoefficientField(
-    const float* liquid_fraction, float darcy_coeff, float rho,
-    float dx, float dt)
+    const float* liquid_fraction, const float* fill_level,
+    float darcy_coeff, float rho, float dx, float dt)
 {
     // Lazy-allocate the Darcy coefficient buffer
     if (!d_darcy_K_) {
@@ -1103,7 +1110,7 @@ void ForceAccumulator::computeDarcyCoefficientField(
     int blocks = (num_cells_ + threads - 1) / threads;
 
     computeDarcyCoefficientKernel<<<blocks, threads>>>(
-        liquid_fraction, d_darcy_K_, darcy_coeff, rho, dt, num_cells_);
+        liquid_fraction, fill_level, d_darcy_K_, darcy_coeff, rho, dt, num_cells_);
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());

@@ -75,10 +75,14 @@ static __global__ void freezeSolidVelocityKernel(
     float* __restrict__ vy,
     float* __restrict__ vz,
     const float* __restrict__ temperature,
+    const float* __restrict__ fill_level,
     float T_solidus, int n)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
+    // Only freeze METAL cells that are below solidus.
+    // Gas (f < 0.05) is always free to move — air is not solid!
+    if (fill_level != nullptr && fill_level[idx] < 0.05f) return;
     if (temperature[idx] < T_solidus) {
         vx[idx] = 0.0f;
         vy[idx] = 0.0f;
@@ -1767,6 +1771,7 @@ void MultiphysicsSolver::vofStep(float dt) {
             d_velocity_physical_y_,
             d_velocity_physical_z_,
             thermal_->getTemperature(),
+            vof_ ? vof_->getFillLevel() : nullptr,
             config_.material.T_solidus,
             num_cells);
         CUDA_CHECK_KERNEL();
@@ -2317,22 +2322,13 @@ void MultiphysicsSolver::computeTotalForce() {
             CUDA_CHECK_KERNEL();
             CUDA_CHECK(cudaDeviceSynchronize());
 
-            // Step 2: Compute Darcy K from smoothed fl
+            // Step 2: Compute Darcy K from smoothed fl (with gas-phase exemption)
             force_accumulator_->computeDarcyCoefficientField(
-                d_fl_smoothed_, config_.darcy_coefficient,
+                d_fl_smoothed_,
+                vof_ ? vof_->getFillLevel() : nullptr,
+                config_.darcy_coefficient,
                 config_.density, config_.dx, config_.dt);
-
-            // Step 2b: Zero Darcy in gas phase (VOF fill < 0.5)
-            // Without this, K = C·(1-fl) freezes the gas (fl=0 → K=C_max)
-            if (vof_) {
-                int num_cells_local = config_.nx * config_.ny * config_.nz;
-                float* d_darcy_K_local = const_cast<float*>(
-                    force_accumulator_->getDarcyCoefficient());
-                darcyZeroInGasKernel<<<(num_cells_local+255)/256, 256>>>(
-                    d_darcy_K_local, vof_->getFillLevel(), 0.5f, num_cells_local);
-                CUDA_CHECK_KERNEL();
-                CUDA_CHECK(cudaDeviceSynchronize());
-            }
+            // Note: gas-phase zeroing (f < 0.05) is now inside the kernel itself.
 
             // Step 3: Under-relax K with previous step (α=0.3)
             int num_cells = config_.nx * config_.ny * config_.nz;
