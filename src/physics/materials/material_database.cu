@@ -80,11 +80,9 @@ MaterialProperties MaterialDatabase::get316L() {
     mat.L_vaporization = 7450000.0f;   // J/kg
     mat.molar_mass = 0.0558f;          // kg/mol (weighted avg: Fe:0.056, Cr:0.052, Ni:0.059, Mo:0.096)
 
-    // Surface properties — effective values accounting for trace O/S impurities
-    // Pure 316L: γ=1.75 N/m. With ~100 ppm O + surfactants: γ_eff ≈ 0.85 N/m
-    // (Ref: Sahoo, DebRoy & McNallan 1988; Keene 1993)
-    mat.surface_tension = 0.85f;       // N/m effective (impure melt)
-    mat.dsigma_dT = -5.0e-4f;          // N/(m·K) — strong outward Marangoni
+    // Surface properties (pure 316L — restored to physical values)
+    mat.surface_tension = 1.75f;       // N/m at melting point
+    mat.dsigma_dT = -4.3e-4f;          // N/(m·K)
 
     // Optical properties (at 1064nm laser wavelength)
     mat.absorptivity_solid = 0.38f;

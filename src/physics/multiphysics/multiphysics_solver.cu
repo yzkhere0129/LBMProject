@@ -1763,21 +1763,10 @@ void MultiphysicsSolver::vofStep(float dt) {
                    num_cells * sizeof(float), cudaMemcpyDeviceToHost);
     }
 
-    // SOLIDUS VELOCITY FREEZE: zero velocity in cold solid (T < T_solidus)
-    // before VOF advection. Without this, LBM acoustic waves from recoil
-    // pressure compress the solid surface ahead of the melt pool.
-    if (thermal_ && config_.enable_phase_change) {
-        freezeSolidVelocityKernel<<<blocks, threads>>>(
-            d_velocity_physical_x_,
-            d_velocity_physical_y_,
-            d_velocity_physical_z_,
-            thermal_->getTemperature(),
-            vof_ ? vof_->getFillLevel() : nullptr,
-            config_.material.T_solidus,
-            num_cells);
-        CUDA_CHECK_KERNEL();
-        CUDA_CHECK(cudaDeviceSynchronize());
-    }
+    // SOLIDUS VELOCITY BRAKE: Darcy-only (no hard freeze)
+    // FLOW-3D approach: Darcy K = C·(1-fl)·ρ·dt handles solid braking smoothly.
+    // Hard velocity zeroing (freezeSolidVelocityKernel) REMOVED — it created
+    // artificial rigid boundaries that pinned the contact line and caused balling.
 
     // Subcycling for VOF stability
     float dt_sub = dt / config_.vof_subcycles;
@@ -1969,18 +1958,57 @@ void MultiphysicsSolver::vofStep(float dt) {
     }
     vof_diag_count++;
 
-    // Reconstruct interface after advection
-    vof_->reconstructInterface();
+    // ========================================================================
+    // SMOOTHED CURVATURE (FLOW-3D approach): smooth fill_level before
+    // computing normals and curvature for CSF surface tension.
+    // Raw fill_level has staircase artifacts at dx=2μm that create
+    // spurious high-curvature "hard shells" preventing liquid spreading.
+    //
+    // Procedure:
+    //   1. Save raw fill_level to temp buffer
+    //   2. Smooth fill_level in-place (2 passes of 27-point isotropic kernel)
+    //   3. Compute normals + curvature from smooth field
+    //   4. Restore raw fill_level (advection needs the sharp interface)
+    // ========================================================================
+    {
+        int num_cells_local = config_.nx * config_.ny * config_.nz;
 
-    // Apply contact angle at walls (wetting boundary condition)
-    // 316L liquid on its own solid: near-complete wetting (θ ≈ 10°)
-    // This modifies interface normals at wall-adjacent cells so that
-    // the CSF force drives liquid to spread along the substrate.
-    vof_->applyBoundaryConditions(1, 10.0f);
+        // Save raw fill_level
+        float* d_fill_raw = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_fill_raw, num_cells_local * sizeof(float)));
+        CUDA_CHECK(cudaMemcpy(d_fill_raw, vof_->getFillLevel(),
+                              num_cells_local * sizeof(float), cudaMemcpyDeviceToDevice));
 
-    // Compute curvature for surface tension
-    if (config_.enable_surface_tension) {
-        vof_->computeCurvature();
+        // Smooth fill_level in-place (2 passes)
+        float* d_fill_tmp = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_fill_tmp, num_cells_local * sizeof(float)));
+
+        dim3 blk(8, 8, 8);
+        dim3 grd((config_.nx + 7) / 8, (config_.ny + 7) / 8, (config_.nz + 7) / 8);
+
+        // Pass 1: fill_level → tmp
+        smoothField27Kernel<<<grd, blk>>>(vof_->getFillLevel(), d_fill_tmp,
+                                          config_.nx, config_.ny, config_.nz);
+        CUDA_CHECK_KERNEL();
+        // Pass 2: tmp → fill_level (in-place overwrite)
+        smoothField27Kernel<<<grd, blk>>>(d_fill_tmp, vof_->getFillLevel(),
+                                          config_.nx, config_.ny, config_.nz);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        cudaFree(d_fill_tmp);
+
+        // Compute normals + curvature from smoothed field
+        vof_->reconstructInterface();
+        vof_->applyBoundaryConditions(1, 10.0f);
+        if (config_.enable_surface_tension) {
+            vof_->computeCurvature();
+        }
+
+        // Restore raw fill_level (sharp interface for advection + VOF transport)
+        CUDA_CHECK(cudaMemcpy(vof_->getFillLevel(), d_fill_raw,
+                              num_cells_local * sizeof(float), cudaMemcpyDeviceToDevice));
+        cudaFree(d_fill_raw);
     }
 }
 

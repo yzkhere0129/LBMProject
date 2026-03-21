@@ -129,7 +129,7 @@ int main() {
 
     // Laser: 316L standard LPBF — P=150W, r₀=50μm, v=800mm/s
     const float v_scan = 0.8f;          // 800 mm/s scan speed
-    config.laser_power              = 180.0f;   // [W] — classic 316L window at 800mm/s
+    config.laser_power              = 150.0f;   // [W] — standard 316L
     config.laser_spot_radius        = 35.0e-6f; // [m] 35 μm 1/e² radius (industrial standard)
     config.laser_absorptivity       = 0.35f;    // Base absorptivity (ray tracing adds multi-reflection)
     config.laser_penetration_depth  = 10.0e-6f; // [m] (Beer-Lambert fallback only)
