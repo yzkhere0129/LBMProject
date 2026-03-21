@@ -74,20 +74,16 @@ __global__ void computeMarangoniForceKernel(
     int idx_zm = i + nx * (j + ny * k_m);
     int idx_zp = i + nx * (j + ny * k_p);
 
-    // Temperature gradient
-    float grad_T_x = (temperature[idx_xp] - temperature[idx_xm]) / (2.0f * dx);
-    float grad_T_y = (temperature[idx_yp] - temperature[idx_ym]) / (2.0f * dx);
-    float grad_T_z = (temperature[idx_zp] - temperature[idx_zm]) / (2.0f * dx);
+    // Temperature gradient — gas-safe (Fix 3): substitute center T for gas neighbors
+    float T_center_a = temperature[idx];
+    float grad_T_x = (((fill_level[idx_xp] > 0.05f) ? temperature[idx_xp] : T_center_a) -
+                       ((fill_level[idx_xm] > 0.05f) ? temperature[idx_xm] : T_center_a)) / (2.0f * dx);
+    float grad_T_y = (((fill_level[idx_yp] > 0.05f) ? temperature[idx_yp] : T_center_a) -
+                       ((fill_level[idx_ym] > 0.05f) ? temperature[idx_ym] : T_center_a)) / (2.0f * dx);
+    float grad_T_z = (((fill_level[idx_zp] > 0.05f) ? temperature[idx_zp] : T_center_a) -
+                       ((fill_level[idx_zm] > 0.05f) ? temperature[idx_zm] : T_center_a)) / (2.0f * dx);
 
-    // FIX BUG 2: Configurable gradient limiter
-    // Physical justification: Maximum gradient from laser heating
-    //
-    // Derivation from laser parameters:
-    // Laser heating creates maximum gradient: ∇T ~ P/(κ·r²)
-    // Where:
-    //   P = 20 W (laser power)
-    //   κ = 35 W/(m·K) (thermal conductivity of Ti6Al4V)
-    //   r = 50 μm (laser spot radius)
+    // Configurable gradient limiter
     //
     // ∇T_max ~ 20 / (35 × (50×10⁻⁶)²) ≈ 2.3×10⁸ K/m
     //
@@ -240,11 +236,16 @@ __global__ void addMarangoniForceKernel(
     int idx_zm = i + nx * (j + ny * k_m);
     int idx_zp = i + nx * (j + ny * k_p);
 
-    float grad_T_x = (temperature[idx_xp] - temperature[idx_xm]) / (2.0f * dx);
-    float grad_T_y = (temperature[idx_yp] - temperature[idx_ym]) / (2.0f * dx);
-    float grad_T_z = (temperature[idx_zp] - temperature[idx_zm]) / (2.0f * dx);
+    // Gas-safe ∇T (Fix 3): use center T for gas neighbors
+    float T_center_b = temperature[idx];
+    float grad_T_x = (((fill_level[idx_xp] > 0.05f) ? temperature[idx_xp] : T_center_b) -
+                       ((fill_level[idx_xm] > 0.05f) ? temperature[idx_xm] : T_center_b)) / (2.0f * dx);
+    float grad_T_y = (((fill_level[idx_yp] > 0.05f) ? temperature[idx_yp] : T_center_b) -
+                       ((fill_level[idx_ym] > 0.05f) ? temperature[idx_ym] : T_center_b)) / (2.0f * dx);
+    float grad_T_z = (((fill_level[idx_zp] > 0.05f) ? temperature[idx_zp] : T_center_b) -
+                       ((fill_level[idx_zm] > 0.05f) ? temperature[idx_zm] : T_center_b)) / (2.0f * dx);
 
-    // FIX BUG 2: Configurable gradient limiter
+    // Configurable gradient limiter
     float grad_T_mag = sqrtf(grad_T_x * grad_T_x +
                              grad_T_y * grad_T_y +
                              grad_T_z * grad_T_z);

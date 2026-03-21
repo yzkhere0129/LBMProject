@@ -34,6 +34,14 @@ __global__ void enthalpySourceTermKernel(float* g, float* temperature,
                                           const float* liquid_fraction_prev,
                                           const float* fill_level,
                                           MaterialProperties material, int num_cells);
+__global__ void computeTemperatureKernel(const float* g, float* temperature,
+                                          int num_cells, const float* fill_level,
+                                          float T_boil_clamp);
+__global__ void thermalBGKCollisionKernel(float* g_src, const float* temperature,
+                                           const float* ux, const float* uy, const float* uz,
+                                           float omega_T, int nx, int ny, int nz,
+                                           MaterialProperties material, float dt, float dx,
+                                           bool use_apparent_cp, const float* fill_level);
 
 // Constructor (deprecated - for backward compatibility)
 ThermalLBM::ThermalLBM(int nx, int ny, int nz, float thermal_diffusivity,
@@ -360,7 +368,7 @@ void ThermalLBM::collisionBGK(const float* ux, const float* uy, const float* uz)
 
     thermalBGKCollisionKernel<<<gridSize, blockSize>>>(
         d_g_src, d_temperature, ux, uy, uz, omega_T_, nx_, ny_, nz_,
-        material_, dt_, dx_, use_apparent_cp);
+        material_, dt_, dx_, use_apparent_cp, d_vof_fill_level_);
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -863,7 +871,8 @@ void ThermalLBM::computeTemperature() {
     int gridSize = (num_cells_ + blockSize - 1) / blockSize;
 
     computeTemperatureKernel<<<gridSize, blockSize>>>(
-        d_g_src, d_temperature, num_cells_);
+        d_g_src, d_temperature, num_cells_,
+        d_vof_fill_level_, material_.T_vaporization);
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -961,7 +970,8 @@ __global__ void thermalBGKCollisionKernel(
     MaterialProperties material,
     float dt,
     float dx,
-    bool use_apparent_cp) {
+    bool use_apparent_cp,
+    const float* fill_level) {  // nullable: nullptr → no gas isolation
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -971,6 +981,20 @@ __global__ void thermalBGKCollisionKernel(
 
     int idx = x + y * nx + z * nx * ny;
     float T = temperature[idx];
+
+    // ========================================================================
+    // GAS-PHASE THERMAL ISOLATION (Fix 1)
+    // Pure gas cells (f < 0.05) get omega → 0 (no thermal relaxation).
+    // This blocks heat conduction into gas while preserving streaming
+    // (which is needed for bounce-back BCs at domain walls).
+    // ========================================================================
+    bool is_gas = false;
+    if (fill_level != nullptr) {
+        float f = fill_level[idx];
+        if (f < 0.05f) {
+            is_gas = true;
+        }
+    }
 
     // Get velocity (use zero if not provided)
     float vel_x = ux ? ux[idx] : 0.0f;
@@ -1023,6 +1047,11 @@ __global__ void thermalBGKCollisionKernel(
         }
 
         omega_T_local = 1.0f / tau_T_local;
+    }
+
+    // Gas cells: kill thermal relaxation → zero diffusivity
+    if (is_gas) {
+        omega_T_local = 0.0f;
     }
 
     // BGK collision for each direction
@@ -1096,7 +1125,9 @@ __global__ void thermalStreamingKernel(
 __global__ void computeTemperatureKernel(
     const float* g,
     float* temperature,
-    int num_cells) {
+    int num_cells,
+    const float* fill_level,  // nullable: nullptr → no gas clamp
+    float T_boil_clamp) {     // Gas-phase temperature ceiling (e.g. T_boil)
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
@@ -1107,32 +1138,31 @@ __global__ void computeTemperatureKernel(
         T += g[q * num_cells + idx];
     }
 
-    // ============================================================
-    // Physical temperature bounds
-    // ============================================================
-    // Lower bound: Allow arbitrary positive temperatures for testing
-    // Upper bound: Increased to support validation tests with high temperatures
-    //
-    // Physical justification for upper bound:
-    //   - LPBF simulations: T_boil ≈ 3560 K (Ti6Al4V vaporization)
-    //   - Validation tests: May use Gaussian pulses with T_peak > 15000 K
-    //   - Safety clamp at 50000 K prevents numerical overflow while allowing
-    //     high-temperature validation scenarios
-    //
-    // Lower bound: Changed from 300K to 0K for flexibility
-    //   - Pure thermal tests may use arbitrary temperatures
-    //   - Physical LPBF simulations naturally stay above ambient
-    //   - Negative temperatures still clamped (unphysical)
-    //
-    // FIX: Increased T_MAX from 7000K to 50000K to support validation tests
-    //      with high-amplitude Gaussian initial conditions (test_3d_heat_diffusion_senior)
-    // ============================================================
-
-    constexpr float T_MIN = 0.0f;      // Allow arbitrary positive temperatures
-    constexpr float T_MAX = 50000.0f;  // High enough for validation, prevents overflow
+    constexpr float T_MIN = 0.0f;
+    constexpr float T_MAX = 50000.0f;
 
     T = fmaxf(T, T_MIN);
     T = fminf(T, T_MAX);
+
+    // ========================================================================
+    // GAS-PHASE TEMPERATURE CLAMP (Fix 2)
+    // Pure gas cells (f < 0.05) are clamped to T_boil. Any residual heat
+    // from numerical diffusion or streaming is removed. The distributions
+    // are also reset to equilibrium at the clamped temperature to prevent
+    // spurious ∇T at the metal/gas boundary.
+    // ========================================================================
+    if (fill_level != nullptr) {
+        float f = fill_level[idx];
+        if (f < 0.05f && T > T_boil_clamp) {
+            T = T_boil_clamp;
+            // Reset distributions to equilibrium at clamped T
+            const float w[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
+            for (int q = 0; q < 7; ++q) {
+                // g_eq(q, T, u=0) = w_q * T for stationary gas
+                ((float*)g)[q * num_cells + idx] = w[q] * T;
+            }
+        }
+    }
 
     temperature[idx] = T;
 }

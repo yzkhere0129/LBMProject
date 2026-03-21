@@ -99,9 +99,13 @@ int main() {
     // ==================================================================
     MultiphysicsConfig config;
 
+    // Domain: 1000×300×130 μm
+    //   z=0-60μm:   substrate (30 cells)
+    //   z=60-90μm:  powder layer 30μm (15 cells)
+    //   z=90-130μm: gas buffer 40μm (20 cells)
     config.nx = 500;
     config.ny = 150;
-    config.nz = 75;
+    config.nz = 65;
     config.dx = 2.0e-6f;
     config.dt = 8.0e-8f;
 
@@ -123,16 +127,24 @@ int main() {
     config.enable_recoil_pressure   = true;
     config.enable_radiation_bc      = true;
 
-    // Laser: P=150W, v=800mm/s, start at x=100μm
-    const float v_scan = 0.8f;
-    config.laser_power              = 150.0f;
-    config.laser_spot_radius        = 50.0e-6f;
-    config.laser_absorptivity       = 0.40f;
-    config.laser_penetration_depth  = 10.0e-6f;
-    config.laser_start_x            = 100.0e-6f;
-    config.laser_start_y            = -1.0f;  // Auto-center Y
+    // Laser: 316L standard LPBF — P=150W, r₀=50μm, v=800mm/s
+    const float v_scan = 0.8f;          // 800 mm/s scan speed
+    config.laser_power              = 150.0f;   // [W]
+    config.laser_spot_radius        = 35.0e-6f; // [m] 35 μm 1/e² radius (industrial standard)
+    config.laser_absorptivity       = 0.35f;    // Base absorptivity (ray tracing adds multi-reflection)
+    config.laser_penetration_depth  = 10.0e-6f; // [m] (Beer-Lambert fallback only)
+    config.laser_start_x            = 50.0e-6f; // Start 50μm from left wall
+    config.laser_start_y            = -1.0f;    // Auto-center Y
     config.laser_scan_vx            = v_scan;
     config.laser_scan_vy            = 0.0f;
+
+    // Ray Tracing — geometric multi-reflection in powder bed
+    config.ray_tracing.enabled          = true;
+    config.ray_tracing.num_rays         = 2048;
+    config.ray_tracing.max_bounces      = 3;
+    config.ray_tracing.absorptivity     = 0.35f;   // 316L base absorptivity
+    config.ray_tracing.energy_cutoff    = 0.01f;
+    config.ray_tracing.max_dda_steps    = 500;
 
     // Fluid
     config.kinematic_viscosity      = 0.065f;
@@ -141,7 +153,7 @@ int main() {
 
     // Thermal
     config.thermal_diffusivity      = config.material.getThermalDiffusivity(1700.0f);
-    config.ambient_temperature      = 300.0f;
+    config.ambient_temperature      = 600.0f; // Preheated build plate
     config.emissivity               = config.material.emissivity;
 
     // Surface
@@ -158,7 +170,7 @@ int main() {
     // Substrate cooling — DIRICHLET at z=0 (constant 300K heat sink)
     config.enable_substrate_cooling = true;
     config.substrate_h_conv         = 2000.0f;
-    config.substrate_temperature    = 300.0f;
+    config.substrate_temperature    = 600.0f;
 
     // Boundaries
     config.boundaries.x_min = BoundaryType::WALL;
@@ -174,22 +186,23 @@ int main() {
     config.boundaries.thermal_y_max = ThermalBCType::ADIABATIC;
     config.boundaries.thermal_z_min = ThermalBCType::DIRICHLET;  // 300K heat sink
     config.boundaries.thermal_z_max = ThermalBCType::ADIABATIC;
-    config.boundaries.dirichlet_temperature = 300.0f;
+    config.boundaries.dirichlet_temperature = 600.0f; // Preheat from prior layers
 
-    // CFL
+    // CFL — scientifically relaxed to allow Marangoni wetting
+    // LBM stability limit: 1/√3 ≈ 0.577 LU. Cap at 0.38 gives 34% safety margin.
     config.cfl_use_adaptive            = true;
-    config.cfl_v_target_interface      = 0.15f;
-    config.cfl_v_target_bulk           = 0.10f;
+    config.cfl_v_target_interface      = 0.38f;  // ~9.5 m/s physical
+    config.cfl_v_target_bulk           = 0.38f;  // same — no asymmetric throttling
 
     // VOF
     config.vof_subcycles               = 1;
     config.enable_vof_mass_correction  = false;
 
-    // Timing
-    // Laser traverses ~800μm at 800mm/s → 1.0ms
-    const float t_total  = 800.0e-6f;  // 800 μs
+    // Timing — full scan across domain
+    // Laser travels 900μm at 800mm/s → 1125μs, + 200μs cooldown
+    const float t_total  = 1300.0e-6f;  // 1300 μs
     const int num_steps  = static_cast<int>(t_total / config.dt);
-    const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);
+    const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);  // VTK every 50μs
     const int diag_every = 1000;
 
     // ==================================================================
@@ -203,6 +216,11 @@ int main() {
     printf("dx=%.0f μm, dt=%.0f ns\n", config.dx*1e6f, config.dt*1e9f);
     printf("Laser: P=%.0fW, r0=%.0fμm, v=%.0fmm/s\n",
            config.laser_power, config.laser_spot_radius*1e6f, v_scan*1e3f);
+    printf("Ray Tracing: %s (%d rays, %d bounces, alpha=%.2f)\n",
+           config.ray_tracing.enabled ? "ON" : "OFF",
+           config.ray_tracing.num_rays,
+           config.ray_tracing.max_bounces,
+           config.ray_tracing.absorptivity);
     printf("Bottom BC: DIRICHLET T=%.0f K (heat sink)\n",
            config.boundaries.dirichlet_temperature);
     printf("Steps: %d (%.0f μs)\n\n", num_steps, t_total*1e6f);
@@ -226,7 +244,7 @@ int main() {
     MultiphysicsSolver solver(config);
 
     // Initialize with uniform T=300K and the loaded powder bed fill_level
-    std::vector<float> h_temp(config.nx * config.ny * config.nz, 300.0f);
+    std::vector<float> h_temp(config.nx * config.ny * config.nz, 600.0f);
     solver.initialize(h_temp.data(), h_fill.data());
 
     const auto& registry = solver.getFieldRegistry();
@@ -248,11 +266,11 @@ int main() {
     // ==================================================================
     // Console header
     // ==================================================================
-    printf("%-6s %7s %7s %7s %9s %8s\n",
-           "Step", "t[μs]", "T_max", "v_max", "Laser_x", "MassΔ%");
-    printf("%-6s %7s %7s %7s %9s %8s\n",
-           "", "", "[K]", "[m/s]", "[μm]", "");
-    printf("--------------------------------------------------\n");
+    printf("%-6s %7s %7s %7s %9s %6s %8s\n",
+           "Step", "t[μs]", "T_max", "v_max", "Laser_x", "α_eff", "MassΔ%");
+    printf("%-6s %7s %7s %7s %9s %6s %8s\n",
+           "", "", "[K]", "[m/s]", "[μm]", "", "");
+    printf("------------------------------------------------------------\n");
     fflush(stdout);
 
     // ==================================================================
@@ -267,9 +285,12 @@ int main() {
             float v_max = solver.getMaxVelocity();
             float mass = solver.getTotalMass();
             float mass_delta = (mass - initial_mass) / initial_mass * 100.0f;
+            float alpha_eff = solver.hasRayTracing()
+                ? solver.getRayTracingEffectiveAbsorptivity()
+                : config.laser_absorptivity;
 
-            printf("%-6d %7.1f %7.0f %7.3f %9.1f %+7.3f%%\n",
-                   step, t*1e6f, T_max, v_max, laser_x*1e6f, mass_delta);
+            printf("%-6d %7.1f %7.0f %7.3f %9.1f %6.3f %+7.3f%%\n",
+                   step, t*1e6f, T_max, v_max, laser_x*1e6f, alpha_eff, mass_delta);
             fflush(stdout);
 
             if (solver.checkNaN()) {
@@ -307,6 +328,16 @@ int main() {
     printf("  v_max: %.3f m/s\n", solver.getMaxVelocity());
     printf("  Mass:  %+.3f%%\n",
            (solver.getTotalMass() - initial_mass) / initial_mass * 100.0f);
+    if (solver.hasRayTracing()) {
+        printf("  α_eff: %.3f (base=%.3f, boost=%.1fx from multi-reflection)\n",
+               solver.getRayTracingEffectiveAbsorptivity(),
+               config.ray_tracing.absorptivity,
+               solver.getRayTracingEffectiveAbsorptivity() / config.ray_tracing.absorptivity);
+        printf("  RT:    dep=%.1fW, input=%.1fW, energy_err=%.2e\n",
+               solver.getRayTracingDepositedPower(),
+               solver.getRayTracingInputPower(),
+               solver.getRayTracingEnergyError());
+    }
     printf("  Wall:  %.1f s (%.1f min)\n", wall_s, wall_s/60.0);
     printf("  MLUPS: %.2f\n", total_updates / wall_s / 1e6);
     printf("============================================================\n\n");

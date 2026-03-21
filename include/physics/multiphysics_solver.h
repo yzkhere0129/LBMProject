@@ -45,6 +45,7 @@
 #include "physics/marangoni.h"
 #include "physics/surface_tension.h"
 #include "physics/laser_source.h"
+#include "physics/ray_tracing_laser.h"
 #include "physics/material_properties.h"
 #include "physics/recoil_pressure.h"
 #include "physics/force_accumulator.h"
@@ -295,6 +296,7 @@ struct MultiphysicsConfig {
     SurfaceConfig  surface;
     BuoyancyConfig buoyancy;
     LaserConfig    laser;
+    RayTracingConfig ray_tracing;  ///< Geometric ray tracing heat source
     MaterialProperties material;
     PhaseChangeConfig phase_change;
     FaceBoundaryConfig boundaries;  ///< Per-face boundary conditions (preferred)
@@ -404,7 +406,7 @@ struct MultiphysicsConfig {
     MultiphysicsConfig(const MultiphysicsConfig& o)
         : domain(o.domain), physics(o.physics), numerics(o.numerics),
           fluid(o.fluid), thermal(o.thermal), surface(o.surface),
-          buoyancy(o.buoyancy), laser(o.laser),
+          buoyancy(o.buoyancy), laser(o.laser), ray_tracing(o.ray_tracing),
           material(o.material), boundaries(o.boundaries),
           boundary_type(o.boundary_type),
           // reference members auto-bind to this object's sub-structs via the
@@ -477,6 +479,7 @@ struct MultiphysicsConfig {
         surface       = o.surface;
         buoyancy      = o.buoyancy;
         laser         = o.laser;
+        ray_tracing   = o.ray_tracing;
         material      = o.material;
         boundaries    = o.boundaries;
         boundary_type = o.boundary_type;
@@ -617,6 +620,25 @@ public:
     bool checkNaN() const;
 
     // ========================================================================
+    // Ray Tracing Diagnostics
+    // ========================================================================
+
+    /// True if ray tracing laser is active
+    bool hasRayTracing() const { return ray_tracing_laser_ != nullptr; }
+
+    /// Deposited power from last ray tracing step [W]
+    float getRayTracingDepositedPower() const;
+
+    /// Input power from last ray tracing step [W]
+    float getRayTracingInputPower() const;
+
+    /// Effective absorptivity = deposited / input (includes multi-reflection)
+    float getRayTracingEffectiveAbsorptivity() const;
+
+    /// Energy conservation error from ray tracing
+    float getRayTracingEnergyError() const;
+
+    // ========================================================================
     // Energy Conservation Diagnostics
     // ========================================================================
 
@@ -747,6 +769,7 @@ private:
     std::unique_ptr<SurfaceTension> surface_tension_;
     std::unique_ptr<MarangoniEffect> marangoni_;
     std::unique_ptr<LaserSource> laser_;
+    std::unique_ptr<RayTracingLaser> ray_tracing_laser_;
     std::unique_ptr<RecoilPressure> recoil_pressure_;
 
     // Force accumulation pipeline (replaces fragile scattered force computation)

@@ -55,6 +55,7 @@ add_cuda_test(test_flux_limiter_overhead performance/test_flux_limiter_overhead.
 
 # Unit tests - Physics/Laser
 add_cuda_test(test_laser_source unit/laser/test_laser_source.cu)
+add_cuda_test(test_ray_tracing_laser unit/laser/test_ray_tracing_laser.cu)
 
 # Unit tests - Physics/Materials
 add_cuda_test(test_materials unit/materials/test_materials.cu)

@@ -952,6 +952,14 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
 
         // Set scan velocity from config
         laser_->setScanVelocity(config_.laser_scan_vx, config_.laser_scan_vy);
+
+        // Ray tracing laser (optional - replaces Beer-Lambert projection)
+        if (config_.ray_tracing.enabled) {
+            ray_tracing_laser_ = std::make_unique<RayTracingLaser>(
+                config_.ray_tracing,
+                config_.nx, config_.ny, config_.nz, config_.dx
+            );
+        }
     }
 
     // Recoil pressure (for keyhole formation - requires thermal + VOF)
@@ -1456,32 +1464,60 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
     float* d_heat_source = nullptr;
     CUDA_CHECK(cudaMalloc(&d_heat_source, num_cells * sizeof(float)));
     CudaFreeGuard guard{d_heat_source};
+    CUDA_CHECK(cudaMemset(d_heat_source, 0, num_cells * sizeof(float)));
 
-    // Compute volumetric heat source from laser
-    dim3 threads(8, 8, 8);
-    dim3 blocks(
-        (config_.nx + threads.x - 1) / threads.x,
-        (config_.ny + threads.y - 1) / threads.y,
-        (config_.nz + threads.z - 1) / threads.z
-    );
+    if (config_.ray_tracing.enabled && ray_tracing_laser_) {
+        // ============================================================
+        // Ray Tracing path: geometric multi-reflection in powder bed
+        // ============================================================
 
-    // VOF-AWARE SURFACE DETECTION:
-    float z_surface = interface_z_;
+        // Ensure VOF interface normals are fresh (normally updated in Step 4,
+        // but ray tracing runs in Step 1 and needs current normals)
+        if (vof_) {
+            vof_->reconstructInterface();
+        }
 
-    // Pass VOF fill_level so laser only heats metal, not gas gaps in powder.
-    // Without this, gas between powder particles absorbs laser energy and
-    // reaches T>7000K with no evaporation cooling mechanism.
-    const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
-    computeLaserHeatSourceKernel<<<blocks, threads>>>(
-        d_heat_source,
-        fill_ptr,
-        *laser_,
-        config_.nx, config_.ny, config_.nz,
-        config_.dx,
-        z_surface
-    );
-    CUDA_CHECK_KERNEL();
-    CUDA_CHECK(cudaDeviceSynchronize());
+        ray_tracing_laser_->traceAndDeposit(
+            vof_ ? vof_->getFillLevel() : nullptr,
+            vof_ ? vof_->getInterfaceNormals() : nullptr,
+            *laser_,
+            d_heat_source
+        );
+
+        // Diagnostic: print energy balance periodically
+        if (current_step_ % diagnostic_interval_ == 0) {
+            printf("[RayTrace] Step %d: deposited=%.3f W, escaped=%.3f W, "
+                   "input=%.3f W, error=%.4e\n",
+                   current_step_,
+                   ray_tracing_laser_->getDepositedPower(),
+                   ray_tracing_laser_->getEscapedPower(),
+                   ray_tracing_laser_->getInputPower(),
+                   ray_tracing_laser_->getEnergyError());
+        }
+    } else {
+        // ============================================================
+        // Beer-Lambert path: volumetric Gaussian projection (original)
+        // ============================================================
+        dim3 threads(8, 8, 8);
+        dim3 blocks(
+            (config_.nx + threads.x - 1) / threads.x,
+            (config_.ny + threads.y - 1) / threads.y,
+            (config_.nz + threads.z - 1) / threads.z
+        );
+
+        float z_surface = interface_z_;
+        const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
+        computeLaserHeatSourceKernel<<<blocks, threads>>>(
+            d_heat_source,
+            fill_ptr,
+            *laser_,
+            config_.nx, config_.ny, config_.nz,
+            config_.dx,
+            z_surface
+        );
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
 
     thermal_->addHeatSource(d_heat_source, dt);
 }
@@ -2375,11 +2411,10 @@ void MultiphysicsSolver::computeTotalForce() {
         // Note: If both adaptive and gradual are disabled, no CFL limiting applied
     }
 
-    // Step 5: Catastrophic fail-safe cap (0.1 LU)
-    // With EDM forcing, normal Marangoni/surface tension forces should NOT
-    // be capped. This cap is a last-resort safety net only — if it triggers,
-    // something is fundamentally wrong (NaN precursor, bad parameters, etc.)
-    auto cap_stats = force_accumulator_->capPerCellVelocityIncrement(0.1f);
+    // Step 5: Catastrophic fail-safe cap (0.38 LU)
+    // LBM stability limit: cs = 1/√3 ≈ 0.577. Cap at 0.38 gives 34% margin.
+    // Must match CFL adaptive target to avoid double-throttling.
+    auto cap_stats = force_accumulator_->capPerCellVelocityIncrement(0.38f);
 
     // Log cap statistics (should be zero under normal EDM operation)
     static int step_counter = 0;
@@ -2573,6 +2608,32 @@ float MultiphysicsSolver::checkMassConservation() const {
 
     float current_mass = vof_->computeTotalMass();
     return std::abs(current_mass - initial_mass_) / initial_mass_;
+}
+
+// ============================================================================
+// Ray Tracing Diagnostics
+// ============================================================================
+
+float MultiphysicsSolver::getRayTracingDepositedPower() const {
+    if (!ray_tracing_laser_) return 0.0f;
+    return ray_tracing_laser_->getDepositedPower();
+}
+
+float MultiphysicsSolver::getRayTracingInputPower() const {
+    if (!ray_tracing_laser_) return 0.0f;
+    return ray_tracing_laser_->getInputPower();
+}
+
+float MultiphysicsSolver::getRayTracingEffectiveAbsorptivity() const {
+    if (!ray_tracing_laser_) return 0.0f;
+    float input = ray_tracing_laser_->getInputPower();
+    if (input < 1e-20f) return 0.0f;
+    return ray_tracing_laser_->getDepositedPower() / input;
+}
+
+float MultiphysicsSolver::getRayTracingEnergyError() const {
+    if (!ray_tracing_laser_) return 0.0f;
+    return ray_tracing_laser_->getEnergyError();
 }
 
 // ============================================================================

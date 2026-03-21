@@ -273,10 +273,10 @@ include(GoogleTest)
 
 add_subdirectory(tests)
 
-# Marangoni benchmark (visualization output for comparison with waLBerla)
-add_executable(test_marangoni_benchmark tests/visualization/test_marangoni_benchmark.cu)
-set_target_properties(test_marangoni_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-target_link_libraries(test_marangoni_benchmark lbm_physics lbm_io CUDA::cudart gtest gtest_main)
+# Marangoni benchmark — source file deleted, target disabled
+# add_executable(test_marangoni_benchmark tests/visualization/test_marangoni_benchmark.cu)
+# set_target_properties(test_marangoni_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+# target_link_libraries(test_marangoni_benchmark lbm_physics lbm_io CUDA::cudart gtest gtest_main)
 
 # LBM performance benchmark (comprehensive metrics for waLBerla comparison)
 add_executable(test_lbm_benchmark tests/performance/test_lbm_benchmark.cu)
