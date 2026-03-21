@@ -196,7 +196,7 @@ int main() {
 
     // VOF
     config.vof_subcycles               = 1;
-    config.enable_vof_mass_correction  = false;
+    config.enable_vof_mass_correction  = true;  // Global mass redistribution each step
 
     // Timing — full scan across domain
     // Laser travels 900μm at 800mm/s → 1125μs, + 200μs cooldown
