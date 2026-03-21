@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib import cm
 
-NX, NY, NZ = 500, 150, 65
+NX, NY, NZ = 500, 150, 80
 DX = 2e-6
 N = NX * NY * NZ
 

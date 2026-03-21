@@ -11,9 +11,9 @@ import struct
 from pathlib import Path
 
 DX = 2.0e-6
-NX, NY, NZ = 500, 150, 65
-Z_SUB = 30    # substrate top: 60 μm
-Z_POW = 45    # doctor blade: 90 μm → 30 μm powder layer
+NX, NY, NZ = 500, 150, 80
+Z_SUB = 25    # substrate top: 50 μm
+Z_POW = 55    # doctor blade: 110 μm → 60 μm powder layer
 
 Lx, Ly = NX * DX, NY * DX
 z_sub_m = Z_SUB * DX

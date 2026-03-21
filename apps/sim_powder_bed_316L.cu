@@ -99,13 +99,13 @@ int main() {
     // ==================================================================
     MultiphysicsConfig config;
 
-    // Domain: 1000×300×130 μm
-    //   z=0-60μm:   substrate (30 cells)
-    //   z=60-90μm:  powder layer 30μm (15 cells)
-    //   z=90-130μm: gas buffer 40μm (20 cells)
+    // Domain: 1000×300×160 μm (thick powder config)
+    //   z=0-50μm:    substrate (25 cells)
+    //   z=50-110μm:  powder layer 60μm (30 cells)
+    //   z=110-160μm: gas buffer 50μm (25 cells)
     config.nx = 500;
     config.ny = 150;
-    config.nz = 65;
+    config.nz = 80;
     config.dx = 2.0e-6f;
     config.dt = 8.0e-8f;
 
@@ -129,8 +129,8 @@ int main() {
 
     // Laser: 316L standard LPBF — P=150W, r₀=50μm, v=800mm/s
     const float v_scan = 0.8f;          // 800 mm/s scan speed
-    config.laser_power              = 150.0f;   // [W] — standard 316L
-    config.laser_spot_radius        = 35.0e-6f; // [m] 35 μm 1/e² radius (industrial standard)
+    config.laser_power              = 120.0f;   // [W] — moderate to avoid deep keyhole
+    config.laser_spot_radius        = 25.0e-6f; // [m] 25 μm — narrow beam for bead formation
     config.laser_absorptivity       = 0.35f;    // Base absorptivity (ray tracing adds multi-reflection)
     config.laser_penetration_depth  = 10.0e-6f; // [m] (Beer-Lambert fallback only)
     config.laser_start_x            = 50.0e-6f; // Start 50μm from left wall

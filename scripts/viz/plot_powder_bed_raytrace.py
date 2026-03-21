@@ -29,7 +29,7 @@ OUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "powder_bed_raytrace.png")
 
 # Grid
-NX, NY, NZ = 500, 150, 65
+NX, NY, NZ = 500, 150, 80
 DX = 2e-6  # m
 N = NX * NY * NZ
 
@@ -210,8 +210,8 @@ def main():
     cb_f = fig.colorbar(im_f, ax=axes[1, :], shrink=0.8, pad=0.02)
     cb_f.set_label('Fill Level', fontsize=10)
 
-    fig.suptitle('LPBF 316L — P=150W, r₀=35μm, v=800mm/s, γ=1.75 N/m\n'
-                 'Darcy-only + Smoothed κ + Force×fl Masking + θ=10°',
+    fig.suptitle('LPBF 316L — P=120W, r₀=25μm, v=800mm/s, 60μm powder\n'
+                 'Thick Powder + Narrow Beam (α_eff≈0.65)',
                  fontsize=12, fontweight='bold')
 
     plt.savefig(OUT_FILE, dpi=200, bbox_inches='tight')
