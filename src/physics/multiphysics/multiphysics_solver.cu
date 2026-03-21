@@ -1371,6 +1371,7 @@ void MultiphysicsSolver::step(float dt) {
         } else {
             // Only reconstruct interface (Step 1: no advection)
             vof_->reconstructInterface();
+            vof_->applyBoundaryConditions(1, 10.0f);
         }
     }
 
@@ -1970,6 +1971,12 @@ void MultiphysicsSolver::vofStep(float dt) {
 
     // Reconstruct interface after advection
     vof_->reconstructInterface();
+
+    // Apply contact angle at walls (wetting boundary condition)
+    // 316L liquid on its own solid: near-complete wetting (θ ≈ 10°)
+    // This modifies interface normals at wall-adjacent cells so that
+    // the CSF force drives liquid to spread along the substrate.
+    vof_->applyBoundaryConditions(1, 10.0f);
 
     // Compute curvature for surface tension
     if (config_.enable_surface_tension) {
