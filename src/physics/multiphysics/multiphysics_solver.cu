@@ -91,6 +91,23 @@ static __global__ void freezeSolidVelocityKernel(
 }
 
 /**
+ * @brief Mask forces by liquid fraction — solid phase gets zero force.
+ * F_masked = F × fl. Cold powder (fl=0) feels no surface tension.
+ */
+static __global__ void maskForceByLiquidFractionKernel(
+    float* __restrict__ fx, float* __restrict__ fy, float* __restrict__ fz,
+    const float* __restrict__ liquid_fraction, int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    float fl = liquid_fraction[idx];
+    fl = fmaxf(0.0f, fminf(1.0f, fl));
+    fx[idx] *= fl;
+    fy[idx] *= fl;
+    fz[idx] *= fl;
+}
+
+/**
  * @brief Convert velocity from lattice units to physical units [m/s]
  *
  * LBM velocity is dimensionless (lattice units), typically O(0.01-0.1)
@@ -2390,6 +2407,30 @@ void MultiphysicsSolver::computeTotalForce() {
     // Applied in physical units before conversion to preserve force integral.
     if (config_.enable_marangoni || config_.enable_surface_tension) {
         force_accumulator_->smoothForceField(config_.nx, config_.ny, config_.nz, 2);
+    }
+
+    // Step 2g: Force phase masking — suppress surface forces in solid phase
+    // Physical rationale: solid metal has yield strength and does not respond
+    // to surface tension / Marangoni forces. Only liquid (fl > 0) should feel
+    // these forces. Without this, cold powder creeps under spurious CSF forces.
+    // F_actual = F_calculated × fl
+    if (thermal_ && (config_.enable_surface_tension || config_.enable_marangoni)) {
+        const float* liquid_fraction = thermal_->getLiquidFraction();
+        if (liquid_fraction) {
+            int num_cells = config_.nx * config_.ny * config_.nz;
+            int thr = 256;
+            int blk_1d = (num_cells + thr - 1) / thr;
+            // Inline lambda-style kernel call — reuse existing infrastructure
+            float* fx = force_accumulator_->getFx();
+            float* fy = force_accumulator_->getFy();
+            float* fz = force_accumulator_->getFz();
+            // Apply fl mask via a simple scaling kernel
+            // (defined as static __global__ at top of file)
+            maskForceByLiquidFractionKernel<<<blk_1d, thr>>>(
+                fx, fy, fz, liquid_fraction, num_cells);
+            CUDA_CHECK_KERNEL();
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
     }
 
     // Step 3: Convert from physical units [N/m³] to lattice units

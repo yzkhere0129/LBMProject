@@ -211,7 +211,7 @@ def main():
     cb_f.set_label('Fill Level', fontsize=10)
 
     fig.suptitle('LPBF 316L — P=150W, r₀=35μm, v=800mm/s, γ=1.75 N/m\n'
-                 'No Hard Freeze + Smoothed Curvature + Wetting θ=10°',
+                 'Darcy-only + Smoothed κ + Force×fl Masking + θ=10°',
                  fontsize=12, fontweight='bold')
 
     plt.savefig(OUT_FILE, dpi=200, bbox_inches='tight')
