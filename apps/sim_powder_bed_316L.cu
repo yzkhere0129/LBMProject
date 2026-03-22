@@ -194,6 +194,9 @@ int main() {
     config.cfl_v_target_interface      = 0.38f;  // ~9.5 m/s physical
     config.cfl_v_target_bulk           = 0.38f;  // same — no asymmetric throttling
 
+    // Recoil pressure — VOF smearing compensation
+    config.recoil_force_multiplier  = 8.0f;  // Compensate diffuse interface (~3 cell spread)
+
     // VOF
     config.vof_subcycles               = 1;
     config.enable_vof_mass_correction  = true;  // Global mass redistribution each step
@@ -223,6 +226,7 @@ int main() {
            config.ray_tracing.absorptivity);
     printf("Bottom BC: DIRICHLET T=%.0f K (heat sink)\n",
            config.boundaries.dirichlet_temperature);
+    printf("Recoil multiplier: %.1f×\n", config.recoil_force_multiplier);
     printf("Steps: %d (%.0f μs)\n\n", num_steps, t_total*1e6f);
 
     // ==================================================================
@@ -292,6 +296,51 @@ int main() {
             printf("%-6d %7.1f %7.0f %7.3f %9.1f %6.3f %+7.3f%%\n",
                    step, t*1e6f, T_max, v_max, laser_x*1e6f, alpha_eff, mass_delta);
             fflush(stdout);
+
+            // Interface temperature audit (every 2000 steps)
+            if (step > 0 && step % 2000 == 0) {
+                const float* d_T = solver.getTemperature();
+                const float* d_f = solver.getFillLevel();
+                if (d_T && d_f) {
+                    std::vector<float> h_T(num_cells), h_f(num_cells);
+                    cudaMemcpy(h_T.data(), d_T, num_cells*sizeof(float), cudaMemcpyDeviceToHost);
+                    cudaMemcpy(h_f.data(), d_f, num_cells*sizeof(float), cudaMemcpyDeviceToHost);
+
+                    float T_iface_max = 0, T_iface_mean = 0;
+                    int n_iface = 0, n_hot_iface = 0;
+                    const float T_boil = config.material.T_vaporization;
+                    const float T_act = T_boil - 500.0f;
+                    for (int i = 0; i < num_cells; ++i) {
+                        if (h_f[i] > 0.1f && h_f[i] < 0.9f) {
+                            n_iface++;
+                            if (h_T[i] > T_iface_max) T_iface_max = h_T[i];
+                            T_iface_mean += h_T[i];
+                            if (h_T[i] > T_act) n_hot_iface++;
+                        }
+                    }
+                    if (n_iface > 0) T_iface_mean /= n_iface;
+
+                    // Estimate recoil at hottest interface cell
+                    float P_r_max = 0;
+                    if (T_iface_max > T_act) {
+                        const float R_gas = 8.314f;
+                        float CC = config.material.L_vaporization * config.material.molar_mass / R_gas;
+                        float exp_arg = CC * (1.0f/T_boil - 1.0f/T_iface_max);
+                        float P_sat = 101325.0f * expf(fminf(exp_arg, 50.0f));
+                        P_r_max = 0.54f * P_sat;
+                    }
+                    float F_LU_est = P_r_max * (1.0f/config.dx) * config.recoil_force_multiplier
+                                     * config.dt * config.dt / (config.density * config.dx);
+
+                    printf("[RECOIL AUDIT] Step %d: iface=%d cells, hot(T>%.0fK)=%d, "
+                           "T_iface_max=%.0fK, T_iface_mean=%.0fK, "
+                           "P_r_max=%.0f Pa, F_LU_est=%.4f (×%.0f mult)\n",
+                           step, n_iface, T_act, n_hot_iface,
+                           T_iface_max, T_iface_mean,
+                           P_r_max, F_LU_est, config.recoil_force_multiplier);
+                    fflush(stdout);
+                }
+            }
 
             if (solver.checkNaN()) {
                 printf("\n*** FATAL: NaN at step %d ***\n", step);

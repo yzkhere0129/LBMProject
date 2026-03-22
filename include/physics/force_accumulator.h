@@ -159,7 +159,8 @@ public:
                                 const float3* normals, float T_boil, float L_v,
                                 float M, float P_atm, float C_r,
                                 float smoothing_width, float max_pressure,
-                                int nx, int ny, int nz, float dx);
+                                int nx, int ny, int nz, float dx,
+                                float force_multiplier = 1.0f);
 
     /**
      * @brief Convert accumulated forces from physical units to lattice units

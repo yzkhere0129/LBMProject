@@ -466,7 +466,7 @@ __global__ void addRecoilPressureForceKernel(
     float* fx, float* fy, float* fz,
     float T_boil, float L_v, float M, float P_atm,
     float C_r, float smoothing_width, float max_pressure,
-    float dx,
+    float dx, float force_multiplier,
     int nx, int ny, int nz)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -564,14 +564,14 @@ __global__ void addRecoilPressureForceKernel(
         return;  // No interface
     }
 
-    // Recoil force (CSF formulation): F = -P_recoil · n · |∇f|  [N/m³]
+    // Recoil force (CSF formulation): F = -P_recoil · n · |∇f| · multiplier  [N/m³]
     // |∇f| is the CSF delta function that converts surface pressure to volumetric force.
     // Units: [Pa] × [1/m] = [N/m³]. No extra normalization needed.
     //
-    // BUG FIX: Was dividing by (smoothing_width × dx) which added an extra
-    // [1/m] factor, amplifying force ~250000× for dx=2μm. This matches
-    // recoil_pressure.cu (lines 192, 274) which correctly uses F = P × |∇f|.
-    float coeff = P_recoil * grad_f_mag;
+    // force_multiplier compensates for VOF interface smearing: the diffuse interface
+    // spreads |∇f| over ~3 cells, reducing peak force density by ~3×. Standard LBM
+    // practice is to apply a multiplier (5-10×) to recover sharp-interface physics.
+    float coeff = P_recoil * grad_f_mag * force_multiplier;
 
     fx[idx] += -coeff * n.x;  // Negative: force pushes INTO liquid
     fy[idx] += -coeff * n.y;
@@ -1181,7 +1181,8 @@ void ForceAccumulator::addRecoilPressureForce(
     const float3* normals, float T_boil, float L_v,
     float M, float P_atm, float C_r,
     float smoothing_width, float max_pressure,
-    int nx, int ny, int nz, float dx)
+    int nx, int ny, int nz, float dx,
+    float force_multiplier)
 {
     dim3 threads(8, 8, 8);
     dim3 blocks((nx + threads.x - 1) / threads.x,
@@ -1192,7 +1193,7 @@ void ForceAccumulator::addRecoilPressureForce(
         temperature, fill_level, normals,
         d_fx_, d_fy_, d_fz_,
         T_boil, L_v, M, P_atm, C_r,
-        smoothing_width, max_pressure, dx,
+        smoothing_width, max_pressure, dx, force_multiplier,
         nx, ny, nz);
     CUDA_CHECK_KERNEL();
 

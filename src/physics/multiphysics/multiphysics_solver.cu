@@ -2328,7 +2328,8 @@ void MultiphysicsSolver::computeTotalForce() {
                 config_.recoil_smoothing_width,
                 config_.recoil_max_pressure,
                 config_.nx, config_.ny, config_.nz,
-                config_.dx);
+                config_.dx,
+                config_.recoil_force_multiplier);
         }
     }
 
