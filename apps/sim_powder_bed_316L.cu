@@ -127,9 +127,9 @@ int main() {
     config.enable_recoil_pressure   = true;
     config.enable_radiation_bc      = true;
 
-    // Laser: 316L LPBF — P=180W, r₀=35μm, v=400mm/s (high LED keyhole)
-    const float v_scan = 0.4f;          // 400 mm/s — 2× dwell time
-    config.laser_power              = 180.0f;   // [W] — high energy for deep melt
+    // Laser: 316L LPBF — P=180W, r₀=35μm, v=600mm/s (standard transition/keyhole)
+    const float v_scan = 0.6f;          // 600 mm/s — LED=300 J/m
+    config.laser_power              = 180.0f;   // [W]
     config.laser_spot_radius        = 35.0e-6f; // [m] 35 μm — focused for keyhole
     config.laser_absorptivity       = 0.35f;    // Base absorptivity (ray tracing adds multi-reflection)
     config.laser_penetration_depth  = 10.0e-6f; // [m] (Beer-Lambert fallback only)
@@ -149,11 +149,11 @@ int main() {
     // Fluid
     config.kinematic_viscosity      = 0.065f;
     config.density                  = config.material.rho_liquid;
-    config.darcy_coefficient        = 5.0e4f;
+    config.darcy_coefficient        = 1.0e4f;  // Carman-Kozeny: <5% penalty at fl=0.9
 
     // Thermal
     config.thermal_diffusivity      = config.material.getThermalDiffusivity(1700.0f);
-    config.ambient_temperature      = 800.0f; // High preheat — reduce thermal gradient
+    config.ambient_temperature      = 600.0f; // Realistic preheat
     config.emissivity               = config.material.emissivity;
 
     // Surface
@@ -167,10 +167,10 @@ int main() {
     config.gravity_z = -9.81f;
     config.reference_temperature    = 0.5f * (config.material.T_solidus + config.material.T_liquidus);
 
-    // Substrate cooling — DIRICHLET at z=0 (800K preheat heat sink)
-    config.enable_substrate_cooling = true;
-    config.substrate_h_conv         = 2000.0f;
-    config.substrate_temperature    = 800.0f;
+    // Substrate cooling — DISABLED (let heat diffuse naturally in substrate)
+    config.enable_substrate_cooling = false;
+    config.substrate_h_conv         = 0.0f;
+    config.substrate_temperature    = 600.0f;
 
     // Boundaries
     config.boundaries.x_min = BoundaryType::WALL;
@@ -184,9 +184,9 @@ int main() {
     config.boundaries.thermal_x_max = ThermalBCType::ADIABATIC;
     config.boundaries.thermal_y_min = ThermalBCType::ADIABATIC;
     config.boundaries.thermal_y_max = ThermalBCType::ADIABATIC;
-    config.boundaries.thermal_z_min = ThermalBCType::DIRICHLET;  // 800K heat sink
+    config.boundaries.thermal_z_min = ThermalBCType::ADIABATIC;  // Let heat diffuse naturally
     config.boundaries.thermal_z_max = ThermalBCType::ADIABATIC;
-    config.boundaries.dirichlet_temperature = 800.0f; // High preheat from prior layers
+    config.boundaries.dirichlet_temperature = 600.0f; // (unused — bottom is adiabatic)
 
     // CFL — scientifically relaxed to allow Marangoni wetting
     // LBM stability limit: 1/√3 ≈ 0.577 LU. Cap at 0.38 gives 34% safety margin.
@@ -202,8 +202,8 @@ int main() {
     config.enable_vof_mass_correction  = true;  // Global mass redistribution each step
 
     // Timing — compact domain scan (stop before laser hits right wall)
-    // Laser travels 200μm at 400mm/s → 500μs, + 150μs cooldown
-    const float t_total  = 650.0e-6f;  // 650 μs
+    // Laser travels 220μm at 600mm/s → 367μs, + 33μs cooldown
+    const float t_total  = 400.0e-6f;  // 400 μs
     const int num_steps  = static_cast<int>(t_total / config.dt);
     const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);  // VTK every 50μs
     const int diag_every = 1000;
