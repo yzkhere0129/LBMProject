@@ -29,7 +29,7 @@ OUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "powder_bed_raytrace.png")
 
 # Grid
-NX, NY, NZ = 500, 150, 80
+NX, NY, NZ = 150, 75, 75
 DX = 2e-6  # m
 N = NX * NY * NZ
 
@@ -40,11 +40,12 @@ IY_MID = NY // 2
 SNAPSHOTS = [
     ("powder_sim_000000.vtk",    0),
     ("powder_sim_001250.vtk",  100),
+    ("powder_sim_002500.vtk",  200),
     ("powder_sim_003750.vtk",  300),
+    ("powder_sim_005000.vtk",  400),
     ("powder_sim_006250.vtk",  500),
-    ("powder_sim_008750.vtk",  700),
-    ("powder_sim_011250.vtk",  900),
-    ("powder_sim_013750.vtk", 1100),
+    ("powder_sim_007500.vtk",  600),
+    ("powder_sim_008125.vtk",  650),
 ]
 
 # Temperature colormap
@@ -210,8 +211,8 @@ def main():
     cb_f = fig.colorbar(im_f, ax=axes[1, :], shrink=0.8, pad=0.02)
     cb_f.set_label('Fill Level', fontsize=10)
 
-    fig.suptitle('LPBF 316L — P=120W, r₀=25μm, v=800mm/s, 60μm powder\n'
-                 'Thick Powder + Narrow Beam (α_eff≈0.65)',
+    fig.suptitle('LPBF 316L — P=150W, r₀=35μm, v=800mm/s, 40μm powder\n'
+                 'Grounded Substrate + Keyhole Regime (α_eff≈0.65)',
                  fontsize=12, fontweight='bold')
 
     plt.savefig(OUT_FILE, dpi=200, bbox_inches='tight')

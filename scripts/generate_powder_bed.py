@@ -11,19 +11,19 @@ import struct
 from pathlib import Path
 
 DX = 2.0e-6
-NX, NY, NZ = 500, 150, 80
-Z_SUB = 25    # substrate top: 50 μm
-Z_POW = 55    # doctor blade: 110 μm → 60 μm powder layer
+NX, NY, NZ = 150, 75, 75
+Z_SUB = 30    # substrate top: 60 μm
+Z_POW = 38    # doctor blade: 76 μm → 16 μm powder layer
 
 Lx, Ly = NX * DX, NY * DX
 z_sub_m = Z_SUB * DX
 z_pow_m = Z_POW * DX
 
-D50, D90 = 25.0e-6, 45.0e-6
+D50, D90 = 15.0e-6, 20.0e-6
 MU_LN = np.log(D50)
 SIGMA_LN = np.log(D90 / D50) / 1.2816
 
-TARGET_PACKING = 0.55
+TARGET_PACKING = 0.60
 OVERLAP_TOL = 0.95
 
 
@@ -84,37 +84,37 @@ def generate():
         if n == 0: return 0.0
         return np.sum((4/3) * np.pi * cr[:n]**3) / powder_vol
 
-    # Phase 1: Large (25-40 μm) — wider range to fit in 40μm layer
-    print("Phase 1: Large (25-40 μm)...", flush=True)
+    # Phase 1: Large (14-19 μm) — capped to fit in 20μm layer
+    print("Phase 1: Large (14-19 μm)...", flush=True)
     radii = []
-    for _ in range(500):
+    for _ in range(800):
         while True:
             d = rng.lognormal(MU_LN, SIGMA_LN)
-            if 25e-6 <= d <= 40e-6: break
+            if 14e-6 <= d <= 19e-6: break
         radii.append(d/2)
     placed = try_place_batch(radii, 80)
     print(f"  +{placed}, packing={packing()*100:.1f}%, n={n}", flush=True)
 
-    # Phase 2: Medium (12-25 μm)
-    print("Phase 2: Medium (12-25 μm)...", flush=True)
+    # Phase 2: Medium (8-14 μm)
+    print("Phase 2: Medium (8-14 μm)...", flush=True)
     radii = []
-    for _ in range(2000):
+    for _ in range(3000):
         while True:
             d = rng.lognormal(MU_LN, SIGMA_LN)
-            if 12e-6 <= d <= 25e-6: break
+            if 8e-6 <= d <= 14e-6: break
         radii.append(d/2)
     placed = try_place_batch(radii, 100)
     print(f"  +{placed}, packing={packing()*100:.1f}%, n={n}", flush=True)
 
-    # Phase 3: Small (5-12 μm) — many attempts
-    print("Phase 3: Small (5-12 μm)...", flush=True)
+    # Phase 3: Small (4-8 μm) — many attempts
+    print("Phase 3: Small (4-8 μm)...", flush=True)
     total_placed = 0
     for batch in range(20):
         radii = []
         for _ in range(500):
             while True:
                 d = rng.lognormal(MU_LN, SIGMA_LN)
-                if 5e-6 <= d <= 12e-6: break
+                if 4e-6 <= d <= 8e-6: break
             radii.append(d/2)
         placed = try_place_batch(radii, 80)
         total_placed += placed
@@ -216,7 +216,7 @@ def visualize(px, py, pz, pr, n, fill):
                 circ = Circle((px[p]*1e6, pz[p]*1e6), sr*1e6,
                               fc='#c0c0c0', ec='white', lw=0.3, alpha=0.9)
                 ax.add_patch(circ)
-    ax.set_xlim(0, Lx*1e6); ax.set_ylim(40, 120)
+    ax.set_xlim(0, Lx*1e6); ax.set_ylim(40, 100)
     ax.set_aspect('equal')
     ax.set_xlabel('x [μm]'); ax.set_ylabel('z [μm]')
     ax.set_title('XZ Side View'); ax.legend(fontsize=8)

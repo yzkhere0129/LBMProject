@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib import cm
 
-NX, NY, NZ = 500, 150, 80
+NX, NY, NZ = 150, 75, 75
 DX = 2e-6
 N = NX * NY * NZ
 
@@ -98,7 +98,7 @@ def main():
     # Panel (0,0): Surface height map — final state
     ax = axes[0, 0]
     im = ax.pcolormesh(x_um, y_um, z_surf, cmap='terrain',
-                       vmin=30, vmax=100, shading='auto')
+                       vmin=50, vmax=90, shading='auto')
     ax.set_xlabel('x [μm]'); ax.set_ylabel('y [μm]')
     ax.set_title('Surface Height z_max (f>0.5) — Final', fontsize=11)
     ax.set_aspect('equal')

@@ -6,9 +6,9 @@
  * and runs full multiphysics laser scanning simulation.
  *
  * Domain: 1000×300×150 μm (500×150×75 cells at dx=2μm)
- *   z=0-60μm: solid substrate (f=1)
- *   z=60-100μm: powder layer (~45% packing, 299 particles)
- *   z=100-150μm: gas buffer (f=0)
+ *   z=0-60μm: solid substrate (f=1, T=800K preheat)
+ *   z=60-76μm: powder layer 16μm (~50% packing, D50=15μm)
+ *   z=76-150μm: gas buffer (f=0)
  *
  * Physics: All modules ON (honest model — no T cap, C-C evaporation)
  */
@@ -99,13 +99,13 @@ int main() {
     // ==================================================================
     MultiphysicsConfig config;
 
-    // Domain: 1000×300×160 μm (thick powder config)
-    //   z=0-50μm:    substrate (25 cells)
-    //   z=50-110μm:  powder layer 60μm (30 cells)
-    //   z=110-160μm: gas buffer 50μm (25 cells)
-    config.nx = 500;
-    config.ny = 150;
-    config.nz = 80;
+    // Domain: 300×150×150 μm (compact fast-run config)
+    //   z=0-60μm:    substrate (30 cells, Dirichlet 800K at z=0)
+    //   z=60-76μm:   powder layer 16μm (8 cells, D50=15μm, ~50%)
+    //   z=76-150μm:  gas buffer 74μm (37 cells)
+    config.nx = 150;
+    config.ny = 75;
+    config.nz = 75;
     config.dx = 2.0e-6f;
     config.dt = 8.0e-8f;
 
@@ -127,13 +127,13 @@ int main() {
     config.enable_recoil_pressure   = true;
     config.enable_radiation_bc      = true;
 
-    // Laser: 316L standard LPBF — P=150W, r₀=50μm, v=800mm/s
-    const float v_scan = 0.8f;          // 800 mm/s scan speed
-    config.laser_power              = 120.0f;   // [W] — moderate to avoid deep keyhole
-    config.laser_spot_radius        = 25.0e-6f; // [m] 25 μm — narrow beam for bead formation
+    // Laser: 316L LPBF — P=180W, r₀=35μm, v=400mm/s (high LED keyhole)
+    const float v_scan = 0.4f;          // 400 mm/s — 2× dwell time
+    config.laser_power              = 180.0f;   // [W] — high energy for deep melt
+    config.laser_spot_radius        = 35.0e-6f; // [m] 35 μm — focused for keyhole
     config.laser_absorptivity       = 0.35f;    // Base absorptivity (ray tracing adds multi-reflection)
     config.laser_penetration_depth  = 10.0e-6f; // [m] (Beer-Lambert fallback only)
-    config.laser_start_x            = 50.0e-6f; // Start 50μm from left wall
+    config.laser_start_x            = 30.0e-6f; // Start 30μm from left wall
     config.laser_start_y            = -1.0f;    // Auto-center Y
     config.laser_scan_vx            = v_scan;
     config.laser_scan_vy            = 0.0f;
@@ -153,7 +153,7 @@ int main() {
 
     // Thermal
     config.thermal_diffusivity      = config.material.getThermalDiffusivity(1700.0f);
-    config.ambient_temperature      = 600.0f; // Preheated build plate
+    config.ambient_temperature      = 800.0f; // High preheat — reduce thermal gradient
     config.emissivity               = config.material.emissivity;
 
     // Surface
@@ -167,10 +167,10 @@ int main() {
     config.gravity_z = -9.81f;
     config.reference_temperature    = 0.5f * (config.material.T_solidus + config.material.T_liquidus);
 
-    // Substrate cooling — DIRICHLET at z=0 (constant 300K heat sink)
+    // Substrate cooling — DIRICHLET at z=0 (800K preheat heat sink)
     config.enable_substrate_cooling = true;
     config.substrate_h_conv         = 2000.0f;
-    config.substrate_temperature    = 600.0f;
+    config.substrate_temperature    = 800.0f;
 
     // Boundaries
     config.boundaries.x_min = BoundaryType::WALL;
@@ -184,9 +184,9 @@ int main() {
     config.boundaries.thermal_x_max = ThermalBCType::ADIABATIC;
     config.boundaries.thermal_y_min = ThermalBCType::ADIABATIC;
     config.boundaries.thermal_y_max = ThermalBCType::ADIABATIC;
-    config.boundaries.thermal_z_min = ThermalBCType::DIRICHLET;  // 300K heat sink
+    config.boundaries.thermal_z_min = ThermalBCType::DIRICHLET;  // 800K heat sink
     config.boundaries.thermal_z_max = ThermalBCType::ADIABATIC;
-    config.boundaries.dirichlet_temperature = 600.0f; // Preheat from prior layers
+    config.boundaries.dirichlet_temperature = 800.0f; // High preheat from prior layers
 
     // CFL — scientifically relaxed to allow Marangoni wetting
     // LBM stability limit: 1/√3 ≈ 0.577 LU. Cap at 0.38 gives 34% safety margin.
@@ -198,9 +198,9 @@ int main() {
     config.vof_subcycles               = 1;
     config.enable_vof_mass_correction  = true;  // Global mass redistribution each step
 
-    // Timing — full scan across domain
-    // Laser travels 900μm at 800mm/s → 1125μs, + 200μs cooldown
-    const float t_total  = 1300.0e-6f;  // 1300 μs
+    // Timing — compact domain scan (stop before laser hits right wall)
+    // Laser travels 200μm at 400mm/s → 500μs, + 150μs cooldown
+    const float t_total  = 650.0e-6f;  // 650 μs
     const int num_steps  = static_cast<int>(t_total / config.dt);
     const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);  // VTK every 50μs
     const int diag_every = 1000;
