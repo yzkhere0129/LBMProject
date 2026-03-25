@@ -1415,7 +1415,8 @@ void MultiphysicsSolver::step(float dt) {
         // Previously, mass was removed but latent heat wasn't - causing T > 3000K
         // Physics: Q_cool = J_evap * L_vap [W/m²] removes heat at interface
         thermal_->applyEvaporationCooling(d_evap_mass_flux_, vof_->getFillLevel(),
-                                          dt, config_.dx);
+                                          dt, config_.dx,
+                                          config_.evap_cooling_factor);
 
         // Apply mass loss to VOF fill_level
         vof_->applyEvaporationMassLoss(d_evap_mass_flux_,

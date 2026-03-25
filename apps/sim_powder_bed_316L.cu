@@ -194,8 +194,9 @@ int main() {
     config.cfl_v_target_interface      = 0.38f;  // ~9.5 m/s physical
     config.cfl_v_target_bulk           = 0.38f;  // same — no asymmetric throttling
 
-    // Recoil pressure — VOF smearing compensation
+    // VOF smearing compensation
     config.recoil_force_multiplier  = 8.0f;  // Compensate diffuse interface (~3 cell spread)
+    config.evap_cooling_factor      = 0.25f; // Compensate over-cooling from ~4 smeared interface cells
 
     // VOF
     config.vof_subcycles               = 1;

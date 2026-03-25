@@ -36,12 +36,16 @@ __global__ void enthalpySourceTermKernel(float* g, float* temperature,
                                           MaterialProperties material, int num_cells);
 __global__ void computeTemperatureKernel(const float* g, float* temperature,
                                           int num_cells, const float* fill_level,
-                                          float T_boil_clamp);
+                                          float T_boil_clamp, int nx, int ny, int nz);
 __global__ void thermalBGKCollisionKernel(float* g_src, const float* temperature,
                                            const float* ux, const float* uy, const float* uz,
                                            float omega_T, int nx, int ny, int nz,
                                            MaterialProperties material, float dt, float dx,
                                            bool use_apparent_cp, const float* fill_level);
+__global__ void addHeatSourceKernel(float* g, const float* heat_source,
+                                     const float* temperature, const float* fill_level,
+                                     float dt, float omega_T,
+                                     MaterialProperties material, int num_cells);
 
 // Constructor (deprecated - for backward compatibility)
 ThermalLBM::ThermalLBM(int nx, int ny, int nz, float thermal_diffusivity,
@@ -447,7 +451,8 @@ void ThermalLBM::addHeatSource(const float* heat_source, float dt) {
     // Use material properties if available, otherwise fallback to hardcoded values
     if (has_material_) {
         addHeatSourceKernel<<<gridSize, blockSize>>>(
-            d_g_src, heat_source, d_temperature, dt, omega_T_, material_, num_cells_);
+            d_g_src, heat_source, d_temperature, d_vof_fill_level_,
+            dt, omega_T_, material_, num_cells_);
         CUDA_CHECK_KERNEL();
     } else {
         // Backward compatibility: create temporary material with fixed properties
@@ -459,7 +464,8 @@ void ThermalLBM::addHeatSource(const float* heat_source, float dt) {
         temp_mat.T_solidus = 0.0f;
         temp_mat.T_liquidus = 0.0f;
         addHeatSourceKernel<<<gridSize, blockSize>>>(
-            d_g_src, heat_source, d_temperature, dt, omega_T_, temp_mat, num_cells_);
+            d_g_src, heat_source, d_temperature, d_vof_fill_level_,
+            dt, omega_T_, temp_mat, num_cells_);
         CUDA_CHECK_KERNEL();
     }
 
@@ -637,6 +643,7 @@ __global__ void applyEvaporationCoolingKernel(
     const float* fill_level,
     int nx, int ny, int nz,
     float dx, float dt,
+    float cooling_factor,
     MaterialProperties material)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -692,7 +699,7 @@ __global__ void applyEvaporationCoolingKernel(
 
     float rho = material.getDensity(T);
     float cp = material.getSpecificHeat(T);
-    float q_evap = J * L_vap;  // [W/m²]
+    float q_evap = J * L_vap * cooling_factor;  // [W/m²] scaled by VOF smearing compensation
 
     float rho_cp = rho * cp;
     if (rho_cp < 1e-6f) return;
@@ -773,7 +780,8 @@ __global__ void applyTemperatureCapKernel(
     }
 }
 
-void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_level, float dt, float dx) {
+void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_level, float dt, float dx,
+                                         float cooling_factor) {
     if (!has_material_) {
         std::cerr << "WARNING: applyEvaporationCooling called without material properties\n";
         return;
@@ -787,7 +795,7 @@ void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_
 
     applyEvaporationCoolingKernel<<<gridSize, blockSize>>>(
         d_g_src, d_temperature, J_evap, fill_level,
-        nx_, ny_, nz_, dx, dt, material_
+        nx_, ny_, nz_, dx, dt, cooling_factor, material_
     );
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -872,7 +880,8 @@ void ThermalLBM::computeTemperature() {
 
     computeTemperatureKernel<<<gridSize, blockSize>>>(
         d_g_src, d_temperature, num_cells_,
-        d_vof_fill_level_, material_.T_vaporization);
+        d_vof_fill_level_, material_.T_vaporization,
+        nx_, ny_, nz_);
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -1127,7 +1136,8 @@ __global__ void computeTemperatureKernel(
     float* temperature,
     int num_cells,
     const float* fill_level,  // nullable: nullptr → no gas clamp
-    float T_boil_clamp) {     // Gas-phase temperature ceiling (e.g. T_boil)
+    float T_boil_clamp,       // unused (kept for API compat)
+    int nx, int ny, int nz) { // grid dims for neighbor lookup
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
@@ -1145,21 +1155,24 @@ __global__ void computeTemperatureKernel(
     T = fminf(T, T_MAX);
 
     // ========================================================================
-    // GAS-PHASE TEMPERATURE CLAMP (Fix 2)
-    // Pure gas cells (f < 0.05) are clamped to T_boil. Any residual heat
-    // from numerical diffusion or streaming is removed. The distributions
-    // are also reset to equilibrium at the clamped temperature to prevent
-    // spurious ∇T at the metal/gas boundary.
+    // GAS-PHASE WIPE (ballistic streaming artifact elimination)
+    //
+    // Strategy: Two-tier gas treatment to balance artifact removal vs heat loss
+    //   - Pure gas (f < 0.01): Force to T_ambient=600K (far from interface)
+    //   - Near-interface gas (0.01 <= f < 0.05): omega=0 (no diffusion) handles
+    //     this in collision kernel. Don't wipe — acts as thermal buffer zone.
+    //
+    // The f<0.01 threshold ensures the 600K wipe only hits cells that are
+    // physically distant from the melt pool, preventing the "ice wall" effect.
     // ========================================================================
     if (fill_level != nullptr) {
         float f = fill_level[idx];
-        if (f < 0.05f && T > T_boil_clamp) {
-            T = T_boil_clamp;
-            // Reset distributions to equilibrium at clamped T
+        if (f < 0.01f) {
+            const float T_ambient = 600.0f;
+            T = T_ambient;
             const float w[7] = {0.25f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f};
             for (int q = 0; q < 7; ++q) {
-                // g_eq(q, T, u=0) = w_q * T for stationary gas
-                ((float*)g)[q * num_cells + idx] = w[q] * T;
+                ((float*)g)[q * num_cells + idx] = w[q] * T_ambient;
             }
         }
     }
@@ -1309,6 +1322,7 @@ __global__ void addHeatSourceKernel(
     float* g,
     const float* heat_source,
     const float* temperature,
+    const float* fill_level,  // VOF phase mask (nullable)
     float dt,
     float omega_T,
     MaterialProperties material,
@@ -1316,6 +1330,12 @@ __global__ void addHeatSourceKernel(
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
+
+    // Phase masking: only deposit heat in metal (fill_level > 0.5)
+    // Gas cells (f<0.5) with omega=0 trap heat forever — must block input too
+    if (fill_level != nullptr && fill_level[idx] < 0.5f) {
+        return;  // No laser heating in gas or gas-dominated interface cells
+    }
 
     // Get local temperature
     float T = temperature[idx];

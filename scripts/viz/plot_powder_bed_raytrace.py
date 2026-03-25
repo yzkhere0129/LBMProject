@@ -39,13 +39,14 @@ IY_MID = NY // 2
 # Snapshots to plot (filename, physical time in μs)
 SNAPSHOTS = [
     ("powder_sim_000000.vtk",    0),
+    ("powder_sim_000625.vtk",   50),
     ("powder_sim_001250.vtk",  100),
+    ("powder_sim_001875.vtk",  150),
     ("powder_sim_002500.vtk",  200),
+    ("powder_sim_003125.vtk",  250),
     ("powder_sim_003750.vtk",  300),
+    ("powder_sim_004375.vtk",  350),
     ("powder_sim_005000.vtk",  400),
-    ("powder_sim_006250.vtk",  500),
-    ("powder_sim_007500.vtk",  600),
-    ("powder_sim_008125.vtk",  650),
 ]
 
 # Temperature colormap

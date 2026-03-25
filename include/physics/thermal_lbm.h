@@ -156,7 +156,8 @@ public:
      * @note Removes latent heat Q = J_evap * L_vap from interface cells
      * @note This provides temperature capping at boiling point through physics
      */
-    void applyEvaporationCooling(const float* J_evap, const float* fill_level, float dt, float dx);
+    void applyEvaporationCooling(const float* J_evap, const float* fill_level, float dt, float dx,
+                                 float cooling_factor = 1.0f);
 
     /**
      * @brief Compute total substrate cooling power
