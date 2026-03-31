@@ -92,7 +92,7 @@ def get_of_T2d(case_dir, t_us):
 # LBM field reader (from 2D CSV exported by benchmark)
 # ═══════════════════════════════════════════════════════════════════════════
 def get_lbm_T2d(tag, prefix="lbm_temperature"):
-    """Read LBM 2D temperature CSV → (X_arr, Z_arr, T2d)."""
+    """Read LBM 2D temperature CSV → (X_arr, Z_arr, T2d) with Gaussian smoothing."""
     fp = CONTOUR_DIR / f"{prefix}_{tag}us.csv"
     if not fp.exists():
         return None, None, None
@@ -106,7 +106,11 @@ def get_lbm_T2d(tag, prefix="lbm_temperature"):
         iz = np.searchsorted(zu, row[1])
         if ix < nx and iz < nz:
             T2d[iz, ix] = row[2]
-    return xu, zu, T2d
+    # Gaussian smoothing (sigma=1 cell) to reduce marching-squares jaggedness
+    from scipy.ndimage import gaussian_filter
+    T2d_clean = np.nan_to_num(T2d, nan=300.0)
+    T2d_smooth = gaussian_filter(T2d_clean, sigma=1.0)
+    return xu, zu, T2d_smooth
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -174,8 +178,8 @@ for i, t_us in enumerate(TIMES):
             ax.plot(dc[idx, 0], dc[idx, 1], color='#2196F3', lw=1.0, ls=':',
                     alpha=0.5, label='LBM conduction only' if i == 0 else '_')
 
-    ax.set_xlim(50, 150)
-    ax.set_ylim(85, 155)
+    ax.set_xlim(25, 175)
+    ax.set_ylim(70, 155)
     ax.set_title(f'$t = {t_us}$ $\\mu$s', fontsize=10)
     ax.grid(True, lw=0.3, alpha=0.4)
     if i // 2 == 1:

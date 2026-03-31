@@ -1664,10 +1664,13 @@ void MultiphysicsSolver::thermalStep(float dt) {
     // Compute temperature from distribution functions
     thermal_->computeTemperature();
 
-    // Temperature safety cap: when recoil pressure is OFF (no evaporation physics),
-    // clamp T at T_vaporization to prevent unphysical temperature runaway.
-    if (false) {  // T cap OFF for no-evaporation benchmark
-        thermal_->applyTemperatureSafetyCap();
+    // Evaporation cooling: Hertz-Knudsen-Langmuir energy sink at surface.
+    // Self-limits T to ~T_boil via exponential q_evap growth.
+    // Recoil pressure (momentum) is intentionally NOT enabled here —
+    // only the energy sink, which is physically correct even without VOF.
+    if (!config_.enable_recoil_pressure && thermal_) {
+        thermal_->applyEvaporationCooling(nullptr, nullptr,
+                                          config_.dt, config_.dx, 1.0f);
     }
 
     // ============================================================

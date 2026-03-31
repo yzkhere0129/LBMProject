@@ -343,6 +343,64 @@ __global__ void fdmDirichletKernel(
 }
 
 // ============================================================================
+// CUDA Kernel: Evaporation Cooling (Hertz-Knudsen-Langmuir + anti-oscillation)
+// ============================================================================
+// At surface cells where T > T_boil:
+//   J_evap = α_evap · P_sat(T) / √(2π·R·T/M)
+//   P_sat  = P_ref · exp[(L_vap·M/R)·(1/T_boil - 1/T)]
+//   q_evap = J_evap · L_vap   [W/m²]
+//   dT     = q_evap · dt / (ρ·cp·dx)
+//
+// Anti-oscillation: T_new = max(T_boil, T - dT)
+// This guarantees T never undershoots T_boil in a single step,
+// even when q_evap grows exponentially near T >> T_boil.
+// ============================================================================
+__global__ void fdmEvaporationCoolingKernel(
+    float* __restrict__ T,
+    int nx, int ny, int nz,
+    int z_surface,
+    float dt, float dx,
+    MaterialProperties mat,
+    float cooling_factor)
+{
+    int ix = blockIdx.x * blockDim.x + threadIdx.x;
+    int iy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (ix >= nx || iy >= ny) return;
+
+    int idx = ix + iy * nx + z_surface * nx * ny;
+    float Tc = T[idx];
+
+    float T_boil = mat.T_vaporization;
+    if (Tc <= T_boil) return;  // no evaporation below boiling point
+
+    // Clausius-Clapeyron saturation pressure
+    float L_vap = mat.L_vaporization;  // J/kg
+    float M     = mat.molar_mass;       // kg/mol
+    constexpr float R_gas = 8.314f;     // J/(mol·K)
+    constexpr float P_ref = 101325.0f;  // Pa (1 atm)
+    constexpr float alpha_evap = 0.18f; // evaporation coefficient
+
+    float exponent = (L_vap * M / R_gas) * (1.0f / T_boil - 1.0f / Tc);
+    // Clamp exponent to prevent overflow (exp(88) ≈ FLT_MAX)
+    exponent = fminf(exponent, 80.0f);
+    float P_sat = P_ref * expf(exponent);
+
+    // Hertz-Knudsen-Langmuir evaporation mass flux [kg/(m²·s)]
+    float J_evap = alpha_evap * P_sat / sqrtf(2.0f * 3.14159265f * R_gas * Tc / M);
+
+    // Energy flux [W/m²]
+    float q_evap = J_evap * L_vap * cooling_factor;
+
+    // Temperature decrement [K]
+    float rho = mat.getDensity(Tc);
+    float cp  = mat.getSpecificHeat(Tc);
+    float dT  = q_evap * dt / (rho * cp * dx);
+
+    // Anti-oscillation red line: T_new >= T_boil (NEVER undershoot)
+    T[idx] = fmaxf(T_boil, Tc - dT);
+}
+
+// ============================================================================
 // CUDA Kernel: Temperature Safety Cap
 // ============================================================================
 __global__ void fdmTCapKernel(float* T, float T_cap, int num_cells) {
@@ -568,7 +626,17 @@ void ThermalFDM::applySubstrateCoolingBC(float dt, float dx, float h, float T_su
 
 void ThermalFDM::applyEvaporationCooling(const float* J_evap, const float* fill,
                                           float dt, float dx, float factor) {
-    // TODO: implement evaporation energy sink
+    // Self-contained Hertz-Knudsen-Langmuir evaporation at z_max surface.
+    // Ignores J_evap/fill inputs (those are for VOF-based evaporation).
+    // Computes evaporation flux internally from the temperature field.
+    int z_surface = nz_ - 1;
+    dim3 block(16, 16);
+    dim3 grid((nx_ + 15) / 16, (ny_ + 15) / 16);
+    fdmEvaporationCoolingKernel<<<grid, block>>>(
+        d_T_, nx_, ny_, nz_, z_surface,
+        dt, dx, material_, factor);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void ThermalFDM::applyTemperatureSafetyCap() {
