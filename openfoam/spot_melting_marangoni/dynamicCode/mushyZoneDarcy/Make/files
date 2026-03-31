@@ -1,0 +1,6 @@
+/* dynamicCode:
+ * SHA1 = 42a2905ff649dd172de70073d29cea588b255e47
+ */
+codedFvOptionTemplate.C
+
+LIB = $(PWD)/../platforms/$(WM_OPTIONS)/lib/libmushyZoneDarcy_42a2905ff649dd172de70073d29cea588b255e47

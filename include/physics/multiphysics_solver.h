@@ -39,7 +39,9 @@
 #include <memory>
 #include <vector>
 
+#include "physics/thermal_solver_interface.h"
 #include "physics/thermal_lbm.h"
+#include "physics/thermal_fdm.h"
 #include "physics/fluid_lbm.h"
 #include "physics/vof_solver.h"
 #include "physics/marangoni.h"
@@ -220,6 +222,7 @@ struct MultiphysicsConfig {
         bool enable_evaporation_mass_loss   = false; ///< Enable evaporation VOF mass loss
         bool enable_recoil_pressure         = false; ///< Enable evaporation recoil pressure
         bool enable_solidification_shrinkage = false; ///< Enable solidification volume shrinkage
+        bool use_fdm_thermal                = false; ///< Use FDM thermal solver instead of D3Q7 LBM
     };
 
     struct NumericalConfig {
@@ -348,6 +351,7 @@ struct MultiphysicsConfig {
     bool& enable_evaporation_mass_loss    = physics.enable_evaporation_mass_loss;
     bool& enable_recoil_pressure          = physics.enable_recoil_pressure;
     bool& enable_solidification_shrinkage = physics.enable_solidification_shrinkage;
+    bool& use_fdm_thermal                = physics.use_fdm_thermal;
 
     // Fluid
     float& kinematic_viscosity = fluid.kinematic_viscosity;
@@ -767,7 +771,7 @@ private:
     core::UnitConverter unit_converter_;
 
     // Physics modules (using smart pointers for RAII)
-    std::unique_ptr<ThermalLBM> thermal_;
+    std::unique_ptr<IThermalSolver> thermal_;
     std::unique_ptr<FluidLBM> fluid_;
     std::unique_ptr<VOFSolver> vof_;
     std::unique_ptr<SurfaceTension> surface_tension_;

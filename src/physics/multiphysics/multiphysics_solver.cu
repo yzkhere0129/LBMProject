@@ -850,18 +850,25 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
 
     // Initialize physics modules based on flags
 
-    // Thermal solver (optional - disabled in Step 1)
+    // Thermal solver: runtime selection between D3Q7 LBM and explicit FDM
     if (config_.enable_thermal) {
-        thermal_ = std::make_unique<ThermalLBM>(
-            config_.nx, config_.ny, config_.nz,
-            config_.material,
-            config_.thermal_diffusivity,
-            config_.enable_phase_change,  // Use config flag for phase change
-            config_.dt,  // CRITICAL FIX: Pass timestep for tau scaling
-            config_.dx   // CRITICAL FIX: Pass lattice spacing for tau scaling
-        );
-
-        // Set emissivity from config
+        if (config_.use_fdm_thermal) {
+            thermal_ = std::make_unique<ThermalFDM>(
+                config_.nx, config_.ny, config_.nz,
+                config_.material,
+                config_.thermal_diffusivity,
+                config_.enable_phase_change,
+                config_.dt, config_.dx
+            );
+        } else {
+            thermal_ = std::make_unique<ThermalLBM>(
+                config_.nx, config_.ny, config_.nz,
+                config_.material,
+                config_.thermal_diffusivity,
+                config_.enable_phase_change,
+                config_.dt, config_.dx
+            );
+        }
         thermal_->setEmissivity(config_.emissivity);
     } else {
         // Allocate static temperature field

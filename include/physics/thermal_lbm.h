@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include "physics/thermal_solver_interface.h"
 #include "physics/lattice_d3q7.h"
 #include "physics/phase_change.h"
 #include "physics/material_properties.h"
@@ -28,7 +29,7 @@ namespace physics {
  * It uses the D3Q7 lattice for temperature field evolution and can be
  * coupled with the fluid solver (D3Q19) for convection-diffusion problems.
  */
-class ThermalLBM {
+class ThermalLBM : public IThermalSolver {
 public:
     /**
      * @brief Constructor (deprecated - for backward compatibility)

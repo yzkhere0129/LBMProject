@@ -268,6 +268,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(diag_marangoni_isolated PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(diag_marangoni_isolated lbm_physics lbm_io CUDA::cudart)
 
+    # ThermalFDM validation tests
+    add_executable(test_thermal_fdm apps/test_thermal_fdm.cu)
+    set_target_properties(test_thermal_fdm PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_thermal_fdm lbm_physics lbm_io CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------

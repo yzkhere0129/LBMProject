@@ -1,0 +1,106 @@
+{
+  "_comment": "Marangoni Convection Benchmark — Spot Melting with Thermocapillary Flow",
+  "_version": "2.0",
+  "_date": "2026-03-27",
+
+  "benchmark": {
+    "name": "Marangoni Convection: Spot Melting with Thermocapillary Flow",
+    "description": "Stationary Gaussian laser melting a 316L substrate with Marangoni-driven flow. Validates the coupling of thermal, fluid, and Marangoni modules against OpenFOAM reference.",
+    "physics_enabled": [
+      "heat_conduction",
+      "thermal_advection",
+      "melting_solidification_phase_change",
+      "navier_stokes_fluid",
+      "marangoni_thermocapillary",
+      "darcy_mushy_zone_damping"
+    ],
+    "physics_disabled": [
+      "vof_advection",
+      "surface_tension_capillary",
+      "buoyancy",
+      "evaporation",
+      "recoil_pressure",
+      "radiation_loss"
+    ]
+  },
+
+  "material": {
+    "name": "316L_stainless_steel",
+    "temperature_dependent": false,
+
+    "density": { "symbol": "rho", "value": 7900, "unit": "kg/m^3" },
+    "specific_heat": { "symbol": "Cp", "value": 700, "unit": "J/(kg.K)" },
+    "thermal_conductivity": { "symbol": "k", "value": 20.0, "unit": "W/(m.K)" },
+    "dynamic_viscosity": { "symbol": "mu", "value": 0.005, "unit": "Pa.s" },
+    "latent_heat_fusion": { "symbol": "Lf", "value": 260000, "unit": "J/kg" },
+    "solidus_temperature": { "symbol": "T_sol", "value": 1650, "unit": "K" },
+    "liquidus_temperature": { "symbol": "T_liq", "value": 1700, "unit": "K" },
+    "vaporization_temperature": { "symbol": "T_vap", "value": 3500, "unit": "K" },
+    "latent_heat_vaporization": { "symbol": "Lv", "value": 7.0e6, "unit": "J/kg" },
+    "molar_mass": { "symbol": "M", "value": 0.0558, "unit": "kg/mol" },
+
+    "surface_tension": { "symbol": "sigma", "value": 1.75, "unit": "N/m" },
+    "dsigma_dT": { "symbol": "dsigma_dT", "value": 1.0e-4, "unit": "N/(m.K)", "_note": "POSITIVE: inward Marangoni flow" },
+    "absorptivity": { "symbol": "eta", "value": 0.35, "unit": "-" },
+
+    "derived": {
+      "thermal_diffusivity": { "value": 3.616e-6, "unit": "m^2/s" },
+      "kinematic_viscosity": { "value": 6.329e-7, "unit": "m^2/s" },
+      "prandtl_number": { "value": 0.175, "unit": "-" }
+    }
+  },
+
+  "laser": {
+    "type": "Gaussian_surface_heat_flux",
+    "mode": "stationary_spot",
+    "power": { "value": 150, "unit": "W" },
+    "spot_radius": { "value": 25e-6, "unit": "m" },
+    "absorptivity": { "value": 0.35, "unit": "-" },
+    "penetration_depth": { "value": 2e-6, "unit": "m", "_note": "Single top-layer (dx)" },
+    "shutoff_time": { "value": 50e-6, "unit": "s" },
+    "scan_velocity": { "vx": 0, "vy": 0, "unit": "m/s" }
+  },
+
+  "domain": {
+    "size": { "Nx": 100, "Ny": 100, "Nz": 52, "unit": "cells" },
+    "spacing": { "dx": 2e-6, "unit": "m" },
+    "physical_size": { "Lx": 200e-6, "Ly": 200e-6, "Lz": 104e-6, "unit": "m" },
+    "metal_region": { "Nz_metal": 50, "unit": "cells" },
+    "gas_buffer": { "Nz_gas": 2, "unit": "cells" }
+  },
+
+  "numerics": {
+    "tau_thermal": { "value": 1.0, "unit": "-" },
+    "tau_fluid": { "value": 0.566, "unit": "-" },
+    "dt": { "value": 1.3825e-7, "unit": "s" },
+    "total_time": { "value": 100e-6, "unit": "s" },
+    "vof_subcycles": { "value": 1, "unit": "-" },
+    "cfl_velocity_target": { "value": 0.15, "unit": "lattice" }
+  },
+
+  "darcy_damping": {
+    "enabled": true,
+    "model": "Carman-Kozeny",
+    "coefficient": { "value": 1.0e6, "unit": "-" }
+  },
+
+  "boundary_conditions": {
+    "fluid": {
+      "x_min": "WALL", "x_max": "WALL",
+      "y_min": "WALL", "y_max": "WALL",
+      "z_min": "WALL", "z_max": "WALL"
+    },
+    "thermal": {
+      "x_min": "DIRICHLET", "x_max": "DIRICHLET",
+      "y_min": "DIRICHLET", "y_max": "DIRICHLET",
+      "z_min": "DIRICHLET", "z_max": "ADIABATIC",
+      "dirichlet_temperature": 300
+    }
+  },
+
+  "output": {
+    "snapshot_times": [25e-6, 50e-6, 60e-6, 75e-6, 100e-6],
+    "contour_isotherm": 1650,
+    "contour_prefix": "lbm_marangoni_contour_"
+  }
+}

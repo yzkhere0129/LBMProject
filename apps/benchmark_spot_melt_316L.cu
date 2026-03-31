@@ -115,32 +115,32 @@ int main() {
     config.nz = NZ;
     config.dx = dx;
 
-    // Time step: compromise between τ_thermal stability and Ma constraint
-    // τ_th = 0.79 (safe), Ma = 0.2 at v=20 m/s, CFL limits to ~20 m/s
-    const float dt = 2.0e-8f;  // 20 ns
+    // Hybrid LBM-FDM: FDM thermal has NO Mach constraint on advection.
+    // dt is set by fluid LBM stability only: τ_fluid ≥ 0.55
+    // At τ_f=0.55: ν_LU=0.0167, dt=0.0167*dx²/ν = 0.0167*4e-12/6.33e-7 = 1.055e-7 s
+    // FDM stability: Fo=α*dt/dx² = 3.6e-6*1.055e-7/4e-12 = 0.095 < 1/6 ✓
+    // Ma at 10 m/s: 10*1.055e-7/2e-6 = 0.53 (fluid LBM limit, acceptable with U_MAX clamp)
+    const float tau_fluid_target = 0.55f;
+    const float nu_LU_target = (tau_fluid_target - 0.5f) / 3.0f;
+    const float dt = nu_LU_target * dx * dx / nu;
     config.dt = dt;
 
-    // Effective viscosity: μ_eff=0.025 Pa·s (5× physical) to keep τ_fl > 0.54
-    const float mu_eff = 0.025f;
-    const float nu_eff = mu_eff / rho;
+    const float nu_LU = nu * dt / (dx * dx);
+    const float tau_fluid = nu_LU / (1.0f / 3.0f) + 0.5f;
+    const float Fo = alpha * dt / (dx * dx);
 
-    const float alpha_LU = alpha * dt / (dx * dx);
-    const float tau_thermal = alpha_LU / 0.25f + 0.5f;  // D3Q7 cs²=1/4
-    const float nu_LU = nu_eff * dt / (dx * dx);
-    const float tau_fluid = nu_LU / (1.0f / 3.0f) + 0.5f;  // D3Q19 cs²=1/3
-    printf("\nLBM parameters (dt rescaled for Ma < 0.15):\n");
+    printf("\nHybrid LBM-FDM parameters:\n");
     printf("  dx=%.0f μm, dt=%.2f ns\n", dx * 1e6f, dt * 1e9f);
-    printf("  τ_thermal=%.3f (ω=%.3f), α_LU=%.5f\n",
-           tau_thermal, 1.0f / tau_thermal, alpha_LU);
-    printf("  τ_fluid=%.3f (ω=%.3f), ν_LU=%.5f\n", tau_fluid, 1.0f / tau_fluid, nu_LU);
-    printf("  μ_eff=%.4f Pa·s (%.1f× physical, for τ_fl stability)\n", mu_eff, mu_eff/mu);
-    printf("  Ma_max at 60 m/s = %.3f\n", 60.0f * dt / dx);
+    printf("  Fluid: τ_f=%.3f, ν_LU=%.5f\n", tau_fluid, nu_LU);
+    printf("  FDM thermal: Fo=%.4f (limit 0.167)\n", Fo);
+    printf("  Ma at 10 m/s = %.3f\n", 10.0f * dt / dx);
 
     config.material = mat;
 
     // --- Physics flags ---
     config.enable_thermal           = true;
     config.enable_thermal_advection = true;
+    config.use_fdm_thermal          = true;   // Hybrid LBM-FDM: FDM for thermal
     config.enable_phase_change      = true;
     config.enable_fluid             = true;
     config.enable_vof               = false;      // No VOF — Inamuro stress BC at wall
@@ -155,7 +155,7 @@ int main() {
     config.enable_radiation_bc      = false;
 
     // --- Fluid ---
-    config.kinematic_viscosity = nu_LU;  // uses nu_eff, not physical nu
+    config.kinematic_viscosity = nu_LU;  // physical viscosity (no artificial increase needed)
     config.density             = rho;
     config.darcy_coefficient   = 1.0e6f;  // Carman-Kozeny (matches OpenFOAM)  // Reduced from 1e6           // Carman-Kozeny constant
 

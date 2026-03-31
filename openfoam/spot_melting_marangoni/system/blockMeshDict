@@ -1,0 +1,109 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2506                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// Spot Melting Benchmark v1.1
+// Domain: 200 x 100 x 200 um  (X x Y_depth x Z)
+// Mesh:   100 x 50 x 100  (dx = dy = dz = 2 um)
+// Coordinate system: top surface at y=0, depth into substrate y<0
+
+convertToMeters 1e-6;   // Input in micrometers
+
+vertices
+(
+    // Bottom face (y = -100 um)
+    (-100 -100 -100)    // 0: xMin, yMin, zMin
+    ( 100 -100 -100)    // 1: xMax, yMin, zMin
+    ( 100    0 -100)    // 2: xMax, yMax, zMin
+    (-100    0 -100)    // 3: xMin, yMax, zMin
+
+    // Top face (offset in z)
+    (-100 -100  100)    // 4: xMin, yMin, zMax
+    ( 100 -100  100)    // 5: xMax, yMin, zMax
+    ( 100    0  100)    // 6: xMax, yMax, zMax
+    (-100    0  100)    // 7: xMin, yMax, zMax
+);
+
+blocks
+(
+    hex (0 1 2 3 4 5 6 7) (100 50 100) simpleGrading (1 1 1)
+    // 100*50*100 = 500,000 cells, uniform 2 um
+);
+
+edges
+(
+);
+
+boundary
+(
+    top
+    {
+        type patch;
+        faces
+        (
+            (3 7 6 2)   // y = 0 (laser-irradiated surface)
+        );
+    }
+
+    bottom
+    {
+        type patch;
+        faces
+        (
+            (0 1 5 4)   // y = -100 um (substrate bottom)
+        );
+    }
+
+    xMin
+    {
+        type patch;
+        faces
+        (
+            (0 4 7 3)
+        );
+    }
+
+    xMax
+    {
+        type patch;
+        faces
+        (
+            (1 2 6 5)
+        );
+    }
+
+    zMin
+    {
+        type patch;
+        faces
+        (
+            (0 3 2 1)
+        );
+    }
+
+    zMax
+    {
+        type patch;
+        faces
+        (
+            (4 5 6 7)
+        );
+    }
+);
+
+mergePatchPairs
+(
+);
+
+// ************************************************************************* //

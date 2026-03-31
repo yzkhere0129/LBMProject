@@ -1,0 +1,1 @@
+LIB = $(PWD)/../platforms/$(WM_OPTIONS)/lib/libmarangoniBC_f6cea5d472d7427b897a262d9f5c538bb5015255

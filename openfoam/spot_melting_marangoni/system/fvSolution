@@ -1,0 +1,70 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2506                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// Marangoni case: momentum equation is now active.
+
+solvers
+{
+    p_rgh
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-7;
+        relTol          0.01;
+    }
+
+    p_rghFinal
+    {
+        $p_rgh;
+        relTol          0;
+    }
+
+    "(rho|U|h|k|epsilon)"
+    {
+        solver          PBiCGStab;
+        preconditioner  DILU;
+        tolerance       1e-7;
+        relTol          0.01;
+    }
+
+    "(rho|U|h|k|epsilon)Final"
+    {
+        solver          PBiCGStab;
+        preconditioner  DILU;
+        tolerance       1e-7;
+        relTol          0;
+    }
+}
+
+PIMPLE
+{
+    momentumPredictor   yes;        // ← ENABLED (was no)
+    nOuterCorrectors    2;          // ← INCREASED for U-h coupling
+    nCorrectors         1;
+    nNonOrthogonalCorrectors 0;
+
+    pRefCell            0;
+    pRefValue           0;
+}
+
+relaxationFactors
+{
+    equations
+    {
+        ".*"            1;
+    }
+}
+
+// ************************************************************************* //

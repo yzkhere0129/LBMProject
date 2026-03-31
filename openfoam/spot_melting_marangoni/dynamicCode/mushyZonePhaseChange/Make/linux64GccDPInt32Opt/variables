@@ -1,0 +1,1 @@
+LIB = $(PWD)/../platforms/$(WM_OPTIONS)/lib/libmushyZonePhaseChange_e841af48af259d06810ffa213b539ac525b5cfb7

@@ -1,0 +1,57 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2506                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      thermophysicalProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// Spot Melting Benchmark v1.1 — WITH Marangoni convection
+// CHANGED: mu = 0.005 Pa.s, Pr = 0.175 (was mu=0.001, Pr=0.035)
+
+thermoType
+{
+    type            heRhoThermo;
+    mixture         pureMixture;
+    transport       const;
+    thermo          hConst;
+    equationOfState rhoConst;
+    specie          specie;
+    energy          sensibleEnthalpy;
+}
+
+mixture
+{
+    specie
+    {
+        molWeight   55.845;
+    }
+
+    equationOfState
+    {
+        rho         7900;           // [kg/m^3]
+    }
+
+    thermodynamics
+    {
+        Cp          700;            // [J/(kg.K)]
+        Hf          0;
+    }
+
+    transport
+    {
+        // k = mu * Cp / Pr  =>  Pr = mu * Cp / k
+        // k = 20 W/(m.K):  Pr = 0.005 * 700 / 20 = 0.175
+        mu          0.005;          // [Pa.s]  ← CHANGED from 0.001
+        Pr          0.175;          // -> k = 20 W/(m.K)  ← CHANGED from 0.035
+    }
+}
+
+// ************************************************************************* //

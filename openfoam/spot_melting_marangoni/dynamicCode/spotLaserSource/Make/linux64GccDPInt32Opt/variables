@@ -1,0 +1,1 @@
+LIB = $(PWD)/../platforms/$(WM_OPTIONS)/lib/libspotLaserSource_ce928d5cb3180c087de9bebe70200bb92a039ab5

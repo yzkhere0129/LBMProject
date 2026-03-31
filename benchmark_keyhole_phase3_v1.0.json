@@ -1,0 +1,118 @@
+{
+  "_comment": "Phase 3: Keyhole Mode — VOF + Recoil Pressure + Evaporation",
+  "_version": "3.0",
+  "_date": "2026-03-28",
+
+  "benchmark": {
+    "name": "Keyhole Mode: Deep Penetration with Recoil Pressure",
+    "description": "High-power laser melting with full multi-physics: VOF free surface, recoil pressure (Clausius-Clapeyron), evaporation heat loss, Marangoni flow. Validates deep keyhole formation.",
+    "physics_enabled": [
+      "heat_conduction",
+      "thermal_advection", 
+      "melting_solidification_phase_change",
+      "navier_stokes_fluid",
+      "vof_free_surface",
+      "marangoni_thermocapillary",
+      "recoil_pressure",
+      "evaporation_heat_loss",
+      "darcy_mushy_zone_damping"
+    ],
+    "physics_disabled": [
+      "buoyancy",
+      "radiation_loss"
+    ]
+  },
+
+  "material": {
+    "name": "316L_stainless_steel",
+    "temperature_dependent": false,
+
+    "density": { "symbol": "rho", "value": 7900, "unit": "kg/m^3" },
+    "specific_heat": { "symbol": "Cp", "value": 700, "unit": "J/(kg.K)" },
+    "thermal_conductivity": { "symbol": "k", "value": 20.0, "unit": "W/(m.K)" },
+    "dynamic_viscosity": { "symbol": "mu", "value": 0.005, "unit": "Pa.s" },
+    "latent_heat_fusion": { "symbol": "Lf", "value": 260000, "unit": "J/kg" },
+    "solidus_temperature": { "symbol": "T_sol", "value": 1650, "unit": "K" },
+    "liquidus_temperature": { "symbol": "T_liq", "value": 1700, "unit": "K" },
+    "vaporization_temperature": { "symbol": "T_vap", "value": 3500, "unit": "K" },
+    "latent_heat_vaporization": { "symbol": "Lv", "value": 7.0e6, "unit": "J/kg" },
+    "molar_mass": { "symbol": "M", "value": 0.0558, "unit": "kg/mol" },
+
+    "surface_tension": { "symbol": "sigma", "value": 1.75, "unit": "N/m" },
+    "dsigma_dT": { "symbol": "dsigma_dT", "value": 1.0e-4, "unit": "N/(m.K)" },
+    "absorptivity": { "symbol": "eta", "value": 0.35, "unit": "-" },
+
+    "recoil_pressure": {
+      "enabled": true,
+      "model": "Clausius_Clayperon",
+      "P0": 101325,
+      "unit": "Pa"
+    },
+
+    "evaporation": {
+      "enabled": true,
+      "model": "Hertz_Knudsen"
+    }
+  },
+
+  "laser": {
+    "type": "Gaussian_surface_heat_flux",
+    "mode": "stationary_spot",
+    "power": { "value": 300, "unit": "W", "_note": "Higher power for keyhole" },
+    "spot_radius": { "value": 25e-6, "unit": "m" },
+    "absorptivity": { "value": 0.35, "unit": "-" },
+    "penetration_depth": { "value": 2e-6, "unit": "m" },
+    "shutoff_time": { "value": 75e-6, "unit": "s" },
+    "scan_velocity": { "vx": 0, "vy": 0, "unit": "m/s" }
+  },
+
+  "domain": {
+    "size": { "Nx": 100, "Ny": 100, "Nz": 60, "unit": "cells" },
+    "spacing": { "dx": 2e-6, "unit": "m" },
+    "physical_size": { "Lx": 200e-6, "Ly": 200e-6, "Lz": 120e-6, "unit": "m" },
+    "metal_region": { "Nz_metal": 50, "unit": "cells" },
+    "gas_buffer": { "Nz_gas": 10, "unit": "cells", "_note": "Larger gas buffer for keyhole" }
+  },
+
+  "vof": {
+    "enabled": true,
+    "advection": true,
+    "scheme": "TVD",
+    "gas_phase_present": true,
+    "interface_reconstruction": "PLIC"
+  },
+
+  "numerics": {
+    "tau_thermal": { "value": 1.0, "unit": "-" },
+    "tau_fluid": { "value": 0.566, "unit": "-" },
+    "dt": { "value": 1.3825e-7, "unit": "s" },
+    "total_time": { "value": 100e-6, "unit": "s" },
+    "vof_subcycles": { "value": 1, "unit": "-" },
+    "cfl_velocity_target": { "value": 0.15, "unit": "lattice" }
+  },
+
+  "darcy_damping": {
+    "enabled": true,
+    "model": "Carman_Kozeny",
+    "coefficient": { "value": 1.0e6, "unit": "-" }
+  },
+
+  "boundary_conditions": {
+    "fluid": {
+      "x_min": "WALL", "x_max": "WALL",
+      "y_min": "WALL", "y_max": "WALL",
+      "z_min": "WALL", "z_max": "WALL"
+    },
+    "thermal": {
+      "x_min": "ADIABATIC", "x_max": "ADIABATIC",
+      "y_min": "ADIABATIC", "y_max": "ADIABATIC",
+      "z_min": "ADIABATIC", "z_max": "ADIABATIC"
+    }
+  },
+
+  "output": {
+    "snapshot_times": [25e-6, 50e-6, 60e-6, 75e-6, 100e-6],
+    "contour_isotherm": 1650,
+    "contour_prefix": "lbm_keyhole_contour_"
+  }
+}

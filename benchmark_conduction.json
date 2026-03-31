@@ -1,0 +1,246 @@
+{
+  "_comment": "Spot Melting Benchmark — Pure Conduction + Phase Change (No Fluid Flow)",
+  "_version": "1.1",
+  "_date": "2026-03-25",
+
+  "benchmark": {
+    "name": "Spot Melting: Pure Conduction + Melting/Solidification",
+    "description": "Stationary Gaussian laser melting a 316L substrate. Velocity field is OFF — only the energy equation with latent-heat phase change is solved. Designed for cross-platform verification of thermal solvers.",
+    "physics_enabled": [
+      "heat_conduction",
+      "melting_solidification_phase_change"
+    ],
+    "physics_disabled": [
+      "fluid_flow",
+      "Marangoni_convection",
+      "recoil_pressure",
+      "evaporation",
+      "radiation_loss",
+      "turbulence"
+    ]
+  },
+
+  "material": {
+    "name": "316L_stainless_steel",
+    "temperature_dependent": false,
+    "_note": "Constant (effective-average) properties for benchmark reproducibility",
+
+    "density": {
+      "symbol": "rho",
+      "value": 7900,
+      "unit": "kg/m^3"
+    },
+    "specific_heat": {
+      "symbol": "Cp",
+      "value": 700,
+      "unit": "J/(kg.K)"
+    },
+    "thermal_conductivity": {
+      "symbol": "k",
+      "value": 20.0,
+      "unit": "W/(m.K)"
+    },
+    "latent_heat_fusion": {
+      "symbol": "Lf",
+      "value": 260000,
+      "unit": "J/kg"
+    },
+    "solidus_temperature": {
+      "symbol": "T_sol",
+      "value": 1650,
+      "unit": "K"
+    },
+    "liquidus_temperature": {
+      "symbol": "T_liq",
+      "value": 1700,
+      "unit": "K"
+    },
+
+    "derived": {
+      "thermal_diffusivity": {
+        "symbol": "alpha",
+        "value": 3.616e-6,
+        "unit": "m^2/s",
+        "formula": "k / (rho * Cp)"
+      },
+      "mushy_zone_width_K": {
+        "value": 50,
+        "unit": "K",
+        "formula": "T_liq - T_sol"
+      },
+      "effective_Cp_mushy": {
+        "value": 5900,
+        "unit": "J/(kg.K)",
+        "formula": "Cp + Lf / (T_liq - T_sol)",
+        "_note": "Apparent specific heat in mushy zone (enthalpy method): 700 + 260000/50 = 5900"
+      }
+    }
+  },
+
+  "laser": {
+    "type": "Gaussian_surface_heat_flux",
+    "mode": "stationary_spot",
+    "formula": "q(r) = [2 * eta * P / (pi * r0^2)] * exp(-2 * r^2 / r0^2)",
+
+    "power": {
+      "symbol": "P",
+      "value": 150,
+      "unit": "W"
+    },
+    "spot_radius": {
+      "symbol": "r0",
+      "value": 25e-6,
+      "unit": "m",
+      "definition": "1/e^2 beam radius"
+    },
+    "absorptivity": {
+      "symbol": "eta",
+      "value": 0.35,
+      "unit": "-"
+    },
+    "center_position": {
+      "x": 0, "y": 0, "z": 0,
+      "unit": "m",
+      "_note": "Fixed at domain center on top surface (y=0)"
+    },
+    "scan_velocity": {
+      "value": 0,
+      "unit": "m/s"
+    },
+
+    "derived": {
+      "peak_absorbed_flux": {
+        "symbol": "q0",
+        "value": 5.348e10,
+        "unit": "W/m^2",
+        "formula": "2 * eta * P / (pi * r0^2)"
+      }
+    },
+
+    "schedule": {
+      "description": "Laser ON for 50 us, then OFF for 50 us (cooling)",
+      "laser_on":  { "t_start": 0,     "t_end": 50e-6,  "unit": "s" },
+      "laser_off": { "t_start": 50e-6, "t_end": 100e-6, "unit": "s" },
+      "total_simulation_time": { "value": 100e-6, "unit": "s" }
+    }
+  },
+
+  "domain": {
+    "description": "3D cuboid. Top surface at y=0, depth extends downward (y < 0). Laser center at origin.",
+    "coordinate_system": {
+      "x": "surface direction 1",
+      "y": "depth (0 = surface, negative = into substrate)",
+      "z": "surface direction 2"
+    },
+    "bounds": {
+      "x": { "min": -100e-6, "max": 100e-6 },
+      "y": { "min": -100e-6, "max": 0 },
+      "z": { "min": -100e-6, "max": 100e-6 }
+    },
+    "size": {
+      "Lx": { "value": 200e-6, "unit": "m" },
+      "Ly": { "value": 100e-6, "unit": "m" },
+      "Lz": { "value": 200e-6, "unit": "m" }
+    }
+  },
+
+  "mesh": {
+    "type": "uniform_structured",
+    "cell_size": {
+      "dx": { "value": 2e-6, "unit": "m" },
+      "dy": { "value": 2e-6, "unit": "m" },
+      "dz": { "value": 2e-6, "unit": "m" }
+    },
+    "cell_count": {
+      "Nx": 100,
+      "Ny": 50,
+      "Nz": 100
+    },
+    "total_cells": 500000,
+    "_note": "2 um uniform mesh. For convergence study, refine to 1 um (4M cells)."
+  },
+
+  "boundary_conditions": {
+    "temperature": {
+      "top":    { "face": "y = 0",          "type": "zeroGradient", "_note": "Adiabatic; laser enters via volumetric source in top cell layer" },
+      "bottom": { "face": "y = -100 um",    "type": "fixedValue",   "value": 300, "unit": "K" },
+      "xMin":   { "face": "x = -100 um",    "type": "fixedValue",   "value": 300, "unit": "K" },
+      "xMax":   { "face": "x = +100 um",    "type": "fixedValue",   "value": 300, "unit": "K" },
+      "zMin":   { "face": "z = -100 um",    "type": "fixedValue",   "value": 300, "unit": "K" },
+      "zMax":   { "face": "z = +100 um",    "type": "fixedValue",   "value": 300, "unit": "K" }
+    },
+    "velocity": {
+      "_note": "Velocity field DISABLED. If solver requires U, fix to (0 0 0) everywhere.",
+      "all_patches": { "type": "fixedValue", "value": [0, 0, 0], "unit": "m/s" }
+    }
+  },
+
+  "initial_conditions": {
+    "temperature": { "value": 300, "unit": "K" },
+    "velocity":    { "value": [0, 0, 0], "unit": "m/s" },
+    "liquid_fraction": { "value": 0, "unit": "-" }
+  },
+
+  "phase_change_model": {
+    "method": "enthalpy-porosity (linear liquid fraction)",
+    "liquid_fraction_formula": "f_l = clamp((T - T_sol) / (T_liq - T_sol), 0, 1)",
+    "energy_source_term": "S = -rho * Lf * d(f_l)/dt",
+    "latent_heat_implementation": {
+      "sole_handler": "solidificationMeltingSource (fvOption)",
+      "thermodynamics_Hf": 0,
+      "_note": "Hf=0 in thermoType means sensibleEnthalpy h = Cp*(T-Tref) contains NO latent heat. The solidificationMeltingSource fvOption is the ONLY module that injects the latent heat source term -rho*Lf*d(f_l)/dt into the energy equation. There is no double-counting."
+    }
+  },
+
+  "numerics": {
+    "time_integration": "implicit (backward Euler or Crank-Nicolson)",
+    "dt_initial":  { "value": 1e-9,  "unit": "s" },
+    "dt_max":      { "value": 5e-8,  "unit": "s" },
+    "CFL_max": 0.4,
+    "output_interval": { "value": 5e-6, "unit": "s" },
+    "_note": "Implicit scheme allows dt >> explicit stability limit. Adjust dt for accuracy near laser switch-off."
+  },
+
+  "validation_outputs": {
+    "primary": [
+      {
+        "name": "T_max_vs_time",
+        "description": "Maximum temperature in domain as function of time [0, 100 us]"
+      },
+      {
+        "name": "melt_pool_depth_at_50us",
+        "description": "Maximum depth below surface where T >= T_liq at t = 50 us (end of irradiation)"
+      },
+      {
+        "name": "melt_pool_radius_at_50us",
+        "description": "Maximum radial extent on surface where T >= T_liq at t = 50 us"
+      },
+      {
+        "name": "T_profile_depth_centerline",
+        "description": "T(y) along x=0, z=0 at t = 25 us, 50 us, 75 us, 100 us"
+      }
+    ],
+    "secondary": [
+      {
+        "name": "liquidus_isotherm_cross_section",
+        "description": "T = T_liq contour in the x-y plane (z=0) at t = 50 us"
+      },
+      {
+        "name": "solidification_completion_time",
+        "description": "Time at which all material returns to T < T_sol after laser off"
+      },
+      {
+        "name": "cooling_rate_at_origin",
+        "description": "dT/dt at (0, -5um, 0) during cooling phase [50 us, 100 us]"
+      }
+    ],
+    "probe_locations": [
+      { "label": "surface_center",   "coordinates": [0, -1e-6,  0], "unit": "m" },
+      { "label": "5um_depth",        "coordinates": [0, -5e-6,  0], "unit": "m" },
+      { "label": "20um_depth",       "coordinates": [0, -20e-6, 0], "unit": "m" },
+      { "label": "50um_depth",       "coordinates": [0, -50e-6, 0], "unit": "m" },
+      { "label": "surface_1r0",      "coordinates": [25e-6, -1e-6, 0], "unit": "m" },
+      { "label": "surface_2r0",      "coordinates": [50e-6, -1e-6, 0], "unit": "m" }
+    ]
+  }
+}

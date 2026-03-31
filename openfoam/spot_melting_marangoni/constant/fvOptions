@@ -1,0 +1,197 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2506                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvOptions;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// Spot Melting Benchmark v1.1 — WITH Marangoni convection
+// 3 sources: (1) laser, (2) phase-change latent heat, (3) Darcy damping
+
+// ======================================================================
+// 1. LASER HEAT SOURCE (scalar, acts on h equation)
+// ======================================================================
+laserSource
+{
+    type            scalarCodedSource;
+    selectionMode   all;
+    fields          (h);
+    name            spotLaserSource;
+
+    codeInclude #{#};
+    codeCorrect #{#};
+
+    codeAddSup
+    #{
+        const scalar P=150, r0=25e-6, eta=0.35, t_on=50e-6, dy_s=2e-6;
+        const scalar t=mesh().time().value();
+        if(t>=t_on) return;
+        const volVectorField& C=mesh().C();
+        const scalar pi=Foam::constant::mathematical::pi;
+        const scalar Q0=2.0*eta*P/(pi*sqr(r0));
+        forAll(eqn.source(),i)
+        {
+            if(C[i].y()>-dy_s)
+            {
+                scalar r2=sqr(C[i].x())+sqr(C[i].z());
+                eqn.source()[i]-=Q0*Foam::exp(-2.0*r2/sqr(r0))/dy_s*mesh().V()[i];
+            }
+        }
+    #};
+
+    codeAddSupRho
+    #{
+        const scalar P=150, r0=25e-6, eta=0.35, t_on=50e-6, dy_s=2e-6;
+        const scalar t=mesh().time().value();
+        if(t>=t_on) return;
+        const volVectorField& C=mesh().C();
+        const scalar pi=Foam::constant::mathematical::pi;
+        const scalar Q0=2.0*eta*P/(pi*sqr(r0));
+        forAll(eqn.source(),i)
+        {
+            if(C[i].y()>-dy_s)
+            {
+                scalar r2=sqr(C[i].x())+sqr(C[i].z());
+                eqn.source()[i]-=Q0*Foam::exp(-2.0*r2/sqr(r0))/dy_s*mesh().V()[i];
+            }
+        }
+    #};
+
+    codeConstrain #{#};
+}
+
+// ======================================================================
+// 2. PHASE CHANGE — mushy-zone latent heat (scalar, acts on h equation)
+// ======================================================================
+phaseChangeSource
+{
+    type            scalarCodedSource;
+    selectionMode   all;
+    fields          (h);
+    name            mushyZonePhaseChange;
+
+    codeInclude
+    #{
+        #include "fvcDdt.H"
+    #};
+
+    codeCorrect #{#};
+
+    codeAddSup
+    #{
+        const scalar Tsol=1650, Tliq=1700, Lf=260000, rhoVal=7900;
+        const scalar dt=mesh().time().deltaTValue();
+        const volScalarField& T=mesh().lookupObject<volScalarField>("T");
+
+        const word lfN("liquidFraction");
+        volScalarField* p=mesh().getObjectPtr<volScalarField>(lfN);
+        if(!p){p=new volScalarField(IOobject(lfN,mesh().time().timeName(),mesh(),
+            IOobject::NO_READ,IOobject::AUTO_WRITE,IOobject::REGISTER),
+            mesh(),dimensionedScalar("lf",dimless,0));p->store();}
+        volScalarField& lf=*p; lf.oldTime();
+
+        static label li=-1;
+        if(mesh().time().timeIndex()!=li){
+            forAll(lf,i){
+                if(T[i]<=Tsol) lf[i]=0;
+                else if(T[i]>=Tliq) lf[i]=1;
+                else lf[i]=(T[i]-Tsol)/(Tliq-Tsol);
+            } li=mesh().time().timeIndex();
+        }
+        const scalarField& V=mesh().V();
+        const scalarField& lo=lf.oldTime().primitiveField();
+        forAll(eqn.source(),i){
+            eqn.source()[i]+=rhoVal*Lf*(lf[i]-lo[i])/dt*V[i];
+        }
+    #};
+
+    codeAddSupRho
+    #{
+        const scalar Tsol=1650, Tliq=1700, Lf=260000, rhoVal=7900;
+        const scalar dt=mesh().time().deltaTValue();
+        const volScalarField& T=mesh().lookupObject<volScalarField>("T");
+
+        const word lfN("liquidFraction");
+        volScalarField* p=mesh().getObjectPtr<volScalarField>(lfN);
+        if(!p){p=new volScalarField(IOobject(lfN,mesh().time().timeName(),mesh(),
+            IOobject::NO_READ,IOobject::AUTO_WRITE,IOobject::REGISTER),
+            mesh(),dimensionedScalar("lf",dimless,0));p->store();}
+        volScalarField& lf=*p; lf.oldTime();
+
+        static label li=-1;
+        if(mesh().time().timeIndex()!=li){
+            forAll(lf,i){
+                if(T[i]<=Tsol) lf[i]=0;
+                else if(T[i]>=Tliq) lf[i]=1;
+                else lf[i]=(T[i]-Tsol)/(Tliq-Tsol);
+            } li=mesh().time().timeIndex();
+        }
+        const scalarField& V=mesh().V();
+        const scalarField& lo=lf.oldTime().primitiveField();
+        forAll(eqn.source(),i){
+            eqn.source()[i]+=rhoVal*Lf*(lf[i]-lo[i])/dt*V[i];
+        }
+    #};
+
+    codeConstrain #{#};
+}
+
+// ======================================================================
+// 3. DARCY DAMPING — mushy-zone momentum sink (vector, acts on U equation)
+// ======================================================================
+// S = -Cu * (1-fl)^2 / (fl^3 + eps) * rho * U
+// In solid (fl=0): velocity is killed.  In liquid (fl=1): no damping.
+// Multiplied by rhoRef for dimensional consistency with compressible eqn.
+
+darcyDamping
+{
+    type            vectorCodedSource;
+    selectionMode   all;
+    fields          (U);
+    name            mushyZoneDarcy;
+
+    codeInclude #{#};
+    codeCorrect #{#};
+
+    codeAddSup
+    #{
+        const scalar Cu=1e6, eps=1e-3, Tsol=1650, Tliq=1700, rhoRef=7900;
+        const volScalarField& T=mesh().lookupObject<volScalarField>("T");
+        const scalarField& V=mesh().V();
+        forAll(eqn.diag(),i){
+            scalar fl;
+            if(T[i]<=Tsol) fl=0;
+            else if(T[i]>=Tliq) fl=1;
+            else fl=(T[i]-Tsol)/(Tliq-Tsol);
+            scalar S=-Cu*sqr(1.0-fl)/(pow3(fl)+eps);
+            eqn.diag()[i]+=S*rhoRef*V[i];
+        }
+    #};
+
+    codeAddSupRho
+    #{
+        const scalar Cu=1e6, eps=1e-3, Tsol=1650, Tliq=1700, rhoRef=7900;
+        const volScalarField& T=mesh().lookupObject<volScalarField>("T");
+        const scalarField& V=mesh().V();
+        forAll(eqn.diag(),i){
+            scalar fl;
+            if(T[i]<=Tsol) fl=0;
+            else if(T[i]>=Tliq) fl=1;
+            else fl=(T[i]-Tsol)/(Tliq-Tsol);
+            scalar S=-Cu*sqr(1.0-fl)/(pow3(fl)+eps);
+            eqn.diag()[i]+=S*rhoRef*V[i];
+        }
+    #};
+
+    codeConstrain #{#};
+}
+
+// ************************************************************************* //

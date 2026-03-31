@@ -1,0 +1,127 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2506                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];
+
+internalField   uniform (0 0 0);
+
+boundaryField
+{
+    // ── TOP SURFACE: Marangoni boundary condition ──
+    // τ = μ ∂u_t/∂n = (dγ/dT) ∇_s T
+    // dγ/dT = +1e-4 N/(m·K)  →  inward flow → deep V pool
+    // u_n = 0 (no penetration)
+    top
+    {
+        type            codedFixedValue;
+        value           uniform (0 0 0);
+        name            marangoniBC;
+
+        codeInclude
+        #{
+            #include "fvcGrad.H"
+        #};
+
+        codeOptions
+        #{
+            -I$(LIB_SRC)/finiteVolume/lnInclude \
+            -I$(LIB_SRC)/meshTools/lnInclude
+        #};
+
+        code
+        #{
+            // === Marangoni parameters ===
+            const scalar dgdT  = 1.0e-4;   // dγ/dT [N/(m·K)] — positive for inward flow
+            const scalar mu_v  = 0.005;     // dynamic viscosity [Pa·s]
+            const scalar Tsol  = 1650.0;
+            const scalar Tliq  = 1700.0;
+
+            // Temperature field & its gradient
+            const auto& T = this->db().lookupObject<volScalarField>("T");
+            const tmp<volVectorField> tgradT = fvc::grad(T);
+            const volVectorField& gradT = tgradT();
+
+            // Patch geometry
+            const vectorField nf(this->patch().nf());           // outward unit normal
+            const scalarField delta(1.0 / this->patch().deltaCoeffs()); // cell→face dist
+
+            // Internal cell velocities
+            const vectorField Ui(this->patchInternalField());
+
+            vectorField result(this->size(), vector::zero);
+
+            forAll(result, fi)
+            {
+                const label ci = this->patch().faceCells()[fi];
+
+                // Liquid fraction at this cell
+                scalar fl = 0;
+                if (T[ci] > Tsol)
+                {
+                    fl = (T[ci] >= Tliq) ? 1.0 : (T[ci] - Tsol) / (Tliq - Tsol);
+                }
+
+                if (fl < 1e-6)
+                {
+                    // Solid — zero velocity at surface
+                    result[fi] = vector::zero;
+                    continue;
+                }
+
+                // Tangential temperature gradient
+                const vector gT = gradT[ci];
+                const vector gT_t = gT - (gT & nf[fi]) * nf[fi];
+
+                // Tangential internal velocity
+                const vector Ui_t = Ui[fi] - (Ui[fi] & nf[fi]) * nf[fi];
+
+                // Marangoni: u_face = u_int + (dγ/dT / μ) · ∇_sT · δ
+                result[fi] = fl * (Ui_t + (dgdT / mu_v) * gT_t * delta[fi]);
+            }
+
+            this->operator==(result);
+        #};
+    }
+
+    // ── All other patches: no-slip walls ──
+    bottom
+    {
+        type            fixedValue;
+        value           uniform (0 0 0);
+    }
+    xMin
+    {
+        type            fixedValue;
+        value           uniform (0 0 0);
+    }
+    xMax
+    {
+        type            fixedValue;
+        value           uniform (0 0 0);
+    }
+    zMin
+    {
+        type            fixedValue;
+        value           uniform (0 0 0);
+    }
+    zMax
+    {
+        type            fixedValue;
+        value           uniform (0 0 0);
+    }
+}
+
+// ************************************************************************* //

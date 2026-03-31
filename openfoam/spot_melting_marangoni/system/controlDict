@@ -1,0 +1,73 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2506                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      controlDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// Spot Melting + Marangoni — 150W, r0=25um, 50us ON + 50us cooling
+
+application     buoyantPimpleFoam;
+
+startFrom       startTime;
+startTime       0;
+stopAt          endTime;
+endTime         100e-6;
+
+deltaT          1e-9;
+
+writeControl    adjustableRunTime;
+writeInterval   5e-6;
+purgeWrite      0;
+writeFormat     ascii;
+writePrecision  8;
+writeCompression off;
+timeFormat      scientific;
+timePrecision   10;
+runTimeModifiable yes;
+
+adjustTimeStep  yes;
+maxCo           0.4;
+maxDeltaT       5e-8;       // 50 ns cap
+
+functions
+{
+    maxT
+    {
+        type            fieldMinMax;
+        libs            (fieldFunctionObjects);
+        fields          (T);
+        writeControl    timeStep;
+        writeInterval   100;
+        log             yes;
+    }
+
+    probes
+    {
+        type            probes;
+        libs            (sampling);
+        writeControl    timeStep;
+        writeInterval   20;
+        fields          (T U);
+
+        probeLocations
+        (
+            (0 -1e-6  0)
+            (0 -5e-6  0)
+            (0 -20e-6 0)
+            (0 -50e-6 0)
+            (25e-6 -1e-6 0)
+            (50e-6 -1e-6 0)
+        );
+    }
+}
+
+// ************************************************************************* //

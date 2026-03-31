@@ -1,0 +1,55 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2506                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSchemes;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// Marangoni case: real convection → use upwind-biased schemes for stability
+
+ddtSchemes
+{
+    default         Euler;
+}
+
+gradSchemes
+{
+    default         Gauss linear;
+}
+
+divSchemes
+{
+    default                                     none;
+    div(phi,U)                                  Gauss upwind;
+    div(phi,h)                                  Gauss upwind;
+    div(phi,K)                                  Gauss linear;
+    div(phi,k)                                  Gauss upwind;
+    div(phi,epsilon)                            Gauss upwind;
+    div((nuEff*dev2(T(grad(U)))))               Gauss linear;
+    div(((rho*nuEff)*dev2(T(grad(U)))))         Gauss linear;
+}
+
+laplacianSchemes
+{
+    default         Gauss linear uncorrected;
+}
+
+interpolationSchemes
+{
+    default         linear;
+}
+
+snGradSchemes
+{
+    default         uncorrected;
+}
+
+// ************************************************************************* //

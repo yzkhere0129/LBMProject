@@ -1,0 +1,633 @@
+/**
+ * @file thermal_fdm.cu
+ * @brief Explicit FDM thermal solver — CUDA kernels and host implementation
+ *
+ * Core kernel: fdmAdvDiffKernel (fused advection + diffusion)
+ *   T_new = T + dt_sub * [-u·grad(T) + alpha·laplacian(T)]
+ *
+ * Advection: first-order upwind (branch-free, compiler emits FSEL)
+ * Diffusion: central difference, 7-point stencil
+ * Phase change: ESM post-correction (same formula as LBM ESM)
+ */
+
+#include "physics/thermal_fdm.h"
+#include "physics/phase_change.h"
+#include "utils/cuda_check.h"
+#include <iostream>
+#include <cmath>
+#include <cstring>
+#include <vector>
+#include <numeric>
+#include <algorithm>
+
+namespace lbm {
+namespace physics {
+
+// ============================================================================
+// CUDA Kernel: Fused Advection-Diffusion Step
+// ============================================================================
+//
+// Stability criterion: 6·Fo + |Cx| + |Cy| + |Cz| <= 1
+//   where Fo = alpha·dt_sub/dx², Cd = ud_phys·dt_sub/dx
+//
+// Boundary: index clamping → zero-gradient (adiabatic) by default.
+//           Periodic: wrap indices via modular arithmetic.
+//           Dirichlet: applied separately after this kernel.
+// ============================================================================
+// ---- TVD Flux Limiters ----
+// MINMOD: most diffusive TVD, φ(r) = max(0, min(r, 1))
+// SUPERBEE: least diffusive TVD, φ(r) = max(0, max(min(2r,1), min(r,2)))
+// VAN_LEER: smooth compromise, φ(r) = (r + |r|) / (1 + |r|)
+
+__device__ __forceinline__ float limiter_superbee(float r) {
+    return fmaxf(0.0f, fmaxf(fminf(2.0f*r, 1.0f), fminf(r, 2.0f)));
+}
+
+__device__ __forceinline__ float limiter_vanleer(float r) {
+    return (r + fabsf(r)) / (1.0f + fabsf(r));
+}
+
+__device__ __forceinline__ float limiter_minmod(float r) {
+    return fmaxf(0.0f, fminf(r, 1.0f));
+}
+
+// Active limiter selection (compile-time)
+#define TVD_LIMITER limiter_superbee
+
+// ---- Clamped index helper (adiabatic = zero gradient at walls) ----
+__device__ __forceinline__ int clamp_idx(int val, int lo, int hi) {
+    return max(lo, min(hi, val));
+}
+
+__global__ void fdmAdvDiffKernel(
+    const float* __restrict__ T_old,
+    float* __restrict__       T_new,
+    const float* __restrict__ ux_lu,
+    const float* __restrict__ uy_lu,
+    const float* __restrict__ uz_lu,
+    float alpha,
+    float dt_sub,
+    float dx,
+    float v_conv,
+    int nx, int ny, int nz,
+    bool per_x, bool per_y, bool per_z)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    const int idx = i + nx * (j + ny * k);
+
+    // ---- Neighbor indices: ±1 (diffusion + upwind) ----
+    int im = per_x ? ((i == 0)    ? nx-1 : i-1) : clamp_idx(i-1, 0, nx-1);
+    int ip = per_x ? ((i == nx-1) ? 0    : i+1) : clamp_idx(i+1, 0, nx-1);
+    int jm = per_y ? ((j == 0)    ? ny-1 : j-1) : clamp_idx(j-1, 0, ny-1);
+    int jp = per_y ? ((j == ny-1) ? 0    : j+1) : clamp_idx(j+1, 0, ny-1);
+    int km = per_z ? ((k == 0)    ? nz-1 : k-1) : clamp_idx(k-1, 0, nz-1);
+    int kp = per_z ? ((k == nz-1) ? 0    : k+1) : clamp_idx(k+1, 0, nz-1);
+
+    // ---- Far-upwind indices: ±2 (needed for TVD gradient ratio) ----
+    int imm = per_x ? ((i <= 1)    ? nx-2+i : i-2) : clamp_idx(i-2, 0, nx-1);
+    int ipp = per_x ? ((i >= nx-2) ? i-nx+2 : i+2) : clamp_idx(i+2, 0, nx-1);
+    int jmm = per_y ? ((j <= 1)    ? ny-2+j : j-2) : clamp_idx(j-2, 0, ny-1);
+    int jpp = per_y ? ((j >= ny-2) ? j-ny+2 : j+2) : clamp_idx(j+2, 0, ny-1);
+    int kmm = per_z ? ((k <= 1)    ? nz-2+k : k-2) : clamp_idx(k-2, 0, nz-1);
+    int kpp = per_z ? ((k >= nz-2) ? k-nz+2 : k+2) : clamp_idx(k+2, 0, nz-1);
+
+    // ---- Load 7-point diffusion stencil ----
+    float Tc  = T_old[idx];
+    float Txm = T_old[im + nx*(j  + ny*k )];
+    float Txp = T_old[ip + nx*(j  + ny*k )];
+    float Tym = T_old[i  + nx*(jm + ny*k )];
+    float Typ = T_old[i  + nx*(jp + ny*k )];
+    float Tzm = T_old[i  + nx*(j  + ny*km)];
+    float Tzp = T_old[i  + nx*(j  + ny*kp)];
+
+    // ---- Diffusion: central difference, Fo·(Σneighbors - 6·Tc) ----
+    float Fo = alpha * dt_sub / (dx * dx);
+    float diff = Fo * (Txm + Txp + Tym + Typ + Tzm + Tzp - 6.0f * Tc);
+
+    // ---- Advection: TVD with MINMOD limiter ----
+    //
+    // For each direction d with velocity u_d:
+    //   Face flux at i+1/2: F_{i+1/2} = u_d * T_face
+    //   T_face = T_U + 0.5·φ(r)·(T_D - T_U)  (second-order reconstruction)
+    //
+    // Where U = upwind cell, D = downwind cell, and
+    //   r = (T_U - T_UU) / (T_D - T_U)  (gradient ratio, UU = far-upwind)
+    //
+    // Net advection: -[F_{i+1/2} - F_{i-1/2}] / dx
+    //
+    // MINMOD limiter: φ(r) = max(0, min(r, 1))
+    //   - Preserves TVD property (no new extrema)
+    //   - Second-order accurate in smooth regions
+    //   - Falls back to first-order upwind at discontinuities
+    // ============================================================
+    float adv = 0.0f;
+    if (ux_lu != nullptr || uy_lu != nullptr || uz_lu != nullptr) {
+        float ux = ux_lu ? ux_lu[idx] * v_conv : 0.0f;
+        float uy = uy_lu ? uy_lu[idx] * v_conv : 0.0f;
+        float uz = uz_lu ? uz_lu[idx] * v_conv : 0.0f;
+        float Co = dt_sub / dx;
+
+        // --- X direction ---
+        {
+            // Load far-upwind neighbors for TVD
+            float Txmm = T_old[imm + nx*(j + ny*k)];
+            float Txpp = T_old[ipp + nx*(j + ny*k)];
+
+            // Face i-1/2 (between im and i)
+            float F_left;
+            if (ux >= 0.0f) {
+                // Upwind = im, Downwind = i, Far-upwind = imm
+                float dD = Tc - Txm;   // downwind - upwind
+                float dU = Txm - Txmm; // upwind - far-upwind
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_left = ux * (Txm + 0.5f * TVD_LIMITER(r) * dD);
+            } else {
+                // Upwind = i, Downwind = im, Far-upwind = ip
+                float dD = Txm - Tc;
+                float dU = Tc - Txp;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_left = ux * (Tc + 0.5f * TVD_LIMITER(r) * dD);
+            }
+
+            // Face i+1/2 (between i and ip)
+            float F_right;
+            if (ux >= 0.0f) {
+                float dD = Txp - Tc;
+                float dU = Tc - Txm;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_right = ux * (Tc + 0.5f * TVD_LIMITER(r) * dD);
+            } else {
+                float dD = Tc - Txp;
+                float dU = Txp - Txpp;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_right = ux * (Txp + 0.5f * TVD_LIMITER(r) * dD);
+            }
+
+            adv -= Co * (F_right - F_left);
+        }
+
+        // --- Y direction ---
+        {
+            float Tymm = T_old[i + nx*(jmm + ny*k)];
+            float Typp = T_old[i + nx*(jpp + ny*k)];
+
+            float F_left;
+            if (uy >= 0.0f) {
+                float dD = Tc - Tym, dU = Tym - Tymm;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_left = uy * (Tym + 0.5f * TVD_LIMITER(r) * dD);
+            } else {
+                float dD = Tym - Tc, dU = Tc - Typ;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_left = uy * (Tc + 0.5f * TVD_LIMITER(r) * dD);
+            }
+            float F_right;
+            if (uy >= 0.0f) {
+                float dD = Typ - Tc, dU = Tc - Tym;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_right = uy * (Tc + 0.5f * TVD_LIMITER(r) * dD);
+            } else {
+                float dD = Tc - Typ, dU = Typ - Typp;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_right = uy * (Typ + 0.5f * TVD_LIMITER(r) * dD);
+            }
+            adv -= Co * (F_right - F_left);
+        }
+
+        // --- Z direction ---
+        {
+            float Tzmm = T_old[i + nx*(j + ny*kmm)];
+            float Tzpp = T_old[i + nx*(j + ny*kpp)];
+
+            float F_left;
+            if (uz >= 0.0f) {
+                float dD = Tc - Tzm, dU = Tzm - Tzmm;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_left = uz * (Tzm + 0.5f * TVD_LIMITER(r) * dD);
+            } else {
+                float dD = Tzm - Tc, dU = Tc - Tzp;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_left = uz * (Tc + 0.5f * TVD_LIMITER(r) * dD);
+            }
+            float F_right;
+            if (uz >= 0.0f) {
+                float dD = Tzp - Tc, dU = Tc - Tzm;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_right = uz * (Tc + 0.5f * TVD_LIMITER(r) * dD);
+            } else {
+                float dD = Tc - Tzp, dU = Tzp - Tzpp;
+                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
+                F_right = uz * (Tzp + 0.5f * TVD_LIMITER(r) * dD);
+            }
+            adv -= Co * (F_right - F_left);
+        }
+    }
+
+    T_new[idx] = Tc + diff + adv;
+}
+
+// ============================================================================
+// CUDA Kernel: ESM Phase Change Correction
+// ============================================================================
+// After advection-diffusion gives T*, enforce enthalpy conservation:
+//   H = cp·T* + fl_old·L  →  decode(T_new, fl_new)
+//
+// Identical formula to enthalpySourceTermKernel in thermal_lbm.cu,
+// but operates directly on T (no distribution function correction needed).
+// ============================================================================
+__global__ void fdmESMKernel(
+    float* __restrict__ T,
+    float* __restrict__ fl,
+    const float* __restrict__ fl_prev,
+    const float* __restrict__ fill_level,
+    MaterialProperties mat,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    // VOF mask: skip gas cells
+    if (fill_level != nullptr && fill_level[idx] < 0.01f) {
+        fl[idx] = 0.0f;
+        return;
+    }
+
+    float T_star = T[idx];
+    float fl_old = fl_prev[idx];
+
+    float cp    = mat.cp_solid;
+    float L     = mat.L_fusion;
+    float T_sol = mat.T_solidus;
+    float T_liq = mat.T_liquidus;
+    float dT_m  = T_liq - T_sol;
+
+    if (dT_m < 1e-8f || L < 1e-6f) return;
+
+    // Total specific enthalpy
+    float H = cp * T_star + fl_old * L;
+
+    float H_sol = cp * T_sol;
+    float H_liq = cp * T_liq + L;
+
+    float T_new, fl_new;
+    if (H <= H_sol) {
+        T_new  = H / cp;
+        fl_new = 0.0f;
+    } else if (H >= H_liq) {
+        T_new  = (H - L) / cp;
+        fl_new = 1.0f;
+    } else {
+        fl_new = (H - H_sol) / (cp * dT_m + L);
+        fl_new = fmaxf(0.0f, fminf(1.0f, fl_new));
+        T_new  = T_sol + fl_new * dT_m;
+    }
+
+    T[idx]  = T_new;
+    fl[idx] = fl_new;
+}
+
+// ============================================================================
+// CUDA Kernel: Heat Source Injection
+// ============================================================================
+__global__ void fdmHeatSourceKernel(
+    float* __restrict__ T,
+    const float* __restrict__ Q_vol,
+    const float* __restrict__ fill_level,
+    float dt,
+    MaterialProperties mat,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    if (fill_level != nullptr && fill_level[idx] < 0.5f) return;
+
+    float Q = Q_vol[idx];
+    if (Q <= 0.0f) return;
+
+    float Tl = T[idx];
+    float rho = mat.getDensity(Tl);
+    float cp  = mat.getSpecificHeat(Tl);
+    float rho_cp = rho * cp;
+    if (rho_cp < 1.0f) return;
+
+    T[idx] += Q * dt / rho_cp;
+}
+
+// ============================================================================
+// CUDA Kernel: Dirichlet BC on a face
+// ============================================================================
+__global__ void fdmDirichletKernel(
+    float* __restrict__ T,
+    float T_wall,
+    int face, int nx, int ny, int nz)
+{
+    int a = blockIdx.x * blockDim.x + threadIdx.x;
+    int b = blockIdx.y * blockDim.y + threadIdx.y;
+    int idx = -1;
+
+    switch (face) {
+        case 0: if (a<ny && b<nz) idx = 0     + nx*(a + ny*b); break; // x_min
+        case 1: if (a<ny && b<nz) idx = nx-1   + nx*(a + ny*b); break; // x_max
+        case 2: if (a<nx && b<nz) idx = a      + nx*(0 + ny*b); break; // y_min
+        case 3: if (a<nx && b<nz) idx = a      + nx*(ny-1+ny*b); break; // y_max
+        case 4: if (a<nx && b<ny) idx = a      + nx*(b + ny*0); break;  // z_min
+        case 5: if (a<nx && b<ny) idx = a      + nx*(b + ny*(nz-1)); break; // z_max
+    }
+
+    if (idx >= 0) T[idx] = T_wall;
+}
+
+// ============================================================================
+// CUDA Kernel: Temperature Safety Cap
+// ============================================================================
+__global__ void fdmTCapKernel(float* T, float T_cap, int num_cells) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+    T[idx] = fminf(T[idx], T_cap);
+}
+
+// ============================================================================
+// CUDA Kernel: Fill with constant value
+// ============================================================================
+__global__ void fdmFillKernel(float* arr, float val, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) arr[idx] = val;
+}
+
+// ============================================================================
+// CUDA Kernel: Copy array (fl → fl_prev)
+// ============================================================================
+__global__ void fdmCopyKernel(const float* src, float* dst, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) dst[idx] = src[idx];
+}
+
+// ============================================================================
+// Host Implementation
+// ============================================================================
+
+ThermalFDM::ThermalFDM(int nx, int ny, int nz,
+                       const MaterialProperties& material,
+                       float thermal_diffusivity,
+                       bool enable_phase_change,
+                       float dt, float dx)
+    : nx_(nx), ny_(ny), nz_(nz), num_cells_(nx * ny * nz),
+      dt_(dt), dx_(dx), alpha_phys_(thermal_diffusivity),
+      material_(material)
+{
+    // Compute subcycle count from combined stability: 6·Fo + CFL ≤ 1
+    // Assume max advection velocity ~ 20 m/s (typical Marangoni)
+    float Fo = alpha_phys_ * dt_ / (dx_ * dx_);
+    float CFL_est = 20.0f * dt_ / dx_;  // conservative estimate
+    float combined = 6.0f * Fo + CFL_est;
+    if (combined > 0.9f) {
+        n_subcycle_ = static_cast<int>(std::ceil(combined / 0.9f));
+    }
+
+    float dt_sub = dt_ / static_cast<float>(n_subcycle_);
+    float Fo_sub = alpha_phys_ * dt_sub / (dx_ * dx_);
+
+    std::cout << "ThermalFDM initialized:\n"
+              << "  Domain: " << nx_ << " x " << ny_ << " x " << nz_ << "\n"
+              << "  dt = " << dt_ << " s, dx = " << dx_ << " m\n"
+              << "  alpha = " << alpha_phys_ << " m^2/s\n"
+              << "  Fo = " << Fo << " (per full dt)\n"
+              << "  Subcycles: " << n_subcycle_
+              << " (dt_sub = " << dt_sub << " s, Fo_sub = " << Fo_sub << ")\n"
+              << "  Phase change: " << (enable_phase_change ? "ENABLED" : "DISABLED")
+              << std::endl;
+
+    allocateMemory();
+
+    if (enable_phase_change) {
+        phase_solver_ = new PhaseChangeSolver(nx_, ny_, nz_, material_);
+    }
+}
+
+ThermalFDM::~ThermalFDM() {
+    freeMemory();
+    if (phase_solver_) delete phase_solver_;
+}
+
+ThermalFDM::ThermalFDM(ThermalFDM&& o) noexcept
+    : nx_(o.nx_), ny_(o.ny_), nz_(o.nz_), num_cells_(o.num_cells_),
+      dt_(o.dt_), dx_(o.dx_), alpha_phys_(o.alpha_phys_),
+      material_(o.material_), phase_solver_(o.phase_solver_),
+      d_T_(o.d_T_), d_T_new_(o.d_T_new_),
+      d_vof_fill_(o.d_vof_fill_), skip_T_cap_(o.skip_T_cap_),
+      z_periodic_(o.z_periodic_), n_subcycle_(o.n_subcycle_)
+{
+    o.d_T_ = o.d_T_new_ = nullptr;
+    o.phase_solver_ = nullptr;
+}
+
+void ThermalFDM::allocateMemory() {
+    CUDA_CHECK(cudaMalloc(&d_T_,     num_cells_ * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_T_new_, num_cells_ * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_T_,     0, num_cells_ * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_T_new_, 0, num_cells_ * sizeof(float)));
+}
+
+void ThermalFDM::freeMemory() {
+    if (d_T_)     { cudaFree(d_T_);     d_T_ = nullptr; }
+    if (d_T_new_) { cudaFree(d_T_new_); d_T_new_ = nullptr; }
+}
+
+void ThermalFDM::initialize(float initial_temp) {
+    int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+    fdmFillKernel<<<gs, bs>>>(d_T_, initial_temp, num_cells_);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    if (phase_solver_) {
+        phase_solver_->initializeFromTemperature(d_T_);
+    }
+}
+
+void ThermalFDM::initialize(const float* temp_field) {
+    CUDA_CHECK(cudaMemcpy(d_T_, temp_field,
+                          num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
+    if (phase_solver_) {
+        phase_solver_->initializeFromTemperature(d_T_);
+    }
+}
+
+// collisionBGK → FDM advection + diffusion (writes to d_T_new_)
+void ThermalFDM::collisionBGK(const float* ux, const float* uy, const float* uz) {
+    dim3 block(8, 8, 4);
+    dim3 grid((nx_ + block.x - 1) / block.x,
+              (ny_ + block.y - 1) / block.y,
+              (nz_ + block.z - 1) / block.z);
+
+    // Velocity conversion: v_phys = v_lu * dx / dt_fluid
+    // dt_fluid = dt_ (the full LBM time step, NOT dt_sub)
+    float v_conv = dx_ / dt_;
+
+    float dt_sub = dt_ / static_cast<float>(n_subcycle_);
+
+    for (int s = 0; s < n_subcycle_; s++) {
+        fdmAdvDiffKernel<<<grid, block>>>(
+            d_T_, d_T_new_, ux, uy, uz,
+            alpha_phys_, dt_sub, dx_, v_conv,
+            nx_, ny_, nz_,
+            false, false, z_periodic_);  // default: non-periodic x,y
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        // For multi-subcycle: swap and re-do (except last — leave in d_T_new_)
+        if (s < n_subcycle_ - 1) {
+            swapBuffers();
+        }
+    }
+    // After all subcycles: d_T_new_ has the final result.
+    // streaming() will swap it into d_T_.
+}
+
+// streaming → buffer swap
+void ThermalFDM::streaming() {
+    swapBuffers();
+    // d_T_ now holds the post-advDiff temperature
+}
+
+// computeTemperature → ESM phase change correction
+void ThermalFDM::computeTemperature() {
+    if (phase_solver_) {
+        // Save current fl as fl_prev
+        phase_solver_->storePreviousLiquidFraction();
+
+        int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+        fdmESMKernel<<<gs, bs>>>(
+            d_T_,
+            phase_solver_->getLiquidFraction(),
+            phase_solver_->getPreviousLiquidFraction(),
+            d_vof_fill_,
+            material_,
+            num_cells_);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+}
+
+void ThermalFDM::addHeatSource(const float* heat_source, float dt) {
+    int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+    fdmHeatSourceKernel<<<gs, bs>>>(
+        d_T_, heat_source, d_vof_fill_, dt, material_, num_cells_);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+void ThermalFDM::applyBoundaryConditions(int boundary_type, float boundary_value) {
+    if (boundary_type == 2) {
+        // Dirichlet on all faces
+        for (int face = 0; face < 6; face++) {
+            applyFaceThermalBC(face, 2, dt_, dx_, boundary_value);
+        }
+    }
+    // Adiabatic (type 1) is handled by index clamping in the stencil — no action needed
+}
+
+void ThermalFDM::applyFaceThermalBC(int face, int bc_type,
+                                     float dt, float dx,
+                                     float dirichlet_T,
+                                     float h_conv, float T_inf,
+                                     float emissivity, float T_ambient) {
+    if (bc_type == 0 || bc_type == 1) return;  // PERIODIC / ADIABATIC: no action
+
+    // Compute 2D launch dimensions for this face
+    int w, h;
+    if (face < 2) { w = ny_; h = nz_; }
+    else if (face < 4) { w = nx_; h = nz_; }
+    else { w = nx_; h = ny_; }
+
+    dim3 block2d(16, 16);
+    dim3 grid2d((w + 15) / 16, (h + 15) / 16);
+
+    if (bc_type == 2) {  // DIRICHLET
+        fdmDirichletKernel<<<grid2d, block2d>>>(
+            d_T_, dirichlet_T, face, nx_, ny_, nz_);
+        CUDA_CHECK_KERNEL();
+    }
+    // TODO: CONVECTIVE (bc_type=3) and RADIATION (bc_type=4)
+    // can be added following the same pattern as ThermalLBM
+}
+
+void ThermalFDM::applyRadiationBC(float dt, float dx, float eps, float T_amb) {
+    // Simplified: radiation on z_max face only (top surface)
+    // q_rad = eps * sigma * (T^4 - T_amb^4), applied as dT = -q/(rho*cp*dx) * dt
+    // TODO: implement as a face-specific radiation kernel
+}
+
+void ThermalFDM::applySubstrateCoolingBC(float dt, float dx, float h, float T_sub) {
+    // TODO: implement convective BC at z_min
+}
+
+void ThermalFDM::applyEvaporationCooling(const float* J_evap, const float* fill,
+                                          float dt, float dx, float factor) {
+    // TODO: implement evaporation energy sink
+}
+
+void ThermalFDM::applyTemperatureSafetyCap() {
+    if (skip_T_cap_ || material_.T_vaporization <= 0.0f) return;
+    int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+    fdmTCapKernel<<<gs, bs>>>(d_T_, material_.T_vaporization, num_cells_);
+    CUDA_CHECK_KERNEL();
+}
+
+float* ThermalFDM::getLiquidFraction() {
+    return phase_solver_ ? phase_solver_->getLiquidFraction() : nullptr;
+}
+
+const float* ThermalFDM::getLiquidFraction() const {
+    return phase_solver_ ? phase_solver_->getLiquidFraction() : nullptr;
+}
+
+void ThermalFDM::copyTemperatureToHost(float* h_T) const {
+    CUDA_CHECK(cudaMemcpy(h_T, d_T_, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+void ThermalFDM::copyLiquidFractionToHost(float* h_fl) const {
+    if (phase_solver_) {
+        phase_solver_->copyLiquidFractionToHost(h_fl);
+    }
+}
+
+float ThermalFDM::computeTotalThermalEnergy(float dx) const {
+    // Reduction: E = sum(rho * cp * T * dx^3) + sum(fl * rho * L * dx^3)
+    // Simple host-side reduction for now (same as ThermalLBM)
+    std::vector<float> h_T(num_cells_);
+    CUDA_CHECK(cudaMemcpy(h_T.data(), d_T_, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
+
+    float dV = dx * dx * dx;
+    double E = 0.0;
+    for (int i = 0; i < num_cells_; i++) {
+        float rho = material_.getDensity(h_T[i]);
+        float cp  = material_.getSpecificHeat(h_T[i]);
+        E += rho * cp * h_T[i] * dV;
+    }
+
+    if (phase_solver_) {
+        std::vector<float> h_fl(num_cells_);
+        phase_solver_->copyLiquidFractionToHost(h_fl.data());
+        for (int i = 0; i < num_cells_; i++) {
+            float rho = material_.getDensity(h_T[i]);
+            E += h_fl[i] * rho * material_.L_fusion * dV;
+        }
+    }
+
+    return static_cast<float>(E);
+}
+
+// Stub implementations for diagnostics not yet needed
+float ThermalFDM::computeEvaporationPower(const float*, float) const { return 0.0f; }
+float ThermalFDM::computeRadiationPower(const float*, float, float, float) const { return 0.0f; }
+float ThermalFDM::computeSubstratePower(float, float, float) const { return 0.0f; }
+float ThermalFDM::computeCapPower(float, float) const { return 0.0f; }
+void ThermalFDM::computeEvaporationMassFlux(float*, const float*) const {}
+
+} // namespace physics
+} // namespace lbm
