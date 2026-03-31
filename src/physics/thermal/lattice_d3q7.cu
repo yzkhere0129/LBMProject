@@ -142,14 +142,13 @@ __host__ __device__ float D3Q7::computeThermalEquilibrium(
     //       in finite volume methods.
     // ============================================================
 
+    // TVD limiter: prevents negative g_eq when cu/cs² > 1 (Ma > 0.25).
+    // This is a fundamental D3Q7 constraint, not an artificial cap.
+    // With dt=20ns and CFL v_target=0.15: Ma < 0.15 → cu/cs² < 0.6 (safe).
+    // But Inamuro BC can inject higher velocities that bypass CFL — limiter catches these.
     constexpr float MAX_ADVECTION = 0.9f;
-
-    // Apply limiter (equivalent to minmod TVD scheme)
-    if (cu_normalized > MAX_ADVECTION) {
-        cu_normalized = MAX_ADVECTION;
-    } else if (cu_normalized < -MAX_ADVECTION) {
-        cu_normalized = -MAX_ADVECTION;
-    }
+    if (cu_normalized > MAX_ADVECTION) cu_normalized = MAX_ADVECTION;
+    else if (cu_normalized < -MAX_ADVECTION) cu_normalized = -MAX_ADVECTION;
 
     // Thermal equilibrium: g_eq = w_i * T * (1 + c_i·u/cs^2)
     // cs^2 = 1/3 for D3Q7 (now correctly set in lattice_d3q7.h)

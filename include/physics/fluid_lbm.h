@@ -286,6 +286,27 @@ public:
     void applyBoundaryConditions(int boundary_type);
 
     /**
+     * @brief Apply Marangoni stress BC at a flat z-surface (Inamuro specular method)
+     *
+     * Replaces bounce-back at z_surface with specular reflection + stress injection.
+     * The tangential stress τ = dσ/dT · ∇_s T is converted to a distribution
+     * correction: δf = τ_LU / (2 · CE), applied to the z-specular population pairs.
+     *
+     * @param temperature   Temperature field [K] (device)
+     * @param liquid_fraction Liquid fraction field (device, for solid gating)
+     * @param dsigma_dT     Surface tension temperature coefficient [N/(m·K)]
+     * @param dx            Grid spacing [m]
+     * @param dt            Time step [s]
+     * @param rho           Reference density [kg/m³]
+     * @param z_surface     z-index of the free surface layer
+     */
+    void applyMarangoniStressBC(const float* temperature,
+                                const float* liquid_fraction,
+                                float dsigma_dT,
+                                float dx, float dt, float rho,
+                                int z_surface);
+
+    /**
      * @brief Compute macroscopic quantities (density, velocity, pressure)
      */
     void computeMacroscopic();

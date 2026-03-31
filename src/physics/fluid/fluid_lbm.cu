@@ -2575,5 +2575,117 @@ void FluidLBM::setTRT(float magic_parameter) {
     omega_minus_ = 1.0f / tau_minus;
 }
 
+// ============================================================================
+// Marangoni Stress BC — Inamuro specular reflection at z-surface
+// ============================================================================
+// D3Q19 z-specular mapping (flip c_z):
+//   q=5 (0,0,+1)       → q=6  (0,0,-1)         [pure z]
+//   q=11 (+1,0,+1)     → q=13 (+1,0,-1)         [x-stress]
+//   q=12 (-1,0,+1)     → q=14 (-1,0,-1)
+//   q=15 (0,+1,+1)     → q=17 (0,+1,-1)         [y-stress]
+//   q=16 (0,-1,+1)     → q=18 (0,-1,-1)
+// Reference: Inamuro (1995), validated in viz_marangoni_cavity.cu
+// ============================================================================
+
+__global__ void applyMarangoniStressBCKernel(
+    float* f,
+    const float* temperature,
+    const float* liquid_fraction,
+    float dsigma_dT_LU,
+    float ce_factor,
+    int nx, int ny, int nz,
+    int z_surface)
+{
+    int ix = blockIdx.x * blockDim.x + threadIdx.x;
+    int iy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (ix >= nx || iy >= ny) return;
+
+    const int N = nx * ny * nz;
+    const int idx = ix + iy * nx + z_surface * nx * ny;
+
+    if (liquid_fraction != nullptr && liquid_fraction[idx] < 0.01f) return;
+
+    // Tangential T gradient (lattice spacing units: dT in K, dx=1 LU)
+    float dTdx = 0.0f, dTdy = 0.0f;
+    if (ix > 0 && ix < nx - 1)
+        dTdx = (temperature[idx + 1] - temperature[idx - 1]) * 0.5f;
+    else if (ix == 0)
+        dTdx = temperature[idx + 1] - temperature[idx];
+    else
+        dTdx = temperature[idx] - temperature[idx - 1];
+
+    if (iy > 0 && iy < ny - 1)
+        dTdy = (temperature[idx + nx] - temperature[idx - nx]) * 0.5f;
+    else if (iy == 0)
+        dTdy = temperature[idx + nx] - temperature[idx];
+    else
+        dTdy = temperature[idx] - temperature[idx - nx];
+
+    float delta_fx = dsigma_dT_LU * dTdx / (2.0f * ce_factor);
+    float delta_fy = dsigma_dT_LU * dTdy / (2.0f * ce_factor);
+
+    // Mach number limiter: cap delta_f so surface velocity stays below Ma_max
+    // Each delta_f contributes ~2*delta_f to velocity (from +/- pair)
+    // u_LU ~ 2*delta_f → limit delta_f < Ma_max * cs / 2 = 0.15 * 0.577 / 2 ≈ 0.043
+    constexpr float DELTA_F_MAX = 0.04f;  // Ma_surface < 0.3
+    float delta_f_mag = sqrtf(delta_fx * delta_fx + delta_fy * delta_fy);
+    if (delta_f_mag > DELTA_F_MAX) {
+        float scale = DELTA_F_MAX / delta_f_mag;
+        delta_fx *= scale;
+        delta_fy *= scale;
+    }
+
+    // After push streaming, bounce-back at z_max already wrote:
+    //   f[opp[q]] = f_old[q]  for each q with ez=+1
+    // i.e.:  f[14] = f_old[11], f[13] = f_old[12],
+    //        f[18] = f_old[15], f[17] = f_old[16], f[6] = f_old[5]
+    //
+    // Specular reflection (flip ez only) needs:
+    //   f[spec_z(q)] = f_old[q]  i.e. f[13] = f_old[11], f[14] = f_old[12]
+    //
+    // So we SWAP the bounce-back values to get specular, then add stress.
+    // f[6] = f_old[5] is already correct (opp=spec for pure z).
+
+    float bb13 = f[13 * N + idx];  // = f_old[12] (bounce-back wrote opp[12]=13)
+    float bb14 = f[14 * N + idx];  // = f_old[11] (bounce-back wrote opp[11]=14)
+    float bb17 = f[17 * N + idx];  // = f_old[16] (bounce-back wrote opp[16]=17)
+    float bb18 = f[18 * N + idx];  // = f_old[15] (bounce-back wrote opp[15]=18)
+
+    // Specular: f_old[11] → f[13], f_old[12] → f[14]  (swap + stress)
+    f[13 * N + idx] = bb14 + delta_fx;   // f_old[11] + x-stress
+    f[14 * N + idx] = bb13 - delta_fx;   // f_old[12] - x-stress
+    f[17 * N + idx] = bb18 + delta_fy;   // f_old[15] + y-stress
+    f[18 * N + idx] = bb17 - delta_fy;   // f_old[16] - y-stress
+
+}
+
+void FluidLBM::applyMarangoniStressBC(
+    const float* temperature,
+    const float* liquid_fraction,
+    float dsigma_dT,
+    float dx, float dt, float rho,
+    int z_surface)
+{
+    // In the kernel, dTdx = (T[i+1]-T[i-1])/2 has units [K] (per 1 LU spacing).
+    // Physical gradient = dTdx / dx [K/m].
+    // Physical stress = dsigma_dT * dTdx / dx [Pa].
+    // LBM stress = stress_phys * dt^2 / (rho * dx^2).
+    // Combined: dsigma_dT_LU * dTdx = dsigma_dT * dTdx/dx * dt^2/(rho*dx^2)
+    //         → dsigma_dT_LU = dsigma_dT * dt^2 / (rho * dx^3)
+    float dsigma_dT_LU = dsigma_dT * dt * dt / (rho * dx * dx * dx);
+    float ce_factor = 1.0f - 0.5f / tau_;
+
+    dim3 threads(16, 16);
+    dim3 blocks((nx_ + threads.x - 1) / threads.x,
+                (ny_ + threads.y - 1) / threads.y);
+
+    applyMarangoniStressBCKernel<<<blocks, threads>>>(
+        d_f_src, temperature, liquid_fraction,
+        dsigma_dT_LU, ce_factor,
+        nx_, ny_, nz_, z_surface);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
 } // namespace physics
 } // namespace lbm

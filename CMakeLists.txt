@@ -253,6 +253,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(stefan_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(stefan_benchmark lbm_thermal_only CUDA::cudart)
 
+    # Pure conduction + phase change benchmark (316L spot melting, OpenFOAM cross-verification)
+    add_executable(benchmark_conduction_316L apps/benchmark_conduction_316L.cu)
+    set_target_properties(benchmark_conduction_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(benchmark_conduction_316L lbm_thermal_only CUDA::cudart)
+
+    # Spot melting benchmark with Marangoni convection (full multiphysics)
+    add_executable(benchmark_spot_melt_316L apps/benchmark_spot_melt_316L.cu)
+    set_target_properties(benchmark_spot_melt_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(benchmark_spot_melt_316L lbm_physics lbm_io CUDA::cudart)
+
+    # Diagnostic: Marangoni isolation test + probes
+    add_executable(diag_marangoni_isolated apps/diag_marangoni_isolated.cu)
+    set_target_properties(diag_marangoni_isolated PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(diag_marangoni_isolated lbm_physics lbm_io CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------

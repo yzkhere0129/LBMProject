@@ -623,8 +623,11 @@ __global__ void computeDarcyCoefficientKernel(
     float fs = 1.0f - fl;
     float K_factor = darcy_coeff * (fs * fs) / (fl * fl * fl + eps);
 
-    // Convert to lattice units: K_LU = K_factor · ρ_phys · dt
-    darcy_K[idx] = K_factor * rho * dt;
+    // Convert to lattice units: K_LU = D_phys · dt
+    // Semi-implicit: u = m/(ρ_LU + K_LU/2), matching du/dt = -D·u
+    // D_phys = K_factor [1/s], K_LU = D_phys · dt [dimensionless]
+    // NOTE: rho_phys is NOT included — K_LU adds to ρ_LU (≈1), not ρ_phys
+    darcy_K[idx] = K_factor * dt;
 }
 
 /**

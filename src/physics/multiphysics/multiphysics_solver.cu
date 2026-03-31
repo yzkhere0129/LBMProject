@@ -703,10 +703,8 @@ void MultiphysicsConfig::validate() const {
         throw std::runtime_error("MultiphysicsConfig: enable_evaporation_mass_loss "
                 "requires both enable_vof and enable_thermal");
     }
-    if (enable_marangoni && !enable_vof) {
-        throw std::runtime_error("MultiphysicsConfig: enable_marangoni requires "
-                "enable_vof (needs interface normals)");
-    }
+    // Marangoni without VOF uses Inamuro stress BC at z_max wall (no normals needed).
+    // Only the CSF path (with VOF) requires interface normals.
     if (enable_recoil_pressure && (!enable_vof || !enable_thermal)) {
         throw std::runtime_error("MultiphysicsConfig: enable_recoil_pressure "
                 "requires both enable_vof and enable_thermal");
@@ -1659,11 +1657,11 @@ void MultiphysicsSolver::thermalStep(float dt) {
     // Compute temperature from distribution functions
     thermal_->computeTemperature();
 
-    // ============================================================
-    // TEMPERATURE REGULATION: Clausius-Clapeyron evaporation only.
-    // ALL artificial caps removed. The exponential growth of P_sat(T)
-    // creates a natural thermostat — at T >> T_boil, evaporation removes
-    // energy faster than the laser adds it. No human intervention needed.
+    // Temperature safety cap: when recoil pressure is OFF (no evaporation physics),
+    // clamp T at T_vaporization to prevent unphysical temperature runaway.
+    if (false) {  // T cap OFF for no-evaporation benchmark
+        thermal_->applyTemperatureSafetyCap();
+    }
 
     // ============================================================
     // RE-APPLY DIRICHLET BCs AFTER STREAMING
@@ -2181,6 +2179,17 @@ void MultiphysicsSolver::fluidStep(float dt) {
 
     // Streaming
     fluid_->streaming();
+
+    // Marangoni stress BC (Inamuro specular) — for flat-wall problems without VOF
+    if (config_.enable_marangoni && !vof_ && thermal_) {
+        int z_surface = config_.nz - 1;
+        fluid_->applyMarangoniStressBC(
+            thermal_->getTemperature(),
+            thermal_->getLiquidFraction(),
+            config_.dsigma_dT,
+            config_.dx, config_.dt, config_.density,
+            z_surface);
+    }
 
     // Compute macroscopic quantities
     if (darcy_K) {

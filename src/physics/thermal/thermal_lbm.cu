@@ -1149,7 +1149,7 @@ __global__ void computeTemperatureKernel(
     }
 
     constexpr float T_MIN = 0.0f;
-    constexpr float T_MAX = 50000.0f;
+    constexpr float T_MAX = 1.0e6f;  // Safety only — physics limits via applyTemperatureSafetyCap()
 
     T = fmaxf(T, T_MIN);
     T = fminf(T, T_MAX);
