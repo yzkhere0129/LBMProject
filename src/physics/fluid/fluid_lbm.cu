@@ -4,6 +4,7 @@
  */
 
 #include "physics/fluid_lbm.h"
+#include "smagorinsky_les.cuh"
 #include "core/collision_bgk.h"
 #include "core/streaming.h"
 #include "core/boundary_conditions.h"
@@ -1438,18 +1439,22 @@ __global__ void fluidBGKCollisionEDMKernel(
     float u_shifted_y = u_bare_y + du_y;
     float u_shifted_z = u_bare_z + du_z;
 
-    // BGK collision with EDM forcing
+    // Load all local distributions for Smagorinsky LES computation
+    float f_local[19];
+    for (int q = 0; q < 19; q++) f_local[q] = f_src[id + q * n_cells];
+
+    // Smagorinsky LES: compute per-cell effective omega from local strain rate
+    // Uses Hou (1996) exact algebraic solution — no lagging.
+    // Cs = 0.1: standard for wall-bounded flows (hardcoded; TODO: config parameter)
+    float omega_eff = computeSmagorinskyOmega(
+        f_local, m_rho, u_bare_x, u_bare_y, u_bare_z, omega, 0.1f);
+
+    // BGK collision with EDM forcing (LES-adjusted omega)
     for (int q = 0; q < D3Q19::Q; ++q) {
-        float f = f_src[id + q * n_cells];
-
-        // Equilibrium at u_bare (for BGK relaxation)
+        float f = f_local[q];
         float feq_bare = D3Q19::computeEquilibrium(q, m_rho, u_bare_x, u_bare_y, u_bare_z);
-
-        // Equilibrium at u_bare + Δu (shifted)
         float feq_shifted = D3Q19::computeEquilibrium(q, m_rho, u_shifted_x, u_shifted_y, u_shifted_z);
-
-        // EDM: f_new = f - ω(f - f_eq(u_bare)) + [f_eq(u_bare+Δu) - f_eq(u_bare)]
-        f_dst[id + q * n_cells] = f - omega * (f - feq_bare) + (feq_shifted - feq_bare);
+        f_dst[id + q * n_cells] = f - omega_eff * (f - feq_bare) + (feq_shifted - feq_bare);
     }
 }
 

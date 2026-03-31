@@ -115,25 +115,22 @@ int main() {
     config.nz = NZ;
     config.dx = dx;
 
-    // Hybrid LBM-FDM: FDM thermal has NO Mach constraint on advection.
-    // dt is set by fluid LBM stability only: τ_fluid ≥ 0.55
-    // At τ_f=0.55: ν_LU=0.0167, dt=0.0167*dx²/ν = 0.0167*4e-12/6.33e-7 = 1.055e-7 s
-    // FDM stability: Fo=α*dt/dx² = 3.6e-6*1.055e-7/4e-12 = 0.095 < 1/6 ✓
-    // Ma at 10 m/s: 10*1.055e-7/2e-6 = 0.53 (fluid LBM limit, acceptable with U_MAX clamp)
-    const float tau_fluid_target = 0.55f;
-    const float nu_LU_target = (tau_fluid_target - 0.5f) / 3.0f;
-    const float dt = nu_LU_target * dx * dx / nu;
+    // dt = 15 ns: v_LU < 0.3 at v_phys = 40 m/s.
+    // Base τ_f = 0.507 (dangerously low) — Smagorinsky LES dynamically raises
+    // τ_eff in high-shear regions via exact algebraic Hou (1996) formula.
+    const float dt = 1.5e-8f;
     config.dt = dt;
 
     const float nu_LU = nu * dt / (dx * dx);
     const float tau_fluid = nu_LU / (1.0f / 3.0f) + 0.5f;
     const float Fo = alpha * dt / (dx * dx);
 
-    printf("\nHybrid LBM-FDM parameters:\n");
+    printf("\nHybrid LBM-FDM + Smagorinsky LES:\n");
     printf("  dx=%.0f μm, dt=%.2f ns\n", dx * 1e6f, dt * 1e9f);
-    printf("  Fluid: τ_f=%.3f, ν_LU=%.5f\n", tau_fluid, nu_LU);
+    printf("  Fluid: τ_f_base=%.4f (LES raises in high-shear), ν_LU=%.5f\n", tau_fluid, nu_LU);
     printf("  FDM thermal: Fo=%.4f (limit 0.167)\n", Fo);
-    printf("  Ma at 10 m/s = %.3f\n", 10.0f * dt / dx);
+    printf("  Ma at 40 m/s = %.3f, at 20 m/s = %.3f\n",
+           40.0f * dt / dx, 20.0f * dt / dx);
 
     config.material = mat;
 
