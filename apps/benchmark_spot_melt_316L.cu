@@ -50,7 +50,7 @@ static MaterialProperties createBenchmark316L() {
 
     mat.T_solidus      = 1650.0f;
     mat.T_liquidus     = 1700.0f;
-    mat.T_vaporization = 3500.0f;
+    mat.T_vaporization = 3200.0f;   // Real 316L boiling point
     mat.L_fusion       = 260000.0f;
     mat.L_vaporization = 7.0e6f;
     mat.molar_mass     = 0.0558f;
@@ -64,8 +64,14 @@ static MaterialProperties createBenchmark316L() {
     return mat;
 }
 
-int main() {
+int main(int argc, char** argv) {
     auto wall_start = std::chrono::high_resolution_clock::now();
+
+    // Command-line configurable parameters for sweep
+    float param_dt = 1.5e-8f;      // default 15 ns
+    float param_Cs = 0.10f;        // default Smagorinsky constant
+    if (argc >= 2) param_dt = atof(argv[1]);
+    if (argc >= 3) param_Cs = atof(argv[2]);
 
     printf("\n");
     printf("============================================================\n");
@@ -118,7 +124,7 @@ int main() {
     // dt = 15 ns: v_LU < 0.3 at v_phys = 40 m/s.
     // Base τ_f = 0.507 (dangerously low) — Smagorinsky LES dynamically raises
     // τ_eff in high-shear regions via exact algebraic Hou (1996) formula.
-    const float dt = 1.5e-8f;
+    const float dt = param_dt;
     config.dt = dt;
 
     const float nu_LU = nu * dt / (dx * dx);
@@ -249,6 +255,8 @@ int main() {
     // No VOF — all cells are metal. Surface at z=NZ-1 (top).
     // interface_height = 1.0 maps to z = NZ (clamped to NZ-1 by solver)
     solver.initialize(300.0f, 1.0f);
+    solver.setSmagorinskyCs(param_Cs);
+    printf("Smagorinsky Cs = %.2f (from cmdline)\n", param_Cs);
     printf("Initialized: %d cells (no VOF, Inamuro stress BC at z=%d)\n",
            num_cells, NZ - 1);
 

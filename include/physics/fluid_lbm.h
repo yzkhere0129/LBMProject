@@ -459,6 +459,8 @@ public:
      * @brief Get flow parameters
      */
     float getOmega() const { return omega_; }
+    void setSmagorinskyCs(float cs) { cs_smag_ = cs; }
+    float getSmagorinskyCs() const { return cs_smag_; }
     float getTau() const { return tau_; }
     float getViscosity() const { return nu_physical_; }
     float getReferenceDensity() const { return rho0_; }
@@ -513,6 +515,7 @@ private:
     float nu_lattice_;      ///< Lattice kinematic viscosity [dimensionless]
     float rho0_;            ///< Reference density [kg/m³]
     float omega_;           ///< BGK relaxation parameter (1/tau)
+    float cs_smag_ = 0.1f; ///< Smagorinsky constant (0 = LES disabled)
     float tau_;             ///< BGK relaxation time
     float omega_minus_;     ///< TRT anti-symmetric relaxation (0 = BGK mode)
 

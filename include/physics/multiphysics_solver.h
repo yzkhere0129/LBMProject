@@ -603,6 +603,9 @@ public:
      */
     float getMaxTemperature() const;
 
+    /// Set Smagorinsky constant on the fluid solver (call after construction)
+    void setSmagorinskyCs(float cs) { if (fluid_) fluid_->setSmagorinskyCs(cs); }
+
     /**
      * @brief Get melt pool depth (distance from interface to T < T_liquidus)
      * @return Depth [m]

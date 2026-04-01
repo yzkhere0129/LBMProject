@@ -18,6 +18,16 @@ namespace physics {
 
 using namespace lbm::core;
 
+// Forward declarations for kernels with Smagorinsky Cs parameter
+__global__ void fluidBGKCollisionEDMKernel(
+    const float*, float*, float*, float*, float*, float*,
+    const float*, const float*, const float*, const float*,
+    float omega, float cs_smag, int nx, int ny, int nz);
+__global__ void fluidTRTCollisionEDMKernel(
+    const float*, float*, float*, float*, float*, float*,
+    const float*, const float*, const float*, const float*,
+    float omega, float omega_minus, float cs_smag, int nx, int ny, int nz);
+
 // Forward declarations of helper functions
 __device__ __forceinline__ double computeEquilibriumDouble(
     int q, double rho, double ux, double uy, double uz);
@@ -371,12 +381,12 @@ void FluidLBM::collisionBGKwithEDM(const float* force_x,
         fluidTRTCollisionEDMKernel<<<grid, block>>>(
             d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
             force_x, force_y, force_z, darcy_coeff, omega_, omega_minus_,
-            nx_, ny_, nz_);
+            cs_smag_, nx_, ny_, nz_);
     } else {
         fluidBGKCollisionEDMKernel<<<grid, block>>>(
             d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
             force_x, force_y, force_z, darcy_coeff, omega_,
-            nx_, ny_, nz_);
+            cs_smag_, nx_, ny_, nz_);
     }
     CUDA_CHECK_KERNEL();
 
@@ -1361,6 +1371,7 @@ __global__ void fluidBGKCollisionEDMKernel(
     const float* force_z,
     const float* darcy_coeff,
     float omega,
+    float cs_smag,
     int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1416,7 +1427,7 @@ __global__ void fluidBGKCollisionEDMKernel(
     float u_phys_z = u_bare_z + 0.5f * du_z;
 
     // Velocity clamping for safety (catastrophic fail-safe)
-    const float U_MAX = 0.3f;
+    const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
     float u_bare_mag = sqrtf(u_bare_x*u_bare_x + u_bare_y*u_bare_y + u_bare_z*u_bare_z);
     if (u_bare_mag > U_MAX) {
         float scale = U_MAX / u_bare_mag;
@@ -1443,11 +1454,10 @@ __global__ void fluidBGKCollisionEDMKernel(
     float f_local[19];
     for (int q = 0; q < 19; q++) f_local[q] = f_src[id + q * n_cells];
 
-    // Smagorinsky LES: compute per-cell effective omega from local strain rate
-    // Uses Hou (1996) exact algebraic solution — no lagging.
-    // Cs = 0.1: standard for wall-bounded flows (hardcoded; TODO: config parameter)
-    float omega_eff = computeSmagorinskyOmega(
-        f_local, m_rho, u_bare_x, u_bare_y, u_bare_z, omega, 0.1f);
+    // Smagorinsky LES: per-cell effective omega (Hou 1996 exact algebraic)
+    float omega_eff = (cs_smag > 0.0f)
+        ? computeSmagorinskyOmega(f_local, m_rho, u_bare_x, u_bare_y, u_bare_z, omega, cs_smag)
+        : omega;  // cs_smag=0 disables LES
 
     // BGK collision with EDM forcing (LES-adjusted omega)
     for (int q = 0; q < D3Q19::Q; ++q) {
@@ -1494,6 +1504,7 @@ __global__ void fluidTRTCollisionEDMKernel(
     const float* darcy_coeff,
     float omega,
     float omega_minus,
+    float cs_smag,
     int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1546,7 +1557,7 @@ __global__ void fluidTRTCollisionEDMKernel(
     float u_phys_z = u_bare_z + 0.5f * du_z;
 
     // Velocity clamping for safety (catastrophic fail-safe)
-    const float U_MAX = 0.3f;
+    const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
     float u_bare_mag = sqrtf(u_bare_x*u_bare_x + u_bare_y*u_bare_y + u_bare_z*u_bare_z);
     if (u_bare_mag > U_MAX) {
         float scale = U_MAX / u_bare_mag;
@@ -1569,29 +1580,37 @@ __global__ void fluidTRTCollisionEDMKernel(
     float u_shifted_y = u_bare_y + du_y;
     float u_shifted_z = u_bare_z + du_z;
 
-    // TRT+EDM collision
-    for (int q = 0; q < D3Q19::Q; ++q) {
-        float f_q = f_src[id + q * n_cells];
-        int q_bar = opposite[q];
-        float f_qbar = f_src[id + q_bar * n_cells];
+    // Smagorinsky LES for TRT: adjust omega+ (symmetric relaxation)
+    float f_local[19];
+    for (int q = 0; q < 19; q++) f_local[q] = f_src[id + q * n_cells];
+    float omega_eff = (cs_smag > 0.0f)
+        ? computeSmagorinskyOmega(f_local, m_rho, u_bare_x, u_bare_y, u_bare_z, omega, cs_smag)
+        : omega;
+    // Recompute omega_minus from effective omega+ (preserve magic parameter Λ)
+    float tau_eff = 1.0f / omega_eff;
+    float Lambda = (1.0f/omega - 0.5f) * (1.0f/omega_minus - 0.5f);
+    float tau_minus_eff = 0.5f + Lambda / (tau_eff - 0.5f);
+    float omega_minus_eff = 1.0f / tau_minus_eff;
 
-        // Equilibria at u_bare for TRT relaxation
+    // TRT+EDM collision with LES-adjusted relaxation
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f_q = f_local[q];
+        int q_bar = opposite[q];
+        float f_qbar = f_local[q_bar];
+
         float feq_bare_q    = D3Q19::computeEquilibrium(q,     m_rho, u_bare_x, u_bare_y, u_bare_z);
         float feq_bare_qbar = D3Q19::computeEquilibrium(q_bar, m_rho, u_bare_x, u_bare_y, u_bare_z);
 
-        // Non-equilibrium split into symmetric and anti-symmetric parts
         float neq_q    = f_q    - feq_bare_q;
         float neq_qbar = f_qbar - feq_bare_qbar;
-        float f_s_neq  = 0.5f * (neq_q + neq_qbar);  // even (symmetric)
-        float f_a_neq  = 0.5f * (neq_q - neq_qbar);  // odd  (anti-symmetric)
+        float f_s_neq  = 0.5f * (neq_q + neq_qbar);
+        float f_a_neq  = 0.5f * (neq_q - neq_qbar);
 
-        // EDM shift at u_bare + Δu
         float feq_shifted = D3Q19::computeEquilibrium(q, m_rho, u_shifted_x, u_shifted_y, u_shifted_z);
 
-        // TRT+EDM: relax even with ω+, odd with ω-, add EDM equilibrium shift
         f_dst[id + q * n_cells] = f_q
-            - omega       * f_s_neq
-            - omega_minus * f_a_neq
+            - omega_eff       * f_s_neq
+            - omega_minus_eff * f_a_neq
             + (feq_shifted - feq_bare_q);
     }
 }
@@ -1659,7 +1678,7 @@ __global__ void computeMacroscopicSemiImplicitDarcyEDMKernel(
         u_z = u_bare_z + 0.5f * force_z[id] * inv_rho;
 
         // Velocity clamping for safety
-        const float U_MAX = 0.3f;
+        const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {
             float scale = U_MAX / u_mag;
@@ -2076,7 +2095,7 @@ __global__ void computeMacroscopicKernel(
         //
         // LBM stability: Ma = u/c_s < 0.3, where c_s = 1/√3 ≈ 0.577
         // Using 0.3 lu as aggressive but functional limit (Ma ≈ 0.52)
-        const float U_MAX = 0.3f;  // LATTICE UNITS (dimensionless) - was incorrectly 20.0
+        const float U_MAX = 10.0f;  // LES-protected: no artificial clamp  // LATTICE UNITS (dimensionless) - was incorrectly 20.0
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {
             // Clamp velocity magnitude while preserving direction
@@ -2147,7 +2166,7 @@ __global__ void computeMacroscopicWithForceKernel(
         u_z = m_uz * inv_rho + 0.5f * force_z[id] * inv_rho;
 
         // Velocity clamping for stability
-        const float U_MAX = 0.3f;
+        const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {
             float scale = U_MAX / u_mag;
@@ -2231,7 +2250,7 @@ __global__ void computeMacroscopicSemiImplicitDarcyKernel(
         u_z = (m_uz + 0.5f * force_z[id]) * inv_denom;
 
         // Velocity clamping for safety (rarely needed with semi-implicit)
-        const float U_MAX = 0.3f;
+        const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {
             float scale = U_MAX / u_mag;
