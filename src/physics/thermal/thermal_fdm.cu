@@ -51,8 +51,11 @@ __device__ __forceinline__ float limiter_minmod(float r) {
     return fmaxf(0.0f, fminf(r, 1.0f));
 }
 
-// Active limiter selection (compile-time)
+// Active limiter selection (compile-time) — used as fallback at boundaries
 #define TVD_LIMITER limiter_superbee
+
+// WENO5 reconstruction
+#include "weno5.cuh"
 
 // ---- Clamped index helper (adiabatic = zero gradient at walls) ----
 __device__ __forceinline__ int clamp_idx(int val, int lo, int hi) {
@@ -108,21 +111,18 @@ __global__ void fdmAdvDiffKernel(
     float Fo = alpha * dt_sub / (dx * dx);
     float diff = Fo * (Txm + Txp + Tym + Typ + Tzm + Tzp - 6.0f * Tc);
 
-    // ---- Advection: TVD with MINMOD limiter ----
+    // ---- Advection: WENO5 (5th-order) with Lax-Friedrichs flux splitting ----
     //
-    // For each direction d with velocity u_d:
-    //   Face flux at i+1/2: F_{i+1/2} = u_d * T_face
-    //   T_face = T_U + 0.5·φ(r)·(T_D - T_U)  (second-order reconstruction)
+    // Flux at face i+1/2:
+    //   F_{i+1/2} = u^+ · T^L_{i+1/2} + u^- · T^R_{i+1/2}
+    // where u^+ = max(u,0), u^- = min(u,0)
+    //   T^L = weno5_left(T[i-2]..T[i+2])    (left-biased, for u>0)
+    //   T^R = weno5_right(T[i-1]..T[i+3])   (right-biased, for u<0)
     //
-    // Where U = upwind cell, D = downwind cell, and
-    //   r = (T_U - T_UU) / (T_D - T_U)  (gradient ratio, UU = far-upwind)
+    // Stencil: 5 points per direction (i-2..i+2). At boundaries (i<2 or i>n-3),
+    // indices are clamped (adiabatic ghost cells: T_ghost = T_boundary).
     //
-    // Net advection: -[F_{i+1/2} - F_{i-1/2}] / dx
-    //
-    // MINMOD limiter: φ(r) = max(0, min(r, 1))
-    //   - Preserves TVD property (no new extrema)
-    //   - Second-order accurate in smooth regions
-    //   - Falls back to first-order upwind at discontinuities
+    // Reference: Jiang & Shu (1996), J. Comput. Phys. 126:202-228
     // ============================================================
     float adv = 0.0f;
     if (ux_lu != nullptr || uy_lu != nullptr || uz_lu != nullptr) {
@@ -131,98 +131,81 @@ __global__ void fdmAdvDiffKernel(
         float uz = uz_lu ? uz_lu[idx] * v_conv : 0.0f;
         float Co = dt_sub / dx;
 
-        // --- X direction ---
+        // Load extended stencil values (±2 already computed above)
+        float Txmm = T_old[imm + nx*(j + ny*k)];
+        float Txpp = T_old[ipp + nx*(j + ny*k)];
+        float Tymm = T_old[i + nx*(jmm + ny*k)];
+        float Typp = T_old[i + nx*(jpp + ny*k)];
+        float Tzmm = T_old[i + nx*(j + ny*kmm)];
+        float Tzpp = T_old[i + nx*(j + ny*kpp)];
+
+        // --- X direction: face i-1/2 and i+1/2 ---
         {
-            // Load far-upwind neighbors for TVD
-            float Txmm = T_old[imm + nx*(j + ny*k)];
-            float Txpp = T_old[ipp + nx*(j + ny*k)];
+            float up = fmaxf(ux, 0.0f);  // positive part
+            float um = fminf(ux, 0.0f);  // negative part
 
-            // Face i-1/2 (between im and i)
-            float F_left;
-            if (ux >= 0.0f) {
-                // Upwind = im, Downwind = i, Far-upwind = imm
-                float dD = Tc - Txm;   // downwind - upwind
-                float dU = Txm - Txmm; // upwind - far-upwind
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_left = ux * (Txm + 0.5f * TVD_LIMITER(r) * dD);
-            } else {
-                // Upwind = i, Downwind = im, Far-upwind = ip
-                float dD = Txm - Tc;
-                float dU = Tc - Txp;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_left = ux * (Tc + 0.5f * TVD_LIMITER(r) * dD);
-            }
+            // Face i-1/2: left-biased from {i-3,i-2,i-1,i,i+1}
+            // But we only have ±2, so stencil is {imm,im,i-1→im,i,ip} shifted
+            // For face at (i-1/2): stencil centered at im
+            // Left: weno5_left(T[im-2], T[im-1], T[im], T[i], T[ip])
+            int imm_l = per_x ? ((im <= 0) ? nx-1+im : im-1) : clamp_idx(i-2, 0, nx-1);
+            int immm  = per_x ? ((i <= 2) ? nx-3+i : i-3) : clamp_idx(i-3, 0, nx-1);
+            float T_imm_l = T_old[immm + nx*(j+ny*k)];
 
-            // Face i+1/2 (between i and ip)
-            float F_right;
-            if (ux >= 0.0f) {
-                float dD = Txp - Tc;
-                float dU = Tc - Txm;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_right = ux * (Tc + 0.5f * TVD_LIMITER(r) * dD);
-            } else {
-                float dD = Tc - Txp;
-                float dU = Txp - Txpp;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_right = ux * (Txp + 0.5f * TVD_LIMITER(r) * dD);
-            }
+            float TL_left = weno5_left(T_imm_l, Txmm, Txm, Tc, Txp);
+            float TR_left = weno5_right(Txmm, Txm, Tc, Txp, Txpp);
+            float F_left = up * TL_left + um * TR_left;
+
+            // Face i+1/2: stencil centered at i
+            int ippp = per_x ? ((i >= nx-3) ? i-nx+3 : i+3) : clamp_idx(i+3, 0, nx-1);
+            float T_ippp = T_old[ippp + nx*(j+ny*k)];
+
+            float TL_right = weno5_left(Txmm, Txm, Tc, Txp, Txpp);
+            float TR_right = weno5_right(Txm, Tc, Txp, Txpp, T_ippp);
+            float F_right = up * TL_right + um * TR_right;
 
             adv -= Co * (F_right - F_left);
         }
 
         // --- Y direction ---
         {
-            float Tymm = T_old[i + nx*(jmm + ny*k)];
-            float Typp = T_old[i + nx*(jpp + ny*k)];
+            float up = fmaxf(uy, 0.0f);
+            float um = fminf(uy, 0.0f);
 
-            float F_left;
-            if (uy >= 0.0f) {
-                float dD = Tc - Tym, dU = Tym - Tymm;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_left = uy * (Tym + 0.5f * TVD_LIMITER(r) * dD);
-            } else {
-                float dD = Tym - Tc, dU = Tc - Typ;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_left = uy * (Tc + 0.5f * TVD_LIMITER(r) * dD);
-            }
-            float F_right;
-            if (uy >= 0.0f) {
-                float dD = Typ - Tc, dU = Tc - Tym;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_right = uy * (Tc + 0.5f * TVD_LIMITER(r) * dD);
-            } else {
-                float dD = Tc - Typ, dU = Typ - Typp;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_right = uy * (Typ + 0.5f * TVD_LIMITER(r) * dD);
-            }
+            int jmmm = per_y ? ((j <= 2) ? ny-3+j : j-3) : clamp_idx(j-3, 0, ny-1);
+            int jppp = per_y ? ((j >= ny-3) ? j-ny+3 : j+3) : clamp_idx(j+3, 0, ny-1);
+            float T_jmmm = T_old[i + nx*(jmmm + ny*k)];
+            float T_jppp = T_old[i + nx*(jppp + ny*k)];
+
+            float TL_left = weno5_left(T_jmmm, Tymm, Tym, Tc, Typ);
+            float TR_left = weno5_right(Tymm, Tym, Tc, Typ, Typp);
+            float F_left = up * TL_left + um * TR_left;
+
+            float TL_right = weno5_left(Tymm, Tym, Tc, Typ, Typp);
+            float TR_right = weno5_right(Tym, Tc, Typ, Typp, T_jppp);
+            float F_right = up * TL_right + um * TR_right;
+
             adv -= Co * (F_right - F_left);
         }
 
         // --- Z direction ---
         {
-            float Tzmm = T_old[i + nx*(j + ny*kmm)];
-            float Tzpp = T_old[i + nx*(j + ny*kpp)];
+            float up = fmaxf(uz, 0.0f);
+            float um = fminf(uz, 0.0f);
 
-            float F_left;
-            if (uz >= 0.0f) {
-                float dD = Tc - Tzm, dU = Tzm - Tzmm;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_left = uz * (Tzm + 0.5f * TVD_LIMITER(r) * dD);
-            } else {
-                float dD = Tzm - Tc, dU = Tc - Tzp;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_left = uz * (Tc + 0.5f * TVD_LIMITER(r) * dD);
-            }
-            float F_right;
-            if (uz >= 0.0f) {
-                float dD = Tzp - Tc, dU = Tc - Tzm;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_right = uz * (Tc + 0.5f * TVD_LIMITER(r) * dD);
-            } else {
-                float dD = Tc - Tzp, dU = Tzp - Tzpp;
-                float r = (fabsf(dD) > 1e-12f) ? dU / dD : 0.0f;
-                F_right = uz * (Tzp + 0.5f * TVD_LIMITER(r) * dD);
-            }
+            int kmmm = per_z ? ((k <= 2) ? nz-3+k : k-3) : clamp_idx(k-3, 0, nz-1);
+            int kppp = per_z ? ((k >= nz-3) ? k-nz+3 : k+3) : clamp_idx(k+3, 0, nz-1);
+            float T_kmmm = T_old[i + nx*(j + ny*kmmm)];
+            float T_kppp = T_old[i + nx*(j + ny*kppp)];
+
+            float TL_left = weno5_left(T_kmmm, Tzmm, Tzm, Tc, Tzp);
+            float TR_left = weno5_right(Tzmm, Tzm, Tc, Tzp, Tzpp);
+            float F_left = up * TL_left + um * TR_left;
+
+            float TL_right = weno5_left(Tzmm, Tzm, Tc, Tzp, Tzpp);
+            float TR_right = weno5_right(Tzm, Tc, Tzp, Tzpp, T_kppp);
+            float F_right = up * TL_right + um * TR_right;
+
             adv -= Co * (F_right - F_left);
         }
     }
