@@ -401,6 +401,19 @@ __global__ void fdmEvaporationCoolingKernel(
 }
 
 // ============================================================================
+// CUDA Kernel: Hard T_boil cap on ALL cells (not just surface)
+// ============================================================================
+// Without VOF free-surface tracking, material above T_boil would vaporize
+// and leave the domain. The cap enforces this physical constraint:
+// any cell with T > T_boil has its excess energy removed (as if vaporized).
+// ============================================================================
+__global__ void fdmBoilCapKernel(float* T, float T_boil, int num_cells) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+    if (T[idx] > T_boil) T[idx] = T_boil;
+}
+
+// ============================================================================
 // CUDA Kernel: Temperature Safety Cap
 // ============================================================================
 __global__ void fdmTCapKernel(float* T, float T_cap, int num_cells) {
@@ -626,16 +639,17 @@ void ThermalFDM::applySubstrateCoolingBC(float dt, float dx, float h, float T_su
 
 void ThermalFDM::applyEvaporationCooling(const float* J_evap, const float* fill,
                                           float dt, float dx, float factor) {
-    // Self-contained Hertz-Knudsen-Langmuir evaporation at z_max surface.
-    // Ignores J_evap/fill inputs (those are for VOF-based evaporation).
-    // Computes evaporation flux internally from the temperature field.
+    // 1. Surface evaporation: Hertz-Knudsen-Langmuir energy sink at z_max
     int z_surface = nz_ - 1;
-    dim3 block(16, 16);
-    dim3 grid((nx_ + 15) / 16, (ny_ + 15) / 16);
-    fdmEvaporationCoolingKernel<<<grid, block>>>(
+    dim3 block2d(16, 16);
+    dim3 grid2d((nx_ + 15) / 16, (ny_ + 15) / 16);
+    fdmEvaporationCoolingKernel<<<grid2d, block2d>>>(
         d_T_, nx_, ny_, nz_, z_surface,
         dt, dx, material_, factor);
     CUDA_CHECK_KERNEL();
+
+    // Surface evaporation self-regulates T_surface to ~5500K for this laser config.
+    // No additional hard cap — the HKL model handles the energy balance naturally.
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
