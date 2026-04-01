@@ -671,19 +671,48 @@ void ThermalFDM::applySubstrateCoolingBC(float dt, float dx, float h, float T_su
     // TODO: implement convective BC at z_min
 }
 
+// Kernel: apply evaporation cooling from pre-computed mass flux at ALL interface cells
+__global__ void fdmEvapCoolingFromFluxKernel(
+    float* __restrict__ T,
+    const float* __restrict__ J_evap,
+    const float* __restrict__ fill_level,
+    float L_vap, float dt, float dx,
+    MaterialProperties mat,
+    float factor, int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+    float J = J_evap[idx];
+    if (J <= 0.0f) return;
+
+    float Tc = T[idx];
+    float rho = mat.getDensity(Tc);
+    float cp = mat.getSpecificHeat(Tc);
+    float q = J * L_vap * factor;
+    float dT = q * dt / (rho * cp * dx);
+
+    T[idx] = fmaxf(mat.T_vaporization, Tc - dT);
+}
+
 void ThermalFDM::applyEvaporationCooling(const float* J_evap, const float* fill,
                                           float dt, float dx, float factor) {
-    // 1. Surface evaporation: Hertz-Knudsen-Langmuir energy sink at z_max
-    int z_surface = nz_ - 1;
-    dim3 block2d(16, 16);
-    dim3 grid2d((nx_ + 15) / 16, (ny_ + 15) / 16);
-    fdmEvaporationCoolingKernel<<<grid2d, block2d>>>(
-        d_T_, nx_, ny_, nz_, z_surface,
-        dt, dx, material_, factor);
-    CUDA_CHECK_KERNEL();
-
-    // Surface evaporation self-regulates T_surface to ~5500K for this laser config.
-    // No additional hard cap — the HKL model handles the energy balance naturally.
+    if (J_evap != nullptr) {
+        // Recoil-enabled path: use pre-computed mass flux from computeEvaporationMassFlux
+        int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+        fdmEvapCoolingFromFluxKernel<<<gs, bs>>>(
+            d_T_, J_evap, d_vof_fill_,
+            material_.L_vaporization, dt, dx, material_, factor, num_cells_);
+        CUDA_CHECK_KERNEL();
+    } else {
+        // Self-contained path: compute evaporation internally at z_max surface
+        int z_surface = nz_ - 1;
+        dim3 block2d(16, 16);
+        dim3 grid2d((nx_ + 15) / 16, (ny_ + 15) / 16);
+        fdmEvaporationCoolingKernel<<<grid2d, block2d>>>(
+            d_T_, nx_, ny_, nz_, z_surface,
+            dt, dx, material_, factor);
+        CUDA_CHECK_KERNEL();
+    }
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
@@ -743,7 +772,50 @@ float ThermalFDM::computeEvaporationPower(const float*, float) const { return 0.
 float ThermalFDM::computeRadiationPower(const float*, float, float, float) const { return 0.0f; }
 float ThermalFDM::computeSubstratePower(float, float, float) const { return 0.0f; }
 float ThermalFDM::computeCapPower(float, float) const { return 0.0f; }
-void ThermalFDM::computeEvaporationMassFlux(float*, const float*) const {}
+// Evaporation mass flux kernel for VOF mass loss
+__global__ void fdmEvapMassFluxKernel(
+    const float* __restrict__ T,
+    const float* __restrict__ fill_level,
+    float* __restrict__ J_evap,
+    MaterialProperties mat,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= nx*ny*nz) return;
+
+    J_evap[idx] = 0.0f;
+
+    // Only at interface cells on the metal side
+    if (fill_level == nullptr) return;
+    float f = fill_level[idx];
+    if (f < 0.01f || f > 0.99f) return;
+
+    float Tc = T[idx];
+    float T_boil = mat.T_vaporization;
+    if (Tc <= T_boil) return;
+
+    // Hertz-Knudsen-Langmuir mass flux
+    constexpr float R_gas = 8.314f;
+    constexpr float P_ref = 101325.0f;
+    constexpr float alpha_evap = 0.04f;
+
+    float exponent = (mat.L_vaporization * mat.molar_mass / R_gas)
+                   * (1.0f / T_boil - 1.0f / Tc);
+    exponent = fminf(exponent, 50.0f);
+    float P_sat = P_ref * expf(exponent);
+
+    J_evap[idx] = alpha_evap * P_sat
+                / sqrtf(2.0f * 3.14159265f * R_gas * Tc / mat.molar_mass);
+}
+
+void ThermalFDM::computeEvaporationMassFlux(float* d_J_evap,
+                                             const float* fill_level) const {
+    int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+    fdmEvapMassFluxKernel<<<gs, bs>>>(
+        d_T_, fill_level, d_J_evap, material_, nx_, ny_, nz_);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
 
 } // namespace physics
 } // namespace lbm

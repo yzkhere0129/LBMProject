@@ -329,8 +329,11 @@ __global__ void computeLaserHeatSourceKernel(
 
     float f = fill_level[idx];
 
-    // Only interface cells contribute
-    if (f < 0.01f || f > 0.99f) return;
+    // Only metal-side interface cells (f >= 0.5) receive laser energy.
+    // Gas-side cells (f < 0.5) would be wiped to 600K by the gas-reset kernel,
+    // creating an energy black hole. Depositing only on f>=0.5 ensures all
+    // laser energy reaches the metal and conducts downward.
+    if (f < 0.50f || f > 0.99f) return;
 
     // Compute |∇f| via central differences (surface delta function)
     float dfx = 0.0f, dfy = 0.0f, dfz = 0.0f;
