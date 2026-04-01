@@ -1614,6 +1614,47 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
         );
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
+
+        // ============================================================
+        // DYNAMIC POWER NORMALIZATION: force exact energy conservation
+        //
+        // The VOF |∂f/∂z| interface kernel has a discrete integral deficit
+        // (~50% for 2-cell interface). Instead of guessing a static multiplier,
+        // compute the actual deposited power and rescale to match η×P exactly.
+        //
+        // P_actual = Σ(Q_vol × dx³), P_target = η × P_laser
+        // scale = P_target / P_actual
+        // Q_vol *= scale
+        // ============================================================
+        if (fill_ptr != nullptr) {
+            // Host-side reduction (fast enough: called once per step, num_cells ~ 800K)
+            std::vector<float> h_Q(num_cells);
+            CUDA_CHECK(cudaMemcpy(h_Q.data(), d_heat_source,
+                                  num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+
+            double P_actual = 0.0;
+            float dV = config_.dx * config_.dx * config_.dx;
+            for (int i = 0; i < num_cells; i++) {
+                P_actual += static_cast<double>(h_Q[i]) * dV;
+            }
+
+            float P_target = config_.laser_absorptivity * config_.laser_power;
+
+            if (P_actual > 1e-6) {
+                float scale = static_cast<float>(P_target / P_actual);
+                // Apply scale on device
+                int bs = 256, gs = (num_cells + bs - 1) / bs;
+                // Simple scale kernel (inline lambda not supported in CUDA, use thrust or manual)
+                for (int i = 0; i < num_cells; i++) h_Q[i] *= scale;
+                CUDA_CHECK(cudaMemcpy(d_heat_source, h_Q.data(),
+                                      num_cells * sizeof(float), cudaMemcpyHostToDevice));
+
+                if (current_step_ % diagnostic_interval_ == 0) {
+                    printf("[LaserNorm] P_actual=%.2f W, P_target=%.2f W, scale=%.3f\n",
+                           (float)P_actual, P_target, scale);
+                }
+            }
+        }
     }
 
     thermal_->addHeatSource(d_heat_source, dt);
