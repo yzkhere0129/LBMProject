@@ -285,7 +285,7 @@ static __global__ void computeForceMagnitudeKernelLocal(
  */
 __global__ void computeLaserHeatSourceKernel(
     float* d_heat_source,
-    const float* fill_level,  // VOF field: only deposit heat in metal
+    const float* fill_level,
     LaserSource laser,
     int nx, int ny, int nz,
     float dx,
@@ -298,23 +298,63 @@ __global__ void computeLaserHeatSourceKernel(
     if (i >= nx || j >= ny || k >= nz) return;
 
     int idx = i + nx * (j + ny * k);
+    d_heat_source[idx] = 0.0f;
 
     float x = i * dx;
     float y = j * dx;
-    float z_lattice = k;
 
-    float depth = (z_surface - z_lattice) * dx;
+    // ================================================================
+    // VOF-aware laser deposition: energy deposited AT the interface
+    //
+    // Strategy: Use |∇f| as a surface delta function.
+    //   Q_vol = q_surface × |∇f|
+    // where q_surface is the Gaussian surface flux [W/m²].
+    //
+    // This ensures:
+    //  - Energy goes to interface cells (0.05 < f < 0.95) only
+    //  - Curved keyhole walls receive energy at the correct location
+    //  - Total absorbed power is conserved (∫|∇f|dx ≈ 1)
+    //
+    // Fallback: when fill_level is nullptr (no VOF), use the original
+    // z_surface fixed-layer deposition for backward compatibility.
+    // ================================================================
 
-    if (depth < 0.0f) {
-        d_heat_source[idx] = 0.0f;
+    if (fill_level == nullptr) {
+        // Legacy path: fixed z_surface, Beer-Lambert depth
+        float depth = (z_surface - (float)k) * dx;
+        if (depth < 0.0f) return;
+        d_heat_source[idx] = laser.computeVolumetricHeatSource(x, y, depth);
         return;
     }
 
-    // Modulate by fill_level: laser only heats metal, not gas gaps.
-    // Without this, gas between powder particles absorbs laser energy
-    // and reaches 7000K+ with no evaporation cooling mechanism.
-    float f = (fill_level != nullptr) ? fill_level[idx] : 1.0f;
-    d_heat_source[idx] = f * laser.computeVolumetricHeatSource(x, y, depth);
+    float f = fill_level[idx];
+
+    // Only interface cells contribute
+    if (f < 0.01f || f > 0.99f) return;
+
+    // Compute |∇f| via central differences (surface delta function)
+    float dfx = 0.0f, dfy = 0.0f, dfz = 0.0f;
+    if (i > 0 && i < nx-1) {
+        dfx = (fill_level[(i+1)+nx*(j+ny*k)] - fill_level[(i-1)+nx*(j+ny*k)]) / (2.0f*dx);
+    }
+    if (j > 0 && j < ny-1) {
+        dfy = (fill_level[i+nx*((j+1)+ny*k)] - fill_level[i+nx*((j-1)+ny*k)]) / (2.0f*dx);
+    }
+    if (k > 0 && k < nz-1) {
+        dfz = (fill_level[i+nx*(j+ny*(k+1))] - fill_level[i+nx*(j+ny*(k-1))]) / (2.0f*dx);
+    }
+    float grad_f_mag = sqrtf(dfx*dfx + dfy*dfy + dfz*dfz);
+
+    if (grad_f_mag < 1e-6f) return;
+
+    // Surface flux: Gaussian in xy, no Beer-Lambert depth attenuation
+    // (interface cells ARE the surface — depth = 0 at the interface)
+    float q_surface = laser.computeVolumetricHeatSource(x, y, 0.0f) * dx;
+    // computeVolumetricHeatSource returns [W/m³] for depth=0 with penetration.
+    // We want the surface flux [W/m²] = Q_vol × penetration_depth.
+    // Then Q_vol_interface = q_surface × |∇f|.
+
+    d_heat_source[idx] = q_surface * grad_f_mag;
 }
 
 /**
@@ -2319,9 +2359,12 @@ void MultiphysicsSolver::computeTotalForce() {
             // Marangoni must act at the VOF gas-metal interface (where ∇f ≠ 0),
             // NOT gated by the thermal phase state. Solid surface suppression
             // is already handled by Darcy damping (K > 0 where fl < 1).
+            // Apply CSF compensation multiplier (default 4.0×) to counteract
+            // the |∇f| integral deficit from discrete 2-cell VOF interface.
+            float dsigma_compensated = config_.dsigma_dT * config_.marangoni_csf_multiplier;
             force_accumulator_->addMarangoniForce(
                 d_T_smoothed_, fill_level, nullptr, normals,
-                config_.dsigma_dT,
+                dsigma_compensated,
                 config_.nx, config_.ny, config_.nz,
                 config_.dx,
                 1.0f);

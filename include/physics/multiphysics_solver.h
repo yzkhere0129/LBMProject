@@ -266,6 +266,7 @@ struct MultiphysicsConfig {
         float recoil_smoothing_width = 2.0f;     ///< Interface smoothing [cells]
         float recoil_max_pressure    = 1e8f;     ///< Numerical pressure cap [Pa]
         float recoil_force_multiplier = 1.0f;    ///< Force multiplier for VOF smearing compensation
+        float marangoni_csf_multiplier = 4.0f;  ///< CSF |∇f| integral compensation (2-cell interface → ×4)
         float evap_cooling_factor    = 1.0f;    ///< Evaporation cooling scaling (compensate VOF smearing)
         float molar_mass             = 0.0476f;  ///< Molar mass [kg/mol] (Ti6Al4V default)
     };
@@ -374,6 +375,7 @@ struct MultiphysicsConfig {
     float& recoil_smoothing_width = surface.recoil_smoothing_width;
     float& recoil_max_pressure    = surface.recoil_max_pressure;
     float& recoil_force_multiplier = surface.recoil_force_multiplier;
+    float& marangoni_csf_multiplier = surface.marangoni_csf_multiplier;
     float& evap_cooling_factor     = surface.evap_cooling_factor;
 
     // Buoyancy

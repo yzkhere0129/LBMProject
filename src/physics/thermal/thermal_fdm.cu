@@ -68,6 +68,7 @@ __global__ void fdmAdvDiffKernel(
     const float* __restrict__ ux_lu,
     const float* __restrict__ uy_lu,
     const float* __restrict__ uz_lu,
+    const float* __restrict__ fill_level,  // VOF field (nullable: no masking)
     float alpha,
     float dt_sub,
     float dx,
@@ -106,6 +107,25 @@ __global__ void fdmAdvDiffKernel(
     float Typ = T_old[i  + nx*(jp + ny*k )];
     float Tzm = T_old[i  + nx*(j  + ny*km)];
     float Tzp = T_old[i  + nx*(j  + ny*kp)];
+
+    // ---- VOF interface masking: gas neighbors → use Tc (adiabatic) ----
+    // Prevents cold gas (300K) from being included in diffusion/advection stencil.
+    // Without this, the gas-metal interface acts as an artificial cold wall.
+    if (fill_level != nullptr) {
+        float fc = fill_level[idx];
+        if (fc < 0.05f) {
+            // Pure gas cell: no thermal evolution, will be wiped later
+            T_new[idx] = Tc;
+            return;
+        }
+        // Metal cell: mask gas neighbors
+        if (fill_level[im + nx*(j +ny*k )] < 0.05f) Txm = Tc;
+        if (fill_level[ip + nx*(j +ny*k )] < 0.05f) Txp = Tc;
+        if (fill_level[i  + nx*(jm+ny*k )] < 0.05f) Tym = Tc;
+        if (fill_level[i  + nx*(jp+ny*k )] < 0.05f) Typ = Tc;
+        if (fill_level[i  + nx*(j +ny*km)] < 0.05f) Tzm = Tc;
+        if (fill_level[i  + nx*(j +ny*kp)] < 0.05f) Tzp = Tc;
+    }
 
     // ---- Diffusion: central difference, Fo·(Σneighbors - 6·Tc) ----
     float Fo = alpha * dt_sub / (dx * dx);
@@ -384,6 +404,26 @@ __global__ void fdmEvaporationCoolingKernel(
 }
 
 // ============================================================================
+// CUDA Kernel: Gas phase temperature wipe
+// ============================================================================
+// After advection-diffusion, reset gas cells (f < 0.01) to T_ambient.
+// Prevents thermal artifacts from streaming heat into inert gas regions.
+// ============================================================================
+__global__ void fdmGasWipeKernel(
+    float* __restrict__ T,
+    const float* __restrict__ fill_level,
+    float T_ambient,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+    if (fill_level == nullptr) return;
+    if (fill_level[idx] < 0.01f) {
+        T[idx] = T_ambient;
+    }
+}
+
+// ============================================================================
 // CUDA Kernel: Hard T_boil cap on ALL cells (not just surface)
 // ============================================================================
 // Without VOF free-surface tracking, material above T_boil would vaporize
@@ -526,10 +566,10 @@ void ThermalFDM::collisionBGK(const float* ux, const float* uy, const float* uz)
 
     for (int s = 0; s < n_subcycle_; s++) {
         fdmAdvDiffKernel<<<grid, block>>>(
-            d_T_, d_T_new_, ux, uy, uz,
+            d_T_, d_T_new_, ux, uy, uz, d_vof_fill_,
             alpha_phys_, dt_sub, dx_, v_conv,
             nx_, ny_, nz_,
-            false, false, z_periodic_);  // default: non-periodic x,y
+            false, false, z_periodic_);
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -562,6 +602,14 @@ void ThermalFDM::computeTemperature() {
             d_vof_fill_,
             material_,
             num_cells_);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    // Gas phase wipe: reset gas cells to ambient temperature
+    if (d_vof_fill_ != nullptr) {
+        int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+        fdmGasWipeKernel<<<gs, bs>>>(d_T_, d_vof_fill_, 600.0f, num_cells_);
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
     }
