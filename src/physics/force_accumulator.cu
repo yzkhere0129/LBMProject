@@ -564,18 +564,18 @@ __global__ void addRecoilPressureForceKernel(
         return;  // No interface
     }
 
-    // Recoil force (CSF formulation): F = -P_recoil · n · |∇f| · multiplier  [N/m³]
-    // |∇f| is the CSF delta function that converts surface pressure to volumetric force.
-    // Units: [Pa] × [1/m] = [N/m³]. No extra normalization needed.
+    // Recoil force: F = P_recoil × ∇f × multiplier  [N/m³]
     //
-    // force_multiplier compensates for VOF interface smearing: the diffuse interface
-    // spreads |∇f| over ~3 cells, reducing peak force density by ~3×. Standard LBM
-    // practice is to apply a multiplier (5-10×) to recover sharp-interface physics.
-    float coeff = P_recoil * grad_f_mag * force_multiplier;
+    // Uses ∇f directly (NOT VOF normals) for force direction.
+    // ∇f points from gas (f=0) to liquid (f=1), so F pushes INTO liquid.
+    // This is the correct CSF formulation: F_recoil = P_recoil · ∇f
+    //
+    // force_multiplier compensates discrete |∇f| integral deficit (~2-3×).
+    float coeff = P_recoil * force_multiplier;
 
-    fx[idx] += -coeff * n.x;  // Negative: force pushes INTO liquid
-    fy[idx] += -coeff * n.y;
-    fz[idx] += -coeff * n.z;
+    fx[idx] += coeff * grad_f_x;
+    fy[idx] += coeff * grad_f_y;
+    fz[idx] += coeff * grad_f_z;
 }
 
 /**

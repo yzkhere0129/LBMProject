@@ -381,7 +381,10 @@ __global__ void fdmEvaporationCoolingKernel(
     float M     = mat.molar_mass;       // kg/mol
     constexpr float R_gas = 8.314f;     // J/(mol·K)
     constexpr float P_ref = 101325.0f;  // Pa (1 atm)
-    constexpr float alpha_evap = 0.18f; // evaporation coefficient
+    // Evaporation coefficient: 0.04 allows surface overheating to ~3800K
+    // before q_evap balances q_laser. At 0.18, T is clamped at T_boil and
+    // P_recoil never exceeds Laplace pressure → no keyhole formation.
+    constexpr float alpha_evap = 0.04f;
 
     float exponent = (L_vap * M / R_gas) * (1.0f / T_boil - 1.0f / Tc);
     // Clamp exponent to prevent overflow (exp(88) ≈ FLT_MAX)

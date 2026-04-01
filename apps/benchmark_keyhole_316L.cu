@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
     const int NZ = NZ_METAL + NZ_GAS;
     const float dx = 2.0e-6f;
     const float dt = 2.0e-8f;  // 20 ns
-    const float t_total = 200.0e-6f;
+    const float t_total = 100.0e-6f;
     const float v_scan = 0.8f;  // 800 mm/s
 
     printf("============================================================\n");
