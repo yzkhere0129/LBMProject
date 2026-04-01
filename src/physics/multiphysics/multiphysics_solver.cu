@@ -347,14 +347,43 @@ __global__ void computeLaserHeatSourceKernel(
 
     if (grad_f_mag < 1e-6f) return;
 
-    // Surface flux: Gaussian in xy, no Beer-Lambert depth attenuation
-    // (interface cells ARE the surface — depth = 0 at the interface)
-    float q_surface = laser.computeVolumetricHeatSource(x, y, 0.0f) * dx;
-    // computeVolumetricHeatSource returns [W/m³] for depth=0 with penetration.
-    // We want the surface flux [W/m²] = Q_vol × penetration_depth.
-    // Then Q_vol_interface = q_surface × |∇f|.
+    // ================================================================
+    // Ray-casting projection: vertical laser (-Z direction)
+    //
+    // The effective intercepted flux on a tilted surface element is:
+    //   q_absorbed = q_laser(x,y) · cos θ · A(θ)
+    // where cos θ = |n_z| = |∂f/∂z| / |∇f|  (angle between surface normal and Z)
+    //
+    // Converting to volumetric source via CSF delta function:
+    //   Q_vol = q_laser · cos θ · |∇f| = q_laser · |∂f/∂z|
+    //
+    // This correctly handles:
+    //   - Flat surface (cos θ = 1): full absorption
+    //   - Vertical keyhole wall (cos θ ≈ 0): near-zero absorption (grazing)
+    //   - Tilted surface: proportional to projected area
+    //
+    // Fresnel absorption: A(θ) = A₀ · (1 + (1-cos θ)²) / 2  (simplified)
+    // At normal incidence (θ=0): A = A₀. At grazing (θ→π/2): A → A₀.
+    // Full Fresnel for metals: A(θ) ≈ A₀/cos θ for small θ (Drude model),
+    // but this diverges at grazing. Use Hagen-Rubens approximation capped.
+    // ================================================================
 
-    d_heat_source[idx] = q_surface * grad_f_mag;
+    // Surface heat flux [W/m²] at this (x,y) from Gaussian profile
+    float q_surface = laser.computeVolumetricHeatSource(x, y, 0.0f) * dx;
+
+    // Projection: only the Z-component of ∇f captures vertical laser
+    float abs_dfz = fabsf(dfz);
+
+    // Fresnel-like angle-dependent absorptivity (simplified)
+    // cos θ = |dfz| / |∇f|. At normal incidence: A = A₀ (base absorptivity).
+    // At grazing: enhanced absorption for metals (Fresnel effect).
+    float cos_theta = abs_dfz / grad_f_mag;
+    // Simplified Fresnel for metals: A(θ) ≈ A₀ × (1 + 0.5×(1-cos²θ))
+    // This gives ~1.0× at normal, ~1.5× at 45°, saturates at ~1.5× at grazing.
+    float fresnel_factor = 1.0f + 0.5f * (1.0f - cos_theta * cos_theta);
+
+    // Final: Q_vol = q_surface × |∂f/∂z| × Fresnel_correction
+    d_heat_source[idx] = q_surface * abs_dfz * fresnel_factor;
 }
 
 /**
