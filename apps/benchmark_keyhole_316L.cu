@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
     config.surface_tension_coeff = mat.surface_tension;
     config.dsigma_dT = mat.dsigma_dT;
     config.recoil_force_multiplier = 1.0f;
-    config.recoil_max_pressure = 250000.0f;  // 2.5 atm — physical cap (plasma shielding)
+    config.recoil_max_pressure = 1e8f;  // Physical: no artificial cap, evaporation self-regulates
     config.marangoni_csf_multiplier = 4.0f;
     config.evap_cooling_factor = 1.0f;
 

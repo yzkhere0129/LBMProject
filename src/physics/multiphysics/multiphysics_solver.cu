@@ -333,9 +333,7 @@ __global__ void computeLaserHeatSourceKernel(
     // Only metal-side interface cells (f >= 0.5) receive laser energy.
     if (f < 0.50f || f > 0.99f) return;
 
-    // Plasma shielding: above 3500K the metal vapor plume absorbs the laser.
-    // This physically caps the energy input and prevents runaway overheating.
-    if (temperature != nullptr && temperature[idx] > 3500.0f) return;
+    // No plasma shielding: evaporation cooling handles temperature regulation.
 
     // Compute |∇f| via central differences (surface delta function)
     float dfx = 0.0f, dfy = 0.0f, dfz = 0.0f;
@@ -1781,11 +1779,12 @@ void MultiphysicsSolver::thermalStep(float dt) {
     // Compute temperature from distribution functions
     thermal_->computeTemperature();
 
-    // Evaporation cooling: Hertz-Knudsen-Langmuir energy sink at surface.
-    // Self-limits T to ~T_boil via exponential q_evap growth.
-    // Recoil pressure (momentum) is intentionally NOT enabled here —
-    // only the energy sink, which is physically correct even without VOF.
-    if (!config_.enable_recoil_pressure && thermal_) {
+    // Evaporation cooling: ALWAYS apply self-contained HKL energy sink
+    // to ALL cells with T > T_boil (not just VOF interface cells).
+    // The VOF-path evaporation (line 1496) only cools ~50-80 interface cells,
+    // leaving thousands of overheated interior cells uncooled.
+    // This call uses the self-contained kernel that sweeps the entire z_max surface.
+    if (thermal_) {
         thermal_->applyEvaporationCooling(nullptr, nullptr,
                                           config_.dt, config_.dx, 1.0f);
     }
