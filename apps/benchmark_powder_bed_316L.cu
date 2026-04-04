@@ -45,7 +45,7 @@ static MaterialProperties createMat() {
     mat.L_fusion=260000; mat.L_vaporization=7.45e6f;
     mat.molar_mass=0.0558f;
     mat.surface_tension=1.75f;
-    mat.dsigma_dT=+1e-4f;
+    mat.dsigma_dT=-4.3e-4f;  // Real 316L: surface tension DECREASES with T
     mat.absorptivity_solid=0.35f; mat.absorptivity_liquid=0.35f;
     mat.emissivity=0.3f;
     return mat;
