@@ -268,6 +268,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(diag_marangoni_isolated PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(diag_marangoni_isolated lbm_physics lbm_io CUDA::cudart)
 
+    # LPBF powder bed single-track (laserMeltFoam tutorial reproduction)
+    add_executable(benchmark_powder_bed_316L apps/benchmark_powder_bed_316L.cu)
+    set_target_properties(benchmark_powder_bed_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(benchmark_powder_bed_316L lbm_physics lbm_io CUDA::cudart)
+
     # Phase 5: Full LPBF keyhole simulation
     add_executable(benchmark_keyhole_316L apps/benchmark_keyhole_316L.cu)
     set_target_properties(benchmark_keyhole_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
