@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
     // Surface
     config.surface_tension_coeff = mat.surface_tension;
     config.dsigma_dT = mat.dsigma_dT;
-    config.recoil_force_multiplier = 8.0f;  // VOF smearing compensation
+    config.recoil_force_multiplier = 1.0f;  // Physical value — no artificial amplification
     config.marangoni_csf_multiplier = 4.0f;
     config.evap_cooling_factor = 1.0f;
 
@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
 
     // VOF
     config.vof_subcycles = 1;
-    config.enable_vof_mass_correction = true;
+    config.enable_vof_mass_correction = false;  // MUST be OFF with evaporation — prevents ghost refill
 
     // Boundaries: all walls
     config.boundaries.x_min = config.boundaries.x_max = BoundaryType::WALL;
