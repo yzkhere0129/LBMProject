@@ -86,40 +86,74 @@ static void initializePowderBed(
     struct Sphere { float cx, cy, cz, r; };
     std::vector<Sphere> spheres;
 
-    std::mt19937 rng(42);  // fixed seed for reproducibility
+    std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist_x(0, NX * dx);
     std::uniform_real_distribution<float> dist_y(0, NY * dx);
     std::uniform_real_distribution<float> dist_z(z_sub * dx, z_pow * dx);
-    std::uniform_real_distribution<float> dist_r(r_min, r_max);
 
     float powder_volume = NX * dx * NY * dx * (z_pow - z_sub) * dx;
     float target_solid_volume = target_density * powder_volume;
     float current_solid_volume = 0.0f;
-
-    int max_attempts = 500000;
     int placed = 0;
 
-    for (int attempt = 0; attempt < max_attempts && current_solid_volume < target_solid_volume; attempt++) {
-        float r = dist_r(rng);
-        float cx = dist_x(rng);
-        float cy = dist_y(rng);
-        float cz = dist_z(rng);
+    // Spatial hash grid for O(1) neighbor lookup during collision detection
+    float cell_size = 2.0f * r_max;  // hash cell = 2×max_radius
+    int hNX = (int)(NX * dx / cell_size) + 1;
+    int hNY = (int)(NY * dx / cell_size) + 1;
+    int hNZ = (int)((z_pow - z_sub) * dx / cell_size) + 1;
+    std::vector<std::vector<int>> hash_grid(hNX * hNY * hNZ);
 
-        // Clamp center so sphere stays within powder zone
-        cz = std::max(z_sub * dx + r, std::min((z_pow * dx) - r, cz));
+    auto hash_idx = [&](float x, float y, float z) -> int {
+        int hi = std::min((int)(x / cell_size), hNX-1);
+        int hj = std::min((int)(y / cell_size), hNY-1);
+        int hk = std::min((int)((z - z_sub*dx) / cell_size), hNZ-1);
+        hi = std::max(0, hi); hj = std::max(0, hj); hk = std::max(0, hk);
+        return hi + hj*hNX + hk*hNX*hNY;
+    };
 
-        // Check overlap with existing spheres (min gap = 0.5*dx)
-        bool overlap = false;
-        for (const auto& s : spheres) {
-            float d2 = (cx-s.cx)*(cx-s.cx) + (cy-s.cy)*(cy-s.cy) + (cz-s.cz)*(cz-s.cz);
-            float min_d = r + s.r + 0.5f * dx;
-            if (d2 < min_d * min_d) { overlap = true; break; }
+    auto check_overlap = [&](float cx, float cy, float cz, float r) -> bool {
+        int hi = (int)(cx / cell_size);
+        int hj = (int)(cy / cell_size);
+        int hk = (int)((cz - z_sub*dx) / cell_size);
+        for (int di = -1; di <= 1; di++)
+            for (int dj = -1; dj <= 1; dj++)
+                for (int dk = -1; dk <= 1; dk++) {
+                    int ni=hi+di, nj=hj+dj, nk=hk+dk;
+                    if (ni<0||ni>=hNX||nj<0||nj>=hNY||nk<0||nk>=hNZ) continue;
+                    int cell = ni + nj*hNX + nk*hNX*hNY;
+                    for (int si : hash_grid[cell]) {
+                        const auto& s = spheres[si];
+                        float d2 = (cx-s.cx)*(cx-s.cx)+(cy-s.cy)*(cy-s.cy)+(cz-s.cz)*(cz-s.cz);
+                        if (d2 < (r+s.r)*(r+s.r)*0.95f) return true;
+                    }
+                }
+        return false;
+    };
+
+    // Multi-pass: large→small to maximize packing
+    float radii[] = {r_max, (r_min+r_max)*0.5f, r_min, r_min*0.7f};
+    int attempts_per_pass = 100000;
+
+    for (int pass = 0; pass < 4 && current_solid_volume < target_solid_volume; pass++) {
+        float r_base = radii[pass];
+        std::uniform_real_distribution<float> dist_r_pass(r_base*0.9f, r_base*1.1f);
+
+        for (int att = 0; att < attempts_per_pass && current_solid_volume < target_solid_volume; att++) {
+            float r = dist_r_pass(rng);
+            float cx = dist_x(rng), cy = dist_y(rng), cz = dist_z(rng);
+            cz = std::max(z_sub*dx + r, std::min(z_pow*dx - r, cz));
+
+            if (check_overlap(cx, cy, cz, r)) continue;
+
+            int sid = spheres.size();
+            spheres.push_back({cx, cy, cz, r});
+            hash_grid[hash_idx(cx, cy, cz)].push_back(sid);
+            current_solid_volume += (4.0f/3.0f)*3.14159265f*r*r*r;
+            placed++;
         }
-        if (overlap) continue;
-
-        spheres.push_back({cx, cy, cz, r});
-        current_solid_volume += (4.0f/3.0f) * 3.14159265f * r*r*r;
-        placed++;
+        printf("  Pass %d (r~%.0fμm): %d particles, packing=%.1f%%\n",
+               pass, r_base*1e6f, placed, current_solid_volume/powder_volume*100);
+        fflush(stdout);
     }
 
     float actual_density = current_solid_volume / powder_volume;
@@ -193,7 +227,7 @@ int main() {
     const float alpha=k/(rho*cp), nu=mu/rho;
 
     // Domain: 200×800×200 μm at dx=2.5μm
-    const int NX = 80, NY = 320, NZ = 80;
+    const int NX = 80, NY = 160, NZ = 80;
     const float dx = 2.5e-6f;
     const float dt = 1.0e-8f;  // 10 ns
     const float t_total = 200.0e-6f;  // 200 μs initially
