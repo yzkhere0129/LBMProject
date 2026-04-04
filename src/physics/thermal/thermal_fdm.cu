@@ -307,7 +307,9 @@ __global__ void fdmHeatSourceKernel(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
 
-    if (fill_level != nullptr && fill_level[idx] < 0.5f) return;
+    // Allow heat deposition at interface cells (f>=0.05) for powder bed compatibility.
+    // Gas-wipe (f<0.01) handles thermal isolation of pure gas cells.
+    if (fill_level != nullptr && fill_level[idx] < 0.05f) return;
 
     float Q = Q_vol[idx];
     if (Q <= 0.0f) return;
