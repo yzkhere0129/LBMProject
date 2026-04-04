@@ -330,8 +330,10 @@ __global__ void computeLaserHeatSourceKernel(
 
     float f = fill_level[idx];
 
-    // Only metal-side interface cells (f >= 0.5) receive laser energy.
-    if (f < 0.50f || f > 0.99f) return;
+    // Interface cells receive laser energy. For powder beds, sphere surfaces
+    // have thin transition zones; both sides need to absorb.
+    // The gas-wipe only resets f<0.01 cells, so f>=0.05 is safe.
+    if (f < 0.05f || f > 0.99f) return;
 
     // No plasma shielding: evaporation cooling handles temperature regulation.
 
