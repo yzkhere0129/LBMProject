@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     const float dx = 2.0e-6f;
     const float dt = 1.0e-8f;  // 10 ns — c_s=115 m/s, Ma=0.26 at 30 m/s
     const float t_total = 200.0e-6f;
-    const float v_scan = 0.8f;  // 800 mm/s
+    const float v_scan = 0.4f;  // 400 mm/s — slower scan for deeper pool + backfill
 
     printf("============================================================\n");
     printf("  Phase 5: LPBF Keyhole Simulation — 316L, Full Physics\n");
