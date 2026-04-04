@@ -1427,7 +1427,7 @@ __global__ void fluidBGKCollisionEDMKernel(
     float u_phys_z = u_bare_z + 0.5f * du_z;
 
     // Velocity clamping for safety (catastrophic fail-safe)
-    const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
+    const float U_MAX = 0.25f;  // Ma < 0.43, LES-protected
     float u_bare_mag = sqrtf(u_bare_x*u_bare_x + u_bare_y*u_bare_y + u_bare_z*u_bare_z);
     if (u_bare_mag > U_MAX) {
         float scale = U_MAX / u_bare_mag;
@@ -1557,7 +1557,7 @@ __global__ void fluidTRTCollisionEDMKernel(
     float u_phys_z = u_bare_z + 0.5f * du_z;
 
     // Velocity clamping for safety (catastrophic fail-safe)
-    const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
+    const float U_MAX = 0.25f;  // Ma < 0.43, LES-protected
     float u_bare_mag = sqrtf(u_bare_x*u_bare_x + u_bare_y*u_bare_y + u_bare_z*u_bare_z);
     if (u_bare_mag > U_MAX) {
         float scale = U_MAX / u_bare_mag;
@@ -1678,7 +1678,7 @@ __global__ void computeMacroscopicSemiImplicitDarcyEDMKernel(
         u_z = u_bare_z + 0.5f * force_z[id] * inv_rho;
 
         // Velocity clamping for safety
-        const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
+        const float U_MAX = 0.25f;  // Ma < 0.43, LES-protected
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {
             float scale = U_MAX / u_mag;
@@ -2095,7 +2095,7 @@ __global__ void computeMacroscopicKernel(
         //
         // LBM stability: Ma = u/c_s < 0.3, where c_s = 1/√3 ≈ 0.577
         // Using 0.3 lu as aggressive but functional limit (Ma ≈ 0.52)
-        const float U_MAX = 10.0f;  // LES-protected: no artificial clamp  // LATTICE UNITS (dimensionless) - was incorrectly 20.0
+        const float U_MAX = 0.25f;  // Ma < 0.43, LES-protected
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {
             // Clamp velocity magnitude while preserving direction
@@ -2166,7 +2166,7 @@ __global__ void computeMacroscopicWithForceKernel(
         u_z = m_uz * inv_rho + 0.5f * force_z[id] * inv_rho;
 
         // Velocity clamping for stability
-        const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
+        const float U_MAX = 0.25f;  // Ma < 0.43, LES-protected
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {
             float scale = U_MAX / u_mag;
@@ -2250,7 +2250,7 @@ __global__ void computeMacroscopicSemiImplicitDarcyKernel(
         u_z = (m_uz + 0.5f * force_z[id]) * inv_denom;
 
         // Velocity clamping for safety (rarely needed with semi-implicit)
-        const float U_MAX = 10.0f;  // LES-protected: no artificial clamp
+        const float U_MAX = 0.25f;  // Ma < 0.43, LES-protected
         float u_mag = sqrtf(u_x*u_x + u_y*u_y + u_z*u_z);
         if (u_mag > U_MAX) {
             float scale = U_MAX / u_mag;

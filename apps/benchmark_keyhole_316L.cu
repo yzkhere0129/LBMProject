@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
     const int NX = 150, NY = 75, NZ_METAL = 50, NZ_GAS = 25;
     const int NZ = NZ_METAL + NZ_GAS;
     const float dx = 2.0e-6f;
-    const float dt = 2.0e-8f;  // 20 ns
+    const float dt = 1.0e-8f;  // 10 ns — c_s=115 m/s, Ma=0.26 at 30 m/s
     const float t_total = 200.0e-6f;
     const float v_scan = 0.8f;  // 800 mm/s
 
@@ -108,7 +108,8 @@ int main(int argc, char** argv) {
     // Surface
     config.surface_tension_coeff = mat.surface_tension;
     config.dsigma_dT = mat.dsigma_dT;
-    config.recoil_force_multiplier = 1.0f;  // Physical value — no artificial amplification
+    config.recoil_force_multiplier = 1.0f;
+    config.recoil_max_pressure = 250000.0f;  // 2.5 atm — physical cap (plasma shielding)
     config.marangoni_csf_multiplier = 4.0f;
     config.evap_cooling_factor = 1.0f;
 

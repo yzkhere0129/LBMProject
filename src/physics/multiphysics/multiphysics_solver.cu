@@ -286,6 +286,7 @@ static __global__ void computeForceMagnitudeKernelLocal(
 __global__ void computeLaserHeatSourceKernel(
     float* d_heat_source,
     const float* fill_level,
+    const float* temperature,    // for plasma shielding cutoff
     LaserSource laser,
     int nx, int ny, int nz,
     float dx,
@@ -330,10 +331,11 @@ __global__ void computeLaserHeatSourceKernel(
     float f = fill_level[idx];
 
     // Only metal-side interface cells (f >= 0.5) receive laser energy.
-    // Gas-side cells (f < 0.5) would be wiped to 600K by the gas-reset kernel,
-    // creating an energy black hole. Depositing only on f>=0.5 ensures all
-    // laser energy reaches the metal and conducts downward.
     if (f < 0.50f || f > 0.99f) return;
+
+    // Plasma shielding: above 3500K the metal vapor plume absorbs the laser.
+    // This physically caps the energy input and prevents runaway overheating.
+    if (temperature != nullptr && temperature[idx] > 3500.0f) return;
 
     // Compute |∇f| via central differences (surface delta function)
     float dfx = 0.0f, dfy = 0.0f, dfz = 0.0f;
@@ -1607,9 +1609,11 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
 
         float z_surface = interface_z_;
         const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
+        const float* T_ptr = thermal_ ? thermal_->getTemperature() : nullptr;
         computeLaserHeatSourceKernel<<<blocks, threads>>>(
             d_heat_source,
             fill_ptr,
+            T_ptr,
             *laser_,
             config_.nx, config_.ny, config_.nz,
             config_.dx,
@@ -2889,9 +2893,11 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
     float z_surface = interface_z_;
     const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
 
+    const float* T_diag = thermal_ ? thermal_->getTemperature() : nullptr;
     computeLaserHeatSourceKernel<<<blocks, threads>>>(
         d_heat_source,
         fill_ptr,
+        T_diag,
         *laser_,
         config_.nx, config_.ny, config_.nz,
         config_.dx,
