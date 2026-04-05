@@ -335,7 +335,15 @@ __global__ void computeLaserHeatSourceKernel(
     // The gas-wipe only resets f<0.01 cells, so f>=0.05 is safe.
     if (f < 0.05f || f > 0.99f) return;
 
-    // No plasma shielding: evaporation cooling handles temperature regulation.
+    // Plasma shielding factor: computed here, applied to final heat source below.
+    float plasma_shield = 1.0f;
+    if (temperature != nullptr) {
+        float T_local = temperature[idx];
+        if (T_local > 3800.0f) { d_heat_source[idx] = 0.0f; return; }
+        if (T_local > 3300.0f) {
+            plasma_shield = 1.0f - (T_local - 3300.0f) / 500.0f;
+        }
+    }
 
     // Compute |∇f| via central differences (surface delta function)
     float dfx = 0.0f, dfy = 0.0f, dfz = 0.0f;
@@ -387,8 +395,8 @@ __global__ void computeLaserHeatSourceKernel(
     // This gives ~1.0× at normal, ~1.5× at 45°, saturates at ~1.5× at grazing.
     float fresnel_factor = 1.0f + 0.5f * (1.0f - cos_theta * cos_theta);
 
-    // Final: Q_vol = q_surface × |∂f/∂z| × Fresnel_correction
-    d_heat_source[idx] = q_surface * abs_dfz * fresnel_factor;
+    // Final: Q_vol = q_surface × |∂f/∂z| × Fresnel × plasma_shield
+    d_heat_source[idx] = q_surface * abs_dfz * fresnel_factor * plasma_shield;
 }
 
 /**
@@ -1497,12 +1505,21 @@ void MultiphysicsSolver::step(float dt) {
                                           dt, config_.dx,
                                           config_.evap_cooling_factor);
 
-        // VOF mass deletion DISABLED: evaporation acts as force + cooling ONLY.
-        // Rationale: at dx=2.5μm the mass loss rate deletes metal faster than
-        // it can form a weld track. Recoil pressure (momentum) and evaporative
-        // cooling (energy) still operate normally without mass removal.
-        // vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
-        //                                config_.material.rho_liquid, dt);
+        // VOF mass loss re-enabled with adaptation: scale flux by 0.05
+        // to limit cumulative loss to <3% of total metal over full scan.
+        {
+            int num_cells = config_.nx * config_.ny * config_.nz;
+            constexpr float mass_loss_scale = 0.05f;
+            // Scale the evap flux before passing to VOF
+            std::vector<float> h_J(num_cells);
+            CUDA_CHECK(cudaMemcpy(h_J.data(), d_evap_mass_flux_,
+                                  num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+            for (int i = 0; i < num_cells; i++) h_J[i] *= mass_loss_scale;
+            CUDA_CHECK(cudaMemcpy(d_evap_mass_flux_, h_J.data(),
+                                  num_cells * sizeof(float), cudaMemcpyHostToDevice));
+            vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
+                                           config_.material.rho_liquid, dt);
+        }
 
         // Diagnostic: Print evaporation info every 100 steps
         if (current_step_ % 100 == 0) {

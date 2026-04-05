@@ -404,8 +404,11 @@ __global__ void fdmEvaporationCoolingKernel(
     // Hertz-Knudsen-Langmuir evaporation mass flux [kg/(m²·s)]
     float J_evap = alpha_evap * P_sat / sqrtf(2.0f * 3.14159265f * R_gas * Tc / M);
 
-    // Energy flux [W/m²]
-    float q_evap = J_evap * L_vap * cooling_factor;
+    // Energy flux [W/m²] with interface area compensation.
+    // VOF interface is smeared over 2-3 cells → effective evaporation area
+    // is underestimated. Multiplier compensates for this discrete deficit.
+    constexpr float evap_area_compensation = 5.0f;
+    float q_evap = J_evap * L_vap * cooling_factor * evap_area_compensation;
 
     // Temperature decrement [K]
     float rho = mat.getDensity(Tc);
