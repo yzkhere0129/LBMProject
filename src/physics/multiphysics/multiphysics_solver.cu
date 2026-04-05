@@ -1497,10 +1497,12 @@ void MultiphysicsSolver::step(float dt) {
                                           dt, config_.dx,
                                           config_.evap_cooling_factor);
 
-        // Apply mass loss to VOF fill_level
-        vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
-                                       config_.material.rho_liquid,
-                                       dt);
+        // VOF mass deletion DISABLED: evaporation acts as force + cooling ONLY.
+        // Rationale: at dx=2.5μm the mass loss rate deletes metal faster than
+        // it can form a weld track. Recoil pressure (momentum) and evaporative
+        // cooling (energy) still operate normally without mass removal.
+        // vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
+        //                                config_.material.rho_liquid, dt);
 
         // Diagnostic: Print evaporation info every 100 steps
         if (current_step_ % 100 == 0) {
