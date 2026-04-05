@@ -2930,7 +2930,27 @@ __global__ void updateVofFromFluxKernel(
     // (∇·u ~ O(Ma²)) cause systematic mass loss of ~3% over 4000 steps.
     // The δ term compensates for the cell "stretching" due to divergence,
     // keeping the volume fraction consistent with the actual fluid volume.
-    float delta = dt * (u_plus - u_minus) / dx;
+    //
+    // WALL FIX: At wall-adjacent cells, the wall face velocity is forced to 0
+    // by interpolateFaceVelocityKernel, but the interior face retains the
+    // physical velocity. This creates artificial divergence (δ ≠ 0) that acts
+    // as a mass sink/source. Fix: mirror the interior face velocity to the
+    // wall face for the divergence computation only. The flux at the wall
+    // face is already correctly zero, so this only affects the δ term.
+    float u_div_plus = u_plus, u_div_minus = u_minus;
+    if (bc_dir != 0) {
+        if (dir == 0) {
+            if (i == 0)      u_div_minus = u_div_plus;   // x_min wall
+            if (i == nx - 1) u_div_plus  = u_div_minus;  // x_max wall
+        } else if (dir == 1) {
+            if (j == 0)      u_div_minus = u_div_plus;   // y_min wall
+            if (j == ny - 1) u_div_plus  = u_div_minus;  // y_max wall
+        } else {
+            if (k == 0)      u_div_minus = u_div_plus;   // z_min wall
+            if (k == nz - 1) u_div_plus  = u_div_minus;  // z_max wall
+        }
+    }
+    float delta = dt * (u_div_plus - u_div_minus) / dx;
     float f_new = f * (1.0f + delta) - (flux_plus - flux_minus);
 
     fill_new[idx] = f_new;

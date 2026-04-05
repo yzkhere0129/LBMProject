@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <cuda_runtime.h>
 #include "physics/thermal_solver_interface.h"
 #include "physics/phase_change.h"
@@ -135,9 +136,13 @@ private:
     float* d_T_new_ = nullptr;  // next temperature
     const float* d_vof_fill_ = nullptr;
 
+    // Gas wipe protection mask: 1 = near interface (protected), 0 = far field (wipe)
+    uint8_t* d_gas_wipe_mask_ = nullptr;
+
     void allocateMemory();
     void freeMemory();
     void swapBuffers() { float* tmp = d_T_; d_T_ = d_T_new_; d_T_new_ = tmp; }
+    void computeGasWipeProtectionMask(int protection_layers = 5);
 };
 
 } // namespace physics

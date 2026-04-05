@@ -422,19 +422,60 @@ __global__ void fdmEvaporationCoolingKernel(
 // ============================================================================
 // CUDA Kernel: Gas phase temperature wipe
 // ============================================================================
-// After advection-diffusion, reset gas cells (f < 0.01) to T_ambient.
-// Prevents thermal artifacts from streaming heat into inert gas regions.
 // ============================================================================
+// Gas wipe protection: only reset far-field gas cells to T_ambient.
+// Near-interface gas (within N layers of any f>0 cell) retains temperature
+// to prevent the gas wipe from stealing energy from the melt pool.
+// ============================================================================
+
+// Step 1: Initialize protection mask from fill level
+__global__ void initGasProtectionMaskKernel(
+    uint8_t* __restrict__ mask,
+    const float* __restrict__ fill_level,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+    mask[idx] = (fill_level[idx] >= 0.01f) ? 1 : 0;
+}
+
+// Step 2: Binary dilation — expand protected region by 1 cell (6-neighbor)
+// Run N times for N-layer protection. In-place update is safe because
+// we only set 0→1 (monotone), so race conditions don't cause errors.
+__global__ void dilateProtectionMaskKernel(
+    uint8_t* __restrict__ mask,
+    int nx, int ny, int nz)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + j*nx + k*nx*ny;
+    if (mask[idx] == 1) return;  // already protected
+
+    // Check 6 face neighbors
+    if (i > 0    && mask[(i-1) + j*nx + k*nx*ny]) { mask[idx] = 1; return; }
+    if (i < nx-1 && mask[(i+1) + j*nx + k*nx*ny]) { mask[idx] = 1; return; }
+    if (j > 0    && mask[i + (j-1)*nx + k*nx*ny]) { mask[idx] = 1; return; }
+    if (j < ny-1 && mask[i + (j+1)*nx + k*nx*ny]) { mask[idx] = 1; return; }
+    if (k > 0    && mask[i + j*nx + (k-1)*nx*ny]) { mask[idx] = 1; return; }
+    if (k < nz-1 && mask[i + j*nx + (k+1)*nx*ny]) { mask[idx] = 1; return; }
+}
+
+// Step 3: Gas wipe with protection mask
+// Only resets gas cells that are far from any interface (mask=0).
 __global__ void fdmGasWipeKernel(
     float* __restrict__ T,
     const float* __restrict__ fill_level,
+    const uint8_t* __restrict__ protection_mask,
     float T_ambient,
     int num_cells)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
     if (fill_level == nullptr) return;
-    if (fill_level[idx] < 0.01f) {
+    if (fill_level[idx] < 0.01f && protection_mask[idx] == 0) {
         T[idx] = T_ambient;
     }
 }
@@ -529,10 +570,12 @@ ThermalFDM::ThermalFDM(ThermalFDM&& o) noexcept
       dt_(o.dt_), dx_(o.dx_), alpha_phys_(o.alpha_phys_),
       material_(o.material_), phase_solver_(o.phase_solver_),
       d_T_(o.d_T_), d_T_new_(o.d_T_new_),
-      d_vof_fill_(o.d_vof_fill_), skip_T_cap_(o.skip_T_cap_),
+      d_vof_fill_(o.d_vof_fill_), d_gas_wipe_mask_(o.d_gas_wipe_mask_),
+      skip_T_cap_(o.skip_T_cap_),
       z_periodic_(o.z_periodic_), n_subcycle_(o.n_subcycle_)
 {
     o.d_T_ = o.d_T_new_ = nullptr;
+    o.d_gas_wipe_mask_ = nullptr;
     o.phase_solver_ = nullptr;
 }
 
@@ -541,11 +584,14 @@ void ThermalFDM::allocateMemory() {
     CUDA_CHECK(cudaMalloc(&d_T_new_, num_cells_ * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_T_,     0, num_cells_ * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_T_new_, 0, num_cells_ * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_gas_wipe_mask_, num_cells_ * sizeof(uint8_t)));
+    CUDA_CHECK(cudaMemset(d_gas_wipe_mask_, 0, num_cells_ * sizeof(uint8_t)));
 }
 
 void ThermalFDM::freeMemory() {
     if (d_T_)     { cudaFree(d_T_);     d_T_ = nullptr; }
     if (d_T_new_) { cudaFree(d_T_new_); d_T_new_ = nullptr; }
+    if (d_gas_wipe_mask_) { cudaFree(d_gas_wipe_mask_); d_gas_wipe_mask_ = nullptr; }
 }
 
 void ThermalFDM::initialize(float initial_temp) {
@@ -604,6 +650,27 @@ void ThermalFDM::streaming() {
     // d_T_ now holds the post-advDiff temperature
 }
 
+// Compute gas wipe protection mask via iterative binary dilation
+void ThermalFDM::computeGasWipeProtectionMask(int protection_layers) {
+    int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+
+    // Init: mask=1 where fill>=0.01, mask=0 elsewhere
+    initGasProtectionMaskKernel<<<gs, bs>>>(d_gas_wipe_mask_, d_vof_fill_, num_cells_);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Dilate N times for N-layer protection
+    dim3 blk(8, 8, 4);
+    dim3 grd((nx_ + blk.x - 1) / blk.x,
+             (ny_ + blk.y - 1) / blk.y,
+             (nz_ + blk.z - 1) / blk.z);
+    for (int iter = 0; iter < protection_layers; iter++) {
+        dilateProtectionMaskKernel<<<grd, blk>>>(d_gas_wipe_mask_, nx_, ny_, nz_);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+}
+
 // computeTemperature → ESM phase change correction
 void ThermalFDM::computeTemperature() {
     if (phase_solver_) {
@@ -622,10 +689,13 @@ void ThermalFDM::computeTemperature() {
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    // Gas phase wipe: reset gas cells to ambient temperature
+    // Gas phase wipe: reset far-field gas cells to ambient temperature
+    // Near-interface gas (within 5 layers) is protected to prevent energy theft
     if (d_vof_fill_ != nullptr) {
+        computeGasWipeProtectionMask(5);
         int bs = 256, gs = (num_cells_ + bs - 1) / bs;
-        fdmGasWipeKernel<<<gs, bs>>>(d_T_, d_vof_fill_, 600.0f, num_cells_);
+        fdmGasWipeKernel<<<gs, bs>>>(d_T_, d_vof_fill_, d_gas_wipe_mask_,
+                                      600.0f, num_cells_);
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
     }

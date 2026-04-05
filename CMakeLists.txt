@@ -283,6 +283,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(test_thermal_fdm PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_thermal_fdm lbm_physics lbm_io CUDA::cudart)
 
+    # Diagnostic: VOF mass conservation closed-box audit
+    add_executable(diag_vof_mass_audit apps/diag_vof_mass_audit.cu)
+    set_target_properties(diag_vof_mass_audit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(diag_vof_mass_audit lbm_physics CUDA::cudart)
+
+    # Diagnostic: Thermal bridge fix for powder-substrate contact
+    add_executable(diag_thermal_bridge apps/diag_thermal_bridge.cu)
+    set_target_properties(diag_thermal_bridge PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(diag_thermal_bridge lbm_physics lbm_io CUDA::cudart)
+
+    # Diagnostic: Mass loss destination tracking
+    add_executable(diag_mass_loss_tracking apps/diag_mass_loss_tracking.cu)
+    set_target_properties(diag_mass_loss_tracking PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(diag_mass_loss_tracking lbm_physics lbm_io CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------
