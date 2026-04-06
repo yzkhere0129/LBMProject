@@ -298,6 +298,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(diag_mass_loss_tracking PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(diag_mass_loss_tracking lbm_physics lbm_io CUDA::cudart)
 
+    # Diagnostic: Static spot melt + solidification recoil
+    add_executable(diag_spot_melt_solidify apps/diag_spot_melt_solidify.cu)
+    set_target_properties(diag_spot_melt_solidify PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(diag_spot_melt_solidify lbm_physics lbm_io CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------

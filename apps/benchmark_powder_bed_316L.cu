@@ -251,7 +251,7 @@ static void initializePowderBed(
            n_interface, 100.0f*n_interface/num_cells);
 }
 
-int main() {
+int main(int argc, char** argv) {
     auto t0 = std::chrono::high_resolution_clock::now();
     MaterialProperties mat = createMat();
     const float rho=7900, cp=700, k=20, mu=0.005f;
@@ -261,7 +261,13 @@ int main() {
     const int NX = 80, NY = 160, NZ = 80;
     const float dx = 2.5e-6f;
     const float dt = 1.0e-8f;  // 10 ns
-    const float t_total = 200.0e-6f;  // 200 μs initially
+
+    // Configurable: ./benchmark_powder_bed_316L [t_total_us] [laser_off_us]
+    // Default: 200μs total, laser always on
+    float t_total = 200.0e-6f;
+    float laser_off = -1.0f;  // negative = always on
+    if (argc >= 2) t_total = atof(argv[1]) * 1e-6f;
+    if (argc >= 3) laser_off = atof(argv[2]) * 1e-6f;
 
     printf("============================================================\n");
     printf("  LPBF Powder Bed Single-Track: 316L\n");
@@ -269,7 +275,8 @@ int main() {
     printf("============================================================\n");
     printf("Domain: %d×%d×%d = %.1fM cells (dx=%.1fμm)\n",
            NX, NY, NZ, NX*NY*NZ/1e6f, dx*1e6f);
-    printf("dt=%.0f ns, t_total=%.0f μs\n\n", dt*1e9f, t_total*1e6f);
+    printf("dt=%.0f ns, t_total=%.0f μs, laser_off=%.0f μs\n\n",
+           dt*1e9f, t_total*1e6f, laser_off > 0 ? laser_off*1e6f : -1.0f);
 
     MultiphysicsConfig config;
     config.nx=NX; config.ny=NY; config.nz=NZ; config.dx=dx; config.dt=dt;
@@ -307,7 +314,7 @@ int main() {
     config.laser_spot_radius=25.0e-6f;
     config.laser_absorptivity=0.35f;
     config.laser_penetration_depth=dx;
-    config.laser_shutoff_time=-1.0f;
+    config.laser_shutoff_time=laser_off;
     config.laser_start_x=100.0e-6f;   // center X
     config.laser_start_y=100.0e-6f;   // start Y
     config.laser_scan_vx=0.0f;
