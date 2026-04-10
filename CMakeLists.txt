@@ -303,6 +303,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(diag_spot_melt_solidify PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(diag_spot_melt_solidify lbm_physics lbm_io CUDA::cudart)
 
+    # Diagnostic: Flat plate baseline (no powder)
+    add_executable(diag_flat_plate_scan apps/diag_flat_plate_scan.cu)
+    set_target_properties(diag_flat_plate_scan PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(diag_flat_plate_scan lbm_physics lbm_io CUDA::cudart)
+
+    # Diagnostic: Isothermal capillary relaxation test
+    add_executable(diag_capillary_relax apps/diag_capillary_relax.cu)
+    set_target_properties(diag_capillary_relax PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(diag_capillary_relax lbm_physics lbm_io CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------

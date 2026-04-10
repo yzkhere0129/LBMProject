@@ -329,43 +329,45 @@ __global__ void addMarangoniForceKernel(
         }
     }
 
-    // Compute temperature gradient with one-sided differences at boundaries
+    // Compute temperature gradient using METAL-ONLY stencil.
+    // Gas cells (f < 0.5) are excluded from the gradient: if a neighbor is gas,
+    // use the current cell's temperature instead (zero-gradient extrapolation).
+    // This prevents the 600K gas temperature from contaminating ∇T at interface
+    // cells, which would create a massive false Marangoni gradient at pit edges.
+    float T_here = temperature[idx];
     float grad_T_x = 0.0f, grad_T_y = 0.0f, grad_T_z = 0.0f;
 
+    // Helper: read temperature from neighbor, but only if it's metal (f>=0.5)
+    // Otherwise fall back to T_here (zero-gradient into gas)
+    auto T_metal = [&](int ni, int nj, int nk) -> float {
+        if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 || nk >= nz)
+            return T_here;
+        int nidx = ni + nx * (nj + ny * nk);
+        return (fill_level[nidx] >= 0.5f) ? temperature[nidx] : T_here;
+    };
+
     if (i > 0 && i < nx - 1) {
-        int idx_xp = (i + 1) + nx * (j + ny * k);
-        int idx_xm = (i - 1) + nx * (j + ny * k);
-        grad_T_x = (temperature[idx_xp] - temperature[idx_xm]) / (2.0f * dx);
+        grad_T_x = (T_metal(i+1,j,k) - T_metal(i-1,j,k)) / (2.0f * dx);
     } else if (i == 0) {
-        int idx_xp = (i + 1) + nx * (j + ny * k);
-        grad_T_x = (temperature[idx_xp] - temperature[idx]) / dx;
-    } else { // i == nx - 1
-        int idx_xm = (i - 1) + nx * (j + ny * k);
-        grad_T_x = (temperature[idx] - temperature[idx_xm]) / dx;
+        grad_T_x = (T_metal(i+1,j,k) - T_here) / dx;
+    } else {
+        grad_T_x = (T_here - T_metal(i-1,j,k)) / dx;
     }
 
     if (j > 0 && j < ny - 1) {
-        int idx_yp = i + nx * ((j + 1) + ny * k);
-        int idx_ym = i + nx * ((j - 1) + ny * k);
-        grad_T_y = (temperature[idx_yp] - temperature[idx_ym]) / (2.0f * dx);
+        grad_T_y = (T_metal(i,j+1,k) - T_metal(i,j-1,k)) / (2.0f * dx);
     } else if (j == 0) {
-        int idx_yp = i + nx * ((j + 1) + ny * k);
-        grad_T_y = (temperature[idx_yp] - temperature[idx]) / dx;
-    } else { // j == ny - 1
-        int idx_ym = i + nx * ((j - 1) + ny * k);
-        grad_T_y = (temperature[idx] - temperature[idx_ym]) / dx;
+        grad_T_y = (T_metal(i,j+1,k) - T_here) / dx;
+    } else {
+        grad_T_y = (T_here - T_metal(i,j-1,k)) / dx;
     }
 
     if (k > 0 && k < nz - 1) {
-        int idx_zp = i + nx * (j + ny * (k + 1));
-        int idx_zm = i + nx * (j + ny * (k - 1));
-        grad_T_z = (temperature[idx_zp] - temperature[idx_zm]) / (2.0f * dx);
+        grad_T_z = (T_metal(i,j,k+1) - T_metal(i,j,k-1)) / (2.0f * dx);
     } else if (k == 0) {
-        int idx_zp = i + nx * (j + ny * (k + 1));
-        grad_T_z = (temperature[idx_zp] - temperature[idx]) / dx;
-    } else { // k == nz - 1
-        int idx_zm = i + nx * (j + ny * (k - 1));
-        grad_T_z = (temperature[idx] - temperature[idx_zm]) / dx;
+        grad_T_z = (T_metal(i,j,k+1) - T_here) / dx;
+    } else {
+        grad_T_z = (T_here - T_metal(i,j,k-1)) / dx;
     }
 
     // Compute surface-tangential gradient: ∇_s T = ∇T - (∇T · n) n

@@ -166,7 +166,7 @@ int main() {
     config.dsigma_dT=mat.dsigma_dT;
     config.recoil_force_multiplier=1.0f;
     config.recoil_max_pressure=1e8f;
-    config.marangoni_csf_multiplier=4.0f;
+    config.marangoni_csf_multiplier=1.0f;
     config.evap_cooling_factor=1.0f;
 
     // STATIONARY laser at (100μm, 150μm)

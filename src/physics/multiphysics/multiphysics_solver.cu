@@ -1694,8 +1694,9 @@ void MultiphysicsSolver::thermalStep(float dt) {
         thermal_->setVOFFillLevel(vof_->getFillLevel());
     }
 
-    // Keyhole mode: disable hard T cap when recoil pressure handles evaporation
-    thermal_->setSkipTemperatureCap(config_.enable_recoil_pressure);
+    // T cap is ALWAYS enforced. Evaporation self-limits T at T_boil in reality;
+    // without the cap, T >> T_boil causes exponential recoil blowup.
+    thermal_->setSkipTemperatureCap(false);
 
     // Thermal-fluid coupling: pass velocity for advection term v*nabla(T)
     const float* ux = config_.enable_thermal_advection && fluid_ ? fluid_->getVelocityX() : nullptr;
@@ -1799,6 +1800,15 @@ void MultiphysicsSolver::thermalStep(float dt) {
 
     // Compute temperature from distribution functions
     thermal_->computeTemperature();
+
+    // Temperature safety cap: enforce T ≤ T_boil (3200K for 316L).
+    // Without this cap, the FDM solver allows T >> T_boil, causing
+    // exponentially larger recoil pressure (Clausius-Clapeyron) that
+    // blasts material out of the melt pool creating unphysical craters.
+    // In reality, evaporation self-limits T at T_boil.
+    if (thermal_) {
+        thermal_->applyTemperatureSafetyCap();
+    }
 
     // Evaporation cooling: ALWAYS apply self-contained HKL energy sink
     // to ALL cells with T > T_boil (not just VOF interface cells).

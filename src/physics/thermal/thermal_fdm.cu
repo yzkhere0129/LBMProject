@@ -407,7 +407,7 @@ __global__ void fdmEvaporationCoolingKernel(
     // Energy flux [W/m²] with interface area compensation.
     // VOF interface is smeared over 2-3 cells → effective evaporation area
     // is underestimated. Multiplier compensates for this discrete deficit.
-    constexpr float evap_area_compensation = 5.0f;
+    constexpr float evap_area_compensation = 1.0f;
     float q_evap = J_evap * L_vap * cooling_factor * evap_area_compensation;
 
     // Temperature decrement [K]
@@ -464,7 +464,12 @@ __global__ void dilateProtectionMaskKernel(
 }
 
 // Step 3: Gas wipe with protection mask
-// Only resets gas cells that are far from any interface (mask=0).
+// Far-field gas (mask=0): hard reset to T_ambient.
+// Near-interface gas (mask=1, f<0.01): exponential relaxation toward T_ambient.
+//   This prevents "ghost heat layers" where evacuated cavities near the
+//   interface retain T_boil forever, blocking thermal relaxation and
+//   distorting Marangoni gradients.
+//   Relaxation rate: T_new = T - α*(T - T_amb), α = 0.01 per step (~1/100 decay).
 __global__ void fdmGasWipeKernel(
     float* __restrict__ T,
     const float* __restrict__ fill_level,
@@ -475,8 +480,17 @@ __global__ void fdmGasWipeKernel(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
     if (fill_level == nullptr) return;
-    if (fill_level[idx] < 0.01f && protection_mask[idx] == 0) {
+
+    float f = fill_level[idx];
+    if (f >= 0.01f) return;  // Metal cell — don't touch
+
+    if (protection_mask[idx] == 0) {
+        // Far-field gas: hard reset
         T[idx] = T_ambient;
+    } else {
+        // Near-interface gas cavity: gentle exponential relaxation
+        // Prevents ghost heat layers while allowing transient thermal coupling
+        T[idx] -= 0.01f * (T[idx] - T_ambient);
     }
 }
 
