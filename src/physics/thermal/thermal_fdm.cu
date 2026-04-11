@@ -362,6 +362,7 @@ __global__ void fdmDirichletKernel(
 // ============================================================================
 __global__ void fdmEvaporationCoolingKernel(
     float* __restrict__ T,
+    const float* __restrict__ fill_level,  // VOF fill level (nullable)
     int nx, int ny, int nz,
     int z_surface,       // -1 = volumetric mode (all cells)
     float dt, float dx,
@@ -380,6 +381,18 @@ __global__ void fdmEvaporationCoolingKernel(
         if (ix >= nx || iy >= ny) return;
         idx = ix + iy * nx + z_surface * nx * ny;
     }
+
+    // BUG FIX: Only apply evaporation at the free surface (interface cells).
+    // Previous code had NO VOF check, cooling ALL cells with T > T_boil including
+    // bulk liquid and even gas cells, over-cooling by 4× in typical domains.
+    // Physical reality: HKL evaporation requires a vapor-liquid interface.
+    // Interior liquid at T > T_boil is superheated but cannot evaporate without
+    // a free surface. Only cells with f ∈ (0.01, 0.99) are actual interface cells.
+    if (fill_level != nullptr) {
+        float f = fill_level[idx];
+        if (f <= 0.01f || f >= 0.99f) return;  // not at free surface
+    }
+
     float Tc = T[idx];
 
     float T_boil = mat.T_vaporization;
@@ -390,10 +403,6 @@ __global__ void fdmEvaporationCoolingKernel(
     float M     = mat.molar_mass;       // kg/mol
     constexpr float R_gas = 8.314f;     // J/(mol·K)
     constexpr float P_ref = 101325.0f;  // Pa (1 atm)
-    // Evaporation coefficient: 0.18 (physical value for metals).
-    // With volumetric evaporation cooling on ALL overheated cells,
-    // T naturally stabilizes at ~3400K. P_recoil at 3400K = 137 kPa
-    // which exceeds P_Laplace = 70 kPa → keyhole forms.
     constexpr float alpha_evap = 0.18f;
 
     float exponent = (L_vap * M / R_gas) * (1.0f / T_boil - 1.0f / Tc);
@@ -404,11 +413,7 @@ __global__ void fdmEvaporationCoolingKernel(
     // Hertz-Knudsen-Langmuir evaporation mass flux [kg/(m²·s)]
     float J_evap = alpha_evap * P_sat / sqrtf(2.0f * 3.14159265f * R_gas * Tc / M);
 
-    // Energy flux [W/m²] with interface area compensation.
-    // VOF interface is smeared over 2-3 cells → effective evaporation area
-    // is underestimated. Multiplier compensates for this discrete deficit.
-    constexpr float evap_area_compensation = 1.0f;
-    float q_evap = J_evap * L_vap * cooling_factor * evap_area_compensation;
+    float q_evap = J_evap * L_vap * cooling_factor;
 
     // Temperature decrement [K]
     float rho = mat.getDensity(Tc);
@@ -801,13 +806,18 @@ void ThermalFDM::applyEvaporationCooling(const float* J_evap, const float* fill,
             material_.L_vaporization, dt, dx, material_, factor, num_cells_);
         CUDA_CHECK_KERNEL();
     } else {
-        // Volumetric evaporation: cool ALL cells with T > T_boil.
-        // Physics: any overheated metal loses energy through latent heat.
-        // dT = q_evap * dt / (rho*cp*dx), clamped at T_boil (no undershoot).
-        // This is the primary temperature regulation mechanism.
+        // Fallback path: HKL cooling on overheated interface cells only.
+        // Uses d_vof_fill_ (set via setVOFFillLevel) to restrict to interface.
+        // If no VOF fill is set, no evaporation is applied (no free surface,
+        // so evaporation has no physical meaning).
+        if (d_vof_fill_ == nullptr) {
+            // No VOF context — skip evaporation entirely.
+            // (Cannot evaporate without a free surface.)
+            return;
+        }
         int bs = 256, gs = (num_cells_ + bs - 1) / bs;
         fdmEvaporationCoolingKernel<<<gs, bs>>>(
-            d_T_, nx_, ny_, nz_, -1,  // z_surface=-1 signals "all cells" mode
+            d_T_, d_vof_fill_, nx_, ny_, nz_, -1,
             dt, dx, material_, factor);
         CUDA_CHECK_KERNEL();
     }

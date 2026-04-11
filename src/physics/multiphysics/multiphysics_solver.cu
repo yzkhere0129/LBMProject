@@ -1694,9 +1694,10 @@ void MultiphysicsSolver::thermalStep(float dt) {
         thermal_->setVOFFillLevel(vof_->getFillLevel());
     }
 
-    // T cap is ALWAYS enforced. Evaporation self-limits T at T_boil in reality;
-    // without the cap, T >> T_boil causes exponential recoil blowup.
-    thermal_->setSkipTemperatureCap(false);
+    // NO T cap: let physics self-regulate via evaporation cooling.
+    // Skip the cap entirely so temperature can reach its natural equilibrium
+    // where laser input balances evaporation + conduction losses.
+    thermal_->setSkipTemperatureCap(true);
 
     // Thermal-fluid coupling: pass velocity for advection term v*nabla(T)
     const float* ux = config_.enable_thermal_advection && fluid_ ? fluid_->getVelocityX() : nullptr;
@@ -1801,27 +1802,15 @@ void MultiphysicsSolver::thermalStep(float dt) {
     // Compute temperature from distribution functions
     thermal_->computeTemperature();
 
-    // STEP 1: Evaporation cooling — HKL energy sink on ALL cells with T > T_boil.
-    // This is the PRIMARY temperature regulation mechanism: physically correct
-    // Hertz-Knudsen-Langmuir flux removes latent heat at the evaporating surface.
-    // Must run BEFORE the hard cap so it can act on the actual overheated temperature.
-    // The VOF-path evaporation (line 1496) only cools ~50-80 interface cells;
-    // this volumetric call covers all overheated interior cells too.
-    if (thermal_) {
+    // Evaporation cooling — HKL energy sink at the free surface.
+    // Only applied here when enable_evaporation_mass_loss is NOT set
+    // (i.e., VOF mass loss is disabled). When mass loss IS enabled, evaporation
+    // cooling is already applied in thermalStep() via the J_evap path (line 1504),
+    // which correctly restricts cooling to interface cells. Applying it again here
+    // would double-count the energy removal.
+    if (thermal_ && !config_.enable_evaporation_mass_loss) {
         thermal_->applyEvaporationCooling(nullptr, nullptr,
                                           config_.dt, config_.dx, 1.0f);
-    }
-
-    // STEP 2: Hard failsafe cap at T_boil + 300K.
-    // After physical evaporation cooling, T should naturally stabilize near T_boil.
-    // The +300K overshoot window allows meaningful recoil pressure to develop
-    // (P_recoil at T_boil+300K ≈ 137 kPa vs 55 kPa at T_boil exactly — 2.5×).
-    // The cap prevents exponential Clausius-Clapeyron runaway above ~3600K.
-    // Physical rationale: real LPBF has transient T overshoots of 100-400K above
-    // T_boil before the evaporative cooling response can quench them.
-    if (thermal_) {
-        const float T_boil = config_.material.T_vaporization;
-        thermal_->applyTemperatureFailsafeCap(T_boil + 300.0f);
     }
 
     // ============================================================

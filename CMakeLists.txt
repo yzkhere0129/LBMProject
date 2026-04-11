@@ -313,6 +313,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(diag_capillary_relax PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(diag_capillary_relax lbm_physics lbm_io CUDA::cudart)
 
+    # Unit test: Marangoni force kernel — isolated analytical comparison
+    add_executable(test_marangoni_unit apps/test_marangoni_unit.cu)
+    set_target_properties(test_marangoni_unit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_marangoni_unit lbm_physics CUDA::cudart)
+
+    # Unit test: HKL evaporation cooling — isolated analytical comparison
+    add_executable(test_evaporation_unit apps/test_evaporation_unit.cu)
+    set_target_properties(test_evaporation_unit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_evaporation_unit lbm_physics CUDA::cudart)
+
+    # Unit test: Recoil pressure force — isolated analytical comparison
+    add_executable(test_recoil_unit apps/test_recoil_unit.cu)
+    set_target_properties(test_recoil_unit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_recoil_unit lbm_physics CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------

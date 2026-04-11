@@ -337,13 +337,19 @@ __global__ void addMarangoniForceKernel(
     float T_here = temperature[idx];
     float grad_T_x = 0.0f, grad_T_y = 0.0f, grad_T_z = 0.0f;
 
-    // Helper: read temperature from neighbor, but only if it's metal (f>=0.5)
-    // Otherwise fall back to T_here (zero-gradient into gas)
+    // Helper: read temperature from neighbor, but only if it has any metal
+    // (f > 0.01 includes both liquid and interface cells).
+    // Threshold lowered from 0.5 → 0.01 to fix BUG: gas-side interface cells
+    // (f ∈ [0.01, 0.5)) at the same z-layer as the query cell share f < 0.5,
+    // so the old f>=0.5 threshold zeroed out their tangential ∇T, killing
+    // ~half the Marangoni force (the gas-side half of the diffuse interface).
+    // f > 0.01 still excludes pure far-field gas (f≈0) which carries unphysical
+    // temperatures and must not contaminate the surface gradient.
     auto T_metal = [&](int ni, int nj, int nk) -> float {
         if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 || nk >= nz)
             return T_here;
         int nidx = ni + nx * (nj + ny * nk);
-        return (fill_level[nidx] >= 0.5f) ? temperature[nidx] : T_here;
+        return (fill_level[nidx] > 0.01f) ? temperature[nidx] : T_here;
     };
 
     if (i > 0 && i < nx - 1) {
