@@ -85,6 +85,7 @@ public:
                                  float dt, float dx,
                                  float cooling_factor = 1.0f) override;
     void applyTemperatureSafetyCap() override;
+    void applyTemperatureFailsafeCap(float T_max);
 
     float* getTemperature() override { return d_T_; }
     const float* getTemperature() const override { return d_T_; }

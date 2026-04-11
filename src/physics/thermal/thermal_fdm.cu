@@ -821,6 +821,13 @@ void ThermalFDM::applyTemperatureSafetyCap() {
     CUDA_CHECK_KERNEL();
 }
 
+void ThermalFDM::applyTemperatureFailsafeCap(float T_max) {
+    if (T_max <= 0.0f) return;
+    int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+    fdmTCapKernel<<<gs, bs>>>(d_T_, T_max, num_cells_);
+    CUDA_CHECK_KERNEL();
+}
+
 float* ThermalFDM::getLiquidFraction() {
     return phase_solver_ ? phase_solver_->getLiquidFraction() : nullptr;
 }

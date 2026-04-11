@@ -72,6 +72,8 @@ public:
                                          float cooling_factor = 1.0f) = 0;
 
     virtual void applyTemperatureSafetyCap() = 0;
+    /// Hard cap at an arbitrary ceiling (failsafe — does not use material T_vaporization)
+    virtual void applyTemperatureFailsafeCap(float T_max) { applyTemperatureSafetyCap(); (void)T_max; }
 
     // ================================================================
     // Field access (device pointers)

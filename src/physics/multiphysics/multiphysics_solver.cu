@@ -1801,23 +1801,27 @@ void MultiphysicsSolver::thermalStep(float dt) {
     // Compute temperature from distribution functions
     thermal_->computeTemperature();
 
-    // Temperature safety cap: enforce T ≤ T_boil (3200K for 316L).
-    // Without this cap, the FDM solver allows T >> T_boil, causing
-    // exponentially larger recoil pressure (Clausius-Clapeyron) that
-    // blasts material out of the melt pool creating unphysical craters.
-    // In reality, evaporation self-limits T at T_boil.
-    if (thermal_) {
-        thermal_->applyTemperatureSafetyCap();
-    }
-
-    // Evaporation cooling: ALWAYS apply self-contained HKL energy sink
-    // to ALL cells with T > T_boil (not just VOF interface cells).
-    // The VOF-path evaporation (line 1496) only cools ~50-80 interface cells,
-    // leaving thousands of overheated interior cells uncooled.
-    // This call uses the self-contained kernel that sweeps the entire z_max surface.
+    // STEP 1: Evaporation cooling — HKL energy sink on ALL cells with T > T_boil.
+    // This is the PRIMARY temperature regulation mechanism: physically correct
+    // Hertz-Knudsen-Langmuir flux removes latent heat at the evaporating surface.
+    // Must run BEFORE the hard cap so it can act on the actual overheated temperature.
+    // The VOF-path evaporation (line 1496) only cools ~50-80 interface cells;
+    // this volumetric call covers all overheated interior cells too.
     if (thermal_) {
         thermal_->applyEvaporationCooling(nullptr, nullptr,
                                           config_.dt, config_.dx, 1.0f);
+    }
+
+    // STEP 2: Hard failsafe cap at T_boil + 300K.
+    // After physical evaporation cooling, T should naturally stabilize near T_boil.
+    // The +300K overshoot window allows meaningful recoil pressure to develop
+    // (P_recoil at T_boil+300K ≈ 137 kPa vs 55 kPa at T_boil exactly — 2.5×).
+    // The cap prevents exponential Clausius-Clapeyron runaway above ~3600K.
+    // Physical rationale: real LPBF has transient T overshoots of 100-400K above
+    // T_boil before the evaporative cooling response can quench them.
+    if (thermal_) {
+        const float T_boil = config_.material.T_vaporization;
+        thermal_->applyTemperatureFailsafeCap(T_boil + 300.0f);
     }
 
     // ============================================================
