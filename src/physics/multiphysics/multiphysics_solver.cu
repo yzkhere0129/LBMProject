@@ -1505,11 +1505,11 @@ void MultiphysicsSolver::step(float dt) {
                                           dt, config_.dx,
                                           config_.evap_cooling_factor);
 
-        // VOF mass loss re-enabled with adaptation: scale flux by 0.05
-        // to limit cumulative loss to <3% of total metal over full scan.
+        // VOF mass loss: apply full physical HKL mass flux (scale=1.0).
+        // Previous band-aid (scale=0.05) artificially suppressed 95% of evaporation.
         {
             int num_cells = config_.nx * config_.ny * config_.nz;
-            constexpr float mass_loss_scale = 0.05f;
+            constexpr float mass_loss_scale = 1.0f;
             // Scale the evap flux before passing to VOF
             std::vector<float> h_J(num_cells);
             CUDA_CHECK(cudaMemcpy(h_J.data(), d_evap_mass_flux_,
@@ -2238,8 +2238,10 @@ void MultiphysicsSolver::fluidStep(float dt) {
         std::cout << "  F at max idx " << max_f_idx << ": (" << h_fx_temp[max_f_idx]
                   << ", " << h_fy_temp[max_f_idx] << ", " << h_fz_temp[max_f_idx] << ")\n";
         std::cout << std::fixed << std::setprecision(3);
-        std::cout << "  Current max velocity: " << max_v_before << " (lattice units)\n";
-        std::cout << "  Current max velocity: " << (max_v_before * config_.dx / config_.dt) << " m/s (physical)\n";
+        std::cout << "  Current max velocity (all): " << max_v_before << " (lattice units)\n";
+        std::cout << "  Current max velocity (all): " << (max_v_before * config_.dx / config_.dt) << " m/s (physical)\n";
+        float v_metal = getMaxMetalVelocity();
+        std::cout << "  Current max velocity (metal f>0.01): " << v_metal << " m/s\n";
     }
 
     // ========================================================================
@@ -2715,6 +2717,27 @@ float MultiphysicsSolver::getMaxVelocity() const {
     // Convert from lattice units to physical units
     // v_phys = v_lattice * (dx / dt)
     return max_vel_lattice * (config_.dx / config_.dt);
+}
+
+float MultiphysicsSolver::getMaxMetalVelocity() const {
+    if (!fluid_ || !vof_) return getMaxVelocity();
+
+    int num_cells = config_.nx * config_.ny * config_.nz;
+
+    std::vector<float> h_vx(num_cells), h_vy(num_cells), h_vz(num_cells), h_f(num_cells);
+    cudaMemcpy(h_vx.data(), fluid_->getVelocityX(), num_cells*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_vy.data(), fluid_->getVelocityY(), num_cells*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_vz.data(), fluid_->getVelocityZ(), num_cells*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_f.data(), vof_->getFillLevel(), num_cells*sizeof(float), cudaMemcpyDeviceToHost);
+
+    float max_v = 0;
+    for (int i = 0; i < num_cells; i++) {
+        if (h_f[i] > 0.01f) {
+            float v = sqrtf(h_vx[i]*h_vx[i] + h_vy[i]*h_vy[i] + h_vz[i]*h_vz[i]);
+            if (v > max_v) max_v = v;
+        }
+    }
+    return max_v * (config_.dx / config_.dt);
 }
 
 float MultiphysicsSolver::getMaxTemperature() const {

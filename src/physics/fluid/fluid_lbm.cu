@@ -27,6 +27,10 @@ __global__ void fluidTRTCollisionEDMKernel(
     const float*, float*, float*, float*, float*, float*,
     const float*, const float*, const float*, const float*,
     float omega, float omega_minus, float cs_smag, int nx, int ny, int nz);
+__global__ void fluidRegularizedCollisionEDMKernel(
+    const float*, float*, float*, float*, float*, float*,
+    const float*, const float*, const float*, const float*,
+    float omega, float cs_smag, int nx, int ny, int nz);
 
 // Forward declarations of helper functions
 __device__ __forceinline__ double computeEquilibriumDouble(
@@ -377,7 +381,15 @@ void FluidLBM::collisionBGKwithEDM(const float* force_x,
              (ny_ + block.y - 1) / block.y,
              (nz_ + block.z - 1) / block.z);
 
-    if (omega_minus_ > 0.0f) {
+    if (use_regularized_) {
+        // Regularized kernel uses more registers than TRT; use smaller block
+        dim3 block_reg(4, 4, 4);
+        dim3 grid_reg((nx_ + 3) / 4, (ny_ + 3) / 4, (nz_ + 3) / 4);
+        fluidRegularizedCollisionEDMKernel<<<grid_reg, block_reg>>>(
+            d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+            force_x, force_y, force_z, darcy_coeff, omega_,
+            cs_smag_, nx_, ny_, nz_);
+    } else if (omega_minus_ > 0.0f) {
         fluidTRTCollisionEDMKernel<<<grid, block>>>(
             d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
             force_x, force_y, force_z, darcy_coeff, omega_, omega_minus_,
@@ -1615,6 +1627,159 @@ __global__ void fluidTRTCollisionEDMKernel(
     }
 }
 
+// ============================================================================
+// Regularized BGK + EDM Collision Kernel (Latt & Chopard 2006)
+//
+// Unlike TRT which relaxes symmetric/anti-symmetric parts separately,
+// regularized collision projects f_neq onto the physical 2nd-order Hermite
+// subspace (stress tensor), discarding all ghost/higher-order moments.
+// This makes it stable at τ → 0.5 without artificial τ clamping.
+//
+// Algorithm:
+//   1. Compute ρ, u from f_i (same as TRT)
+//   2. Compute f_eq (same)
+//   3. Compute non-eq stress tensor: Π_αβ = Σ f_neq_i × c_iα × c_iβ
+//   4. Reconstruct regularized f_neq: f_neq_reg_i = w_i/(2cs⁴) × Σ_αβ Π_αβ(c_iα c_iβ - cs²δ_αβ)
+//   5. Collide: f_new = f_eq + (1-ω) × f_neq_reg + EDM shift
+// ============================================================================
+__global__ void fluidRegularizedCollisionEDMKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho_out,
+    float* ux_out,
+    float* uy_out,
+    float* uz_out,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
+    float omega,       // 1/τ — can be physical value, no clamp needed
+    float cs_smag,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    float fx = force_x[id];
+    float fy = force_y[id];
+    float fz = force_z[id];
+
+    // Step 1: Compute macroscopic from distributions
+    float m_rho = 0.0f, mx = 0.0f, my = 0.0f, mz = 0.0f;
+    float f_local[19];
+    for (int q = 0; q < 19; q++) {
+        float f = f_src[id + q * n_cells];
+        f_local[q] = f;
+        m_rho += f;
+        mx += ex[q] * f;
+        my += ey[q] * f;
+        mz += ez[q] * f;
+    }
+
+    // Semi-implicit Darcy
+    const float RHO_MIN = 1e-6f;
+    float K = darcy_coeff[id];
+    float denom = fmaxf(m_rho + 0.5f * K, RHO_MIN);
+    float u_bare_x = mx / denom;
+    float u_bare_y = my / denom;
+    float u_bare_z = mz / denom;
+
+    // EDM velocity increment
+    float inv_rho = 1.0f / fmaxf(m_rho, RHO_MIN);
+    float du_x = fx * inv_rho;
+    float du_y = fy * inv_rho;
+    float du_z = fz * inv_rho;
+
+    float u_phys_x = u_bare_x + 0.5f * du_x;
+    float u_phys_y = u_bare_y + 0.5f * du_y;
+    float u_phys_z = u_bare_z + 0.5f * du_z;
+
+    // Velocity clamp (same as TRT)
+    const float U_MAX = 0.25f;
+    float u_bare_mag = sqrtf(u_bare_x*u_bare_x + u_bare_y*u_bare_y + u_bare_z*u_bare_z);
+    if (u_bare_mag > U_MAX) {
+        float scale = U_MAX / u_bare_mag;
+        u_bare_x *= scale; u_bare_y *= scale; u_bare_z *= scale;
+        u_phys_x = u_bare_x + 0.5f * du_x;
+        u_phys_y = u_bare_y + 0.5f * du_y;
+        u_phys_z = u_bare_z + 0.5f * du_z;
+    }
+
+    rho_out[id] = m_rho;
+    ux_out[id] = u_phys_x;
+    uy_out[id] = u_phys_y;
+    uz_out[id] = u_phys_z;
+
+    // Step 2+3: Compute equilibrium and non-equilibrium stress tensor
+    // Π_αβ^neq = Σ_q (f_q - f_eq_q) × c_qα × c_qβ
+    // For D3Q19: 6 independent components (symmetric tensor)
+    float Pi_xx = 0, Pi_yy = 0, Pi_zz = 0;
+    float Pi_xy = 0, Pi_xz = 0, Pi_yz = 0;
+
+    for (int q = 0; q < 19; q++) {
+        float feq = D3Q19::computeEquilibrium(q, m_rho, u_bare_x, u_bare_y, u_bare_z);
+        float f_neq = f_local[q] - feq;
+        float cx = ex[q], cy = ey[q], cz = ez[q];
+        Pi_xx += f_neq * cx * cx;
+        Pi_yy += f_neq * cy * cy;
+        Pi_zz += f_neq * cz * cz;
+        Pi_xy += f_neq * cx * cy;
+        Pi_xz += f_neq * cx * cz;
+        Pi_yz += f_neq * cy * cz;
+    }
+
+    // Smagorinsky: compute effective omega from strain rate magnitude
+    // |S| ∝ |Π_neq| / (2ρcs²τ)
+    float omega_eff = omega;
+    if (cs_smag > 0.0f) {
+        omega_eff = computeSmagorinskyOmega(f_local, m_rho, u_bare_x, u_bare_y, u_bare_z, omega, cs_smag);
+    }
+
+    // Step 4+5: Reconstruct regularized f_neq and collide
+    // f_neq_reg_q = w_q / (2 cs⁴) × Σ_αβ Π_αβ^neq × (c_qα c_qβ - cs² δ_αβ)
+    // cs² = 1/3, cs⁴ = 1/9
+    // So: f_neq_reg_q = w_q × 9/2 × Σ_αβ Π_αβ × (c_qα c_qβ - δ_αβ/3)
+    const float cs2 = 1.0f / 3.0f;
+    const float coeff = 4.5f;  // 9/2 = 1/(2 cs⁴)
+
+    float u_shifted_x = u_bare_x + du_x;
+    float u_shifted_y = u_bare_y + du_y;
+    float u_shifted_z = u_bare_z + du_z;
+
+    for (int q = 0; q < 19; q++) {
+        float cx = ex[q], cy = ey[q], cz = ez[q];
+
+        // Q_αβ = c_α c_β - cs² δ_αβ  (traceless part of velocity tensor)
+        float Qxx = cx*cx - cs2;
+        float Qyy = cy*cy - cs2;
+        float Qzz = cz*cz - cs2;
+        float Qxy = cx*cy;
+        float Qxz = cx*cz;
+        float Qyz = cy*cz;
+
+        // f_neq_reg = w × 1/(2cs⁴) × (Π:Q)
+        // Π:Q = Π_xx×Qxx + Π_yy×Qyy + Π_zz×Qzz + 2(Π_xy×Qxy + Π_xz×Qxz + Π_yz×Qyz)
+        float PiQ = Pi_xx*Qxx + Pi_yy*Qyy + Pi_zz*Qzz
+                  + 2.0f*(Pi_xy*Qxy + Pi_xz*Qxz + Pi_yz*Qyz);
+
+        float f_neq_reg = w[q] * coeff * PiQ;
+
+        float feq_bare = D3Q19::computeEquilibrium(q, m_rho, u_bare_x, u_bare_y, u_bare_z);
+        float feq_shifted = D3Q19::computeEquilibrium(q, m_rho, u_shifted_x, u_shifted_y, u_shifted_z);
+
+        // Regularized collision: f_new = f_eq + (1-ω) × f_neq_reg + EDM shift
+        f_dst[id + q * n_cells] = feq_bare
+            + (1.0f - omega_eff) * f_neq_reg
+            + (feq_shifted - feq_bare);
+    }
+}
+
 // Semi-implicit Darcy macroscopic kernel for EDM
 // In EDM scheme, forcing is handled by the equilibrium shift in collision,
 // NOT by the +0.5*F/ρ Guo correction. So the macroscopic velocity after
@@ -2597,6 +2762,18 @@ __global__ void fluidTRTCollisionVariableOmegaKernel(
 void FluidLBM::setTRT(float magic_parameter) {
     float tau_minus = 0.5f + magic_parameter / (tau_ - 0.5f);
     omega_minus_ = 1.0f / tau_minus;
+}
+
+void FluidLBM::setRegularized(bool enable, float tau_override) {
+    use_regularized_ = enable;
+    if (enable && tau_override > 0.0f) {
+        tau_ = tau_override;
+        omega_ = 1.0f / tau_;
+        std::cout << "  [REGULARIZED] tau=" << tau_ << " (override), omega=" << omega_ << std::endl;
+    }
+    if (enable) {
+        std::cout << "  [REGULARIZED] Collision mode: Regularized BGK+EDM (Latt 2006)" << std::endl;
+    }
 }
 
 // ============================================================================

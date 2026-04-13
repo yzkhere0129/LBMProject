@@ -328,6 +328,58 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(test_recoil_unit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_recoil_unit lbm_physics CUDA::cudart)
 
+    # Phase 2 verification tests
+    add_executable(audit_conduction overnight_audit/tests/test_pure_conduction.cu)
+    set_target_properties(audit_conduction PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(audit_conduction lbm_physics CUDA::cudart)
+
+    add_executable(audit_low_power overnight_audit/tests/test_low_power.cu)
+    set_target_properties(audit_low_power PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(audit_low_power lbm_physics lbm_io CUDA::cudart)
+
+    # Round 2 audit tests
+    add_executable(r2_ma_evap round2_audit/tests/test_ma_with_evap.cu)
+    set_target_properties(r2_ma_evap PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r2_ma_evap lbm_physics lbm_io CUDA::cudart)
+
+    add_executable(r2_energy round2_audit/tests/test_energy_conservation.cu)
+    set_target_properties(r2_energy PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r2_energy lbm_physics lbm_io CUDA::cudart)
+
+    add_executable(r2_energy_v2 round2_audit/tests/test_energy_v2.cu)
+    set_target_properties(r2_energy_v2 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r2_energy_v2 lbm_physics CUDA::cudart)
+
+    add_executable(r2_iface_vel round2_audit/tests/test_interface_velocity.cu)
+    set_target_properties(r2_iface_vel PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r2_iface_vel lbm_physics lbm_io CUDA::cudart)
+
+    add_executable(r2_iface_150w round2_audit/tests/test_iface_vel_150w.cu)
+    set_target_properties(r2_iface_150w PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r2_iface_150w lbm_physics lbm_io CUDA::cudart)
+
+    add_executable(r2_iface_150w_relax round2_audit/tests/test_iface_vel_150w_relaxed.cu)
+    set_target_properties(r2_iface_150w_relax PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r2_iface_150w_relax lbm_physics lbm_io CUDA::cudart)
+
+    add_executable(r2_meltpool_state round2_audit/tests/test_meltpool_state.cu)
+    set_target_properties(r2_meltpool_state PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r2_meltpool_state lbm_physics lbm_io CUDA::cudart)
+
+    add_executable(r2_maran_vcheck round2_audit/tests/test_marangoni_velocity_check.cu)
+    set_target_properties(r2_maran_vcheck PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r2_maran_vcheck lbm_physics lbm_io CUDA::cudart)
+
+    # Round 3
+    add_executable(r3_cfl_compare round3_audit/tests/test_cfl_comparison.cu)
+    set_target_properties(r3_cfl_compare PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r3_cfl_compare lbm_physics lbm_io CUDA::cudart)
+
+    # Round 4
+    add_executable(r4_trt_vs_reg round4/tests/test_trt_vs_reg.cu)
+    set_target_properties(r4_trt_vs_reg PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(r4_trt_vs_reg lbm_physics lbm_io CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------

@@ -163,6 +163,14 @@ public:
     void setTRT(float magic_parameter = 3.0f / 16.0f);
 
     /**
+     * @brief Enable Regularized collision (Latt & Chopard 2006)
+     * Stable at τ→0.5 without artificial clamping.
+     * @param enable true to use regularized, false for TRT (default)
+     * @param tau_override if > 0, use this τ instead of the clamped value
+     */
+    void setRegularized(bool enable, float tau_override = 0.0f);
+
+    /**
      * @brief Perform TRT collision step with uniform force
      *
      * Two-Relaxation-Time (TRT) collision operator improves accuracy
@@ -518,6 +526,7 @@ private:
     float cs_smag_ = 0.1f; ///< Smagorinsky constant (0 = LES disabled)
     float tau_;             ///< BGK relaxation time
     float omega_minus_;     ///< TRT anti-symmetric relaxation (0 = BGK mode)
+    bool use_regularized_ = false;  ///< Use Regularized collision instead of TRT
 
     // Boundary configuration
     BoundaryType boundary_x_;  ///< Boundary type in x-direction

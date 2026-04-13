@@ -598,6 +598,7 @@ public:
      * @return Max |u| [m/s]
      */
     float getMaxVelocity() const;
+    float getMaxMetalVelocity() const;  ///< Max |u| in metal cells (f>0.01) [m/s]
 
     /**
      * @brief Get maximum temperature
@@ -607,6 +608,11 @@ public:
 
     /// Set Smagorinsky constant on the fluid solver (call after construction)
     void setSmagorinskyCs(float cs) { if (fluid_) fluid_->setSmagorinskyCs(cs); }
+
+    /// Enable Regularized collision (stable at τ→0.5, eliminates artificial viscosity)
+    void setRegularized(bool enable, float tau_override = 0.0f) {
+        if (fluid_) fluid_->setRegularized(enable, tau_override);
+    }
 
     /**
      * @brief Get melt pool depth (distance from interface to T < T_liquidus)
