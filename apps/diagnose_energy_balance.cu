@@ -262,9 +262,9 @@ int main() {
     // =========================================================================
 
     const int num_steps = 500;  // Run to 50 μs
-    // CRITICAL: Must match the T_ref used in ThermalLBM::computeTotalThermalEnergy()
-    // which uses material.T_solidus (1873 K for Ti6Al4V)
-    const float T_ref = config.material.T_solidus;  // Reference temperature for sensible energy
+    // T_ref for the local breakdown kernel below (not used in computeTotalThermalEnergy,
+    // which now references T_initial_ set at initialize() time — i.e. T_ambient = 300 K).
+    const float T_ref = config.ambient_temperature;
 
     std::cout << "\nRunning simulation with detailed diagnostics...\n";
     std::cout << "Steps: " << num_steps << ", dt = " << config.dt * 1e6 << " μs\n\n";
