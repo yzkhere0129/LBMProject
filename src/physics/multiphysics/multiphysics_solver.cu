@@ -2474,29 +2474,15 @@ void MultiphysicsSolver::computeTotalForce() {
     }
 
     // 2d. Recoil pressure force (evaporation-driven)
-    if (config_.enable_recoil_pressure && recoil_pressure_ && vof_ && thermal_) {
-        const float* temperature = thermal_->getTemperature();
-        const float* fill_level = vof_->getFillLevel();
-        const float3* normals = vof_->getInterfaceNormals();
-
-        if (temperature && fill_level && normals) {
-            // Material properties from config (no hardcoded Ti6Al4V values)
-            const float T_boil = config_.material.T_vaporization;
-            const float L_v = config_.material.L_vaporization;
-            const float M = config_.surface.molar_mass;
-            const float P_atm = 101325.0f; // Pa (physical constant)
-
-            force_accumulator_->addRecoilPressureForce(
-                temperature, fill_level, normals,
-                T_boil, L_v, M, P_atm,
-                config_.recoil_coefficient,
-                config_.recoil_smoothing_width,
-                config_.recoil_max_pressure,
-                config_.nx, config_.ny, config_.nz,
-                config_.dx,
-                config_.recoil_force_multiplier);
-        }
-    }
+    // NOTE: Intentionally moved to step 2h (after fl masking).
+    // Reason: maskForceByLiquidFractionKernel (step 2g) fires whenever
+    // enable_surface_tension || enable_marangoni, which is true in all
+    // production runs.  This mask multiplied the recoil force by fl,
+    // suppressing it at partially-melted interface cells (fl < 1) — the
+    // exact location where recoil must be largest.  By placing the recoil
+    // call after the mask, only Marangoni + surface-tension forces receive
+    // the fl-suppression treatment, which is their intended semantic.
+    // See: recoil_code_audit.md Rank-2 finding.
 
     // 2e. Darcy damping — semi-implicit treatment (NOT added to force arrays)
     //
@@ -2596,6 +2582,46 @@ void MultiphysicsSolver::computeTotalForce() {
                 fx, fy, fz, liquid_fraction, num_cells);
             CUDA_CHECK_KERNEL();
             CUDA_CHECK(cudaDeviceSynchronize());
+        }
+    }
+
+    // Step 2h. Recoil pressure force — added AFTER fl masking and force smoothing.
+    //
+    // BUG FIX (Rank 2 from recoil_code_audit.md):
+    // Previously the recoil call was at step 2d, before step 2g which applies
+    // maskForceByLiquidFractionKernel(fx, fy, fz, fl).  That mask fires whenever
+    // enable_surface_tension || enable_marangoni (always true in production), and
+    // it multiplied the ENTIRE force array — including recoil — by fl.  Interface
+    // cells at the gas–metal surface have fl < 1 (partially melted), so the mask
+    // suppressed recoil by up to 100× at onset.  Moving recoil here bypasses the
+    // mask and the 2-iteration Marangoni smoothing (step 2f), both of which were
+    // never intended to touch recoil forces.
+    if (config_.enable_recoil_pressure && recoil_pressure_ && vof_ && thermal_) {
+        const float* temperature = thermal_->getTemperature();
+        const float* fill_level = vof_->getFillLevel();
+        const float3* normals = vof_->getInterfaceNormals();
+
+        if (temperature && fill_level && normals) {
+            const float T_boil = config_.material.T_vaporization;
+            const float L_v = config_.material.L_vaporization;
+            // BUG FIX (Rank 4): source M from material.molar_mass (per-material
+            // value, e.g. 0.0558 for 316L) rather than surface.molar_mass which
+            // defaults to 0.0476 kg/mol (Ti6Al4V) and is never updated when the
+            // material database is loaded.
+            const float M = (config_.material.molar_mass > 0.0f)
+                            ? config_.material.molar_mass
+                            : config_.surface.molar_mass;
+            const float P_atm = 101325.0f;
+
+            force_accumulator_->addRecoilPressureForce(
+                temperature, fill_level, normals,
+                T_boil, L_v, M, P_atm,
+                config_.recoil_coefficient,
+                config_.recoil_smoothing_width,
+                config_.recoil_max_pressure,
+                config_.nx, config_.ny, config_.nz,
+                config_.dx,
+                config_.recoil_force_multiplier);
         }
     }
 

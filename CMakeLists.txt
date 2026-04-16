@@ -323,6 +323,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(test_evaporation_unit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_evaporation_unit lbm_physics CUDA::cudart)
 
+    # Unit test: Recoil-pressure scale isolation (flat plate, T=3500 K)
+    add_executable(test_recoil_scale apps/test_recoil_scale.cu)
+    set_target_properties(test_recoil_scale PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_recoil_scale lbm_physics CUDA::cudart)
+
     # Unit test: Recoil pressure force — isolated analytical comparison
     add_executable(test_recoil_unit apps/test_recoil_unit.cu)
     set_target_properties(test_recoil_unit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
