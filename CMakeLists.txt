@@ -323,6 +323,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(test_marangoni_unit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_marangoni_unit lbm_physics CUDA::cudart)
 
+    # Unit test: Marangoni force scale — isolated analytical comparison (no fluid/thermal/laser)
+    add_executable(test_marangoni_scale apps/test_marangoni_scale.cu)
+    set_target_properties(test_marangoni_scale PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_marangoni_scale lbm_physics CUDA::cudart)
+
     # Unit test: HKL evaporation cooling — isolated analytical comparison
     add_executable(test_evaporation_unit apps/test_evaporation_unit.cu)
     set_target_properties(test_evaporation_unit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
