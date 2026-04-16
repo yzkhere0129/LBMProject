@@ -1441,6 +1441,12 @@ void MultiphysicsSolver::step(float dt) {
         dt = config_.dt;
     }
 
+    // Snapshot T at step start for bisection ESM enthalpy inversion.
+    // Must precede any T-modifying operation (laser, heat source, diffusion).
+    if (config_.enable_thermal && thermal_) {
+        thermal_->storePreviousTemperature();
+    }
+
     // Step 1: Apply laser source (if enabled)
     if (config_.enable_laser && laser_) {
         applyLaserSource(dt);

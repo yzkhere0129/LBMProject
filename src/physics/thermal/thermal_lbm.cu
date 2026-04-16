@@ -1962,47 +1962,28 @@ __global__ void computeRadiationPowerKernel(
 /**
  * @brief Compute total thermal energy in domain
  *
- * CRITICAL FIX (Nov 19, 2025): Use (T - T_ref) for sensible energy
- *
- * The sensible energy must be computed relative to a reference temperature,
- * not absolute temperature. Using absolute T causes artificial energy
- * creation/destruction when temperature-dependent properties (ρ, cp) change.
- *
- * Reference temperature: T_solidus (natural reference for phase change materials)
+ * Enthalpy-based formulation: E = H_sensible(T) + fl·ρ_liquid·L_fusion
+ * H(T) is the piecewise-analytic integral of ρ(T')·cp(T') from 0 to T.
+ * T_ref = 0 is implicit inside sensibleEnthalpyPerVolume — cancels in all differences.
  */
 __global__ void computeThermalEnergyKernel(
     const float* temperature,
-    const float* liquid_fraction,
     float* energy_out,
     MaterialProperties material,
+    float h0,       // material.enthalpyPerVolume(T_initial_) — reference state
     float dx,
-    float T_ref,  // Reference temperature for sensible energy [K]
     int num_cells)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
 
     float T = temperature[idx];
-    float f_l = liquid_fraction ? liquid_fraction[idx] : 1.0f;  // Assume liquid if not provided
-
-    // Get temperature-dependent properties
-    float rho = material.getDensity(T);
-    float cp = material.getSpecificHeat(T);
-
-    // Cell volume
     float V = dx * dx * dx;
 
-    // Sensible energy: E = ρ * c_p * (T - T_ref) * V
-    // FIXED: Use (T - T_ref) instead of absolute T
-    // This prevents artificial energy from constant baseline temperature
-    float E_sensible = rho * cp * (T - T_ref) * V;
-
-    // Latent energy: E_latent = f_l * ρ * L_f * V
-    // (energy stored in liquid phase above solid reference)
-    float E_latent = f_l * rho * material.L_fusion * V;
-
-    // Total energy
-    energy_out[idx] = E_sensible + E_latent;
+    // Enthalpy increment relative to initial state.
+    // enthalpyPerVolume = sensible (piecewise analytic) + latent (ρ_ref·L·f_l(T)).
+    // f_l is recomputed analytically from T — equilibrium mushy-zone convention.
+    energy_out[idx] = (material.enthalpyPerVolume(T) - h0) * V;
 }
 
 /**
@@ -2142,40 +2123,21 @@ float ThermalLBM::computeTotalThermalEnergy(float dx) const {
         return 0.0f;
     }
 
-    // Get liquid fraction (or nullptr if phase change disabled)
-    const float* d_liquid_fraction = phase_solver_ ? phase_solver_->getLiquidFraction() : nullptr;
-
     // Allocate device memory for per-cell energy
     float* d_energy;
     CUDA_CHECK(cudaMalloc(&d_energy, num_cells_ * sizeof(float)));
+
+    // h0: reference enthalpy per volume at initial temperature.
+    // Subtracting h0 makes E=0 at t=0; the offset cancels in dE/dt.
+    const float h0 = material_.enthalpyPerVolume(T_initial_);
 
     // Compute energy for each cell
     int threads = 256;
     int blocks = (num_cells_ + threads - 1) / threads;
 
-    // ============================================================================
-    // CRITICAL FIX (2025-12-02): Use initial temperature as reference
-    // ============================================================================
-    // BUG: Previously used T_solidus (1878K) as reference, but initial temperature
-    // is typically 300K (ambient). This created artificial energy baseline shifts:
-    //   E(T=300K) = rho*cp*(300K - 1878K)*V = NEGATIVE baseline
-    // This caused 34% error in energy conservation tests.
-    //
-    // FIX: Use T_initial as reference (the actual starting temperature).
-    // This ensures E_initial ≈ 0, so dE directly reflects energy added/removed.
-    //
-    // Physics rationale:
-    //   - Energy is always measured relative to a reference state
-    //   - For conservation tracking, reference should be the initial state
-    //   - This makes dE = E_final - E_initial = actual energy change
-    //   - For phase change materials, latent energy is still correctly tracked
-    //     via the f_l * rho * L_fusion term (independent of T_ref choice)
-    // ============================================================================
-    float T_ref = T_initial_;
-
     computeThermalEnergyKernel<<<blocks, threads>>>(
-        d_temperature, d_liquid_fraction, d_energy,
-        material_, dx, T_ref, num_cells_
+        d_temperature, d_energy,
+        material_, h0, dx, num_cells_
     );
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -2396,6 +2358,12 @@ void ThermalLBM::computeEvaporationMassFlux(float* d_J_evap, const float* fill_l
  *
  * Reference: Jiaung, Ho & Lan (2001), "Lattice Boltzmann method for the heat
  *            conduction problem with phase change", Numer. Heat Transfer B, 39(2).
+ *
+ * TODO(enthalpy-bisection): FDM ESM was upgraded to strict bisection inversion
+ * on the ground-truth MaterialProperties::enthalpyPerVolume (branch
+ * debug/enthalpy-diag). Mirror that fix here in a follow-up branch; gate on
+ * the Stefan benchmark (tests/validation/test_stefan_problem.cu) as the LBM
+ * phase-change regression canary.
  */
 __global__ void enthalpySourceTermKernel(
     float* g,

@@ -283,6 +283,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(test_thermal_fdm PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_thermal_fdm lbm_physics lbm_io CUDA::cudart)
 
+    # Enthalpy budget closure diagnostic (316L phase transition, <2% residual)
+    add_executable(test_enthalpy_diag apps/test_enthalpy_diag.cu)
+    set_target_properties(test_enthalpy_diag PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_enthalpy_diag lbm_physics lbm_io CUDA::cudart)
+
     # Diagnostic: VOF mass conservation closed-box audit
     add_executable(diag_vof_mass_audit apps/diag_vof_mass_audit.cu)
     set_target_properties(diag_vof_mass_audit PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

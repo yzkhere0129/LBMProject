@@ -104,6 +104,21 @@ public:
     void copyTemperatureToHost(float* h_T) const override;
     void copyLiquidFractionToHost(float* h_fl) const override;
 
+    /**
+     * @brief Snapshot current temperature field into d_T_old_ buffer.
+     *
+     * MUST be called at the START of each step loop, BEFORE any operation
+     * that modifies T (addHeatSource, collisionBGK, applyFaceThermalBC...).
+     *
+     * The snapshot is consumed by fdmESMKernel (via computeTemperature) to
+     * compute the exact energy delivered this step: ΔE = ρ(T_old)·cp(T_old)·(T* − T_old),
+     * enabling strict enthalpy-method inversion (bisection) to recover T_new
+     * that honors latent heat absorption/release in the mushy zone.
+     *
+     * If omitted, d_T_old_ defaults to the initialize()-time state (valid but stale).
+     */
+    void storePreviousTemperature() override;
+
     float computeTotalThermalEnergy(float dx) const override;
     float computeEvaporationPower(const float* fill, float dx) const override;
     float computeRadiationPower(const float* fill, float dx,
@@ -128,6 +143,7 @@ private:
     bool z_periodic_ = false;
     bool skip_T_cap_ = false;
     int n_subcycle_ = 1;
+    float T_initial_ = 300.0f;  ///< Initial temperature for enthalpy reference [K]
 
     MaterialProperties material_;
     PhaseChangeSolver* phase_solver_ = nullptr;
@@ -135,6 +151,7 @@ private:
     // Device memory (ping-pong T buffers)
     float* d_T_     = nullptr;  // current temperature
     float* d_T_new_ = nullptr;  // next temperature
+    float* d_T_old_ = nullptr;  // snapshot of T at start of step (for bisection ESM)
     const float* d_vof_fill_ = nullptr;
 
     // Gas wipe protection mask: 1 = near interface (protected), 0 = far field (wipe)

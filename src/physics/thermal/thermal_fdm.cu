@@ -234,18 +234,27 @@ __global__ void fdmAdvDiffKernel(
 }
 
 // ============================================================================
-// CUDA Kernel: ESM Phase Change Correction
+// CUDA Kernel: ESM Phase Change Correction — Bisection Enthalpy Inversion
 // ============================================================================
-// After advection-diffusion gives T*, enforce enthalpy conservation:
-//   H = cp·T* + fl_old·L  →  decode(T_new, fl_new)
+// Strict enthalpy-method corrector. Given T_old (pre-step) and T_star (post-
+// heat-source + advDiff), reconstructs the exact delivered energy
+//   ΔE = ρ(T_old)·cp(T_old)·(T_star − T_old)            [J/m³]
+// and inverts H(T_new) = H(T_old) + ΔE using the ground-truth piecewise H(T)
+// defined in MaterialProperties::enthalpyPerVolume (includes latent heat).
 //
-// Identical formula to enthalpySourceTermKernel in thermal_lbm.cu,
-// but operates directly on T (no distribution function correction needed).
+// Three-branch dispatch:
+//   Solid  (H_target ≤ H_solidus):   T_new = H_target / k_s, fl = 0
+//   Liquid (H_target ≥ H_liquidus):  T_new = T_l + (H_target − H_liq)/k_l, fl = 1
+//   Mushy  (H_s < H_target < H_l):   bisect on [T_s, T_l] (N_max=25, tol=1e-6)
+//
+// This is the true enthalpy-method corrector — latent heat is honored exactly;
+// the "phantom energy" bug (~6% residual) is eliminated.
+// Reference: Voller & Prakash (1987), Bisection as in any standard root-finder.
 // ============================================================================
 __global__ void fdmESMKernel(
-    float* __restrict__ T,
-    float* __restrict__ fl,
-    const float* __restrict__ fl_prev,
+    const float* __restrict__ T_old,    // snapshot: T at start of step
+    float* __restrict__ T,              // IN: T_star (post-source, post-advDiff); OUT: T_new
+    float* __restrict__ fl,             // OUT: f_l_new (equilibrium value from T_new)
     const float* __restrict__ fill_level,
     MaterialProperties mat,
     int num_cells)
@@ -253,40 +262,76 @@ __global__ void fdmESMKernel(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
 
-    // VOF mask: skip gas cells
+    // VOF mask: skip gas cells (no phase change in inert atmosphere)
     if (fill_level != nullptr && fill_level[idx] < 0.01f) {
         fl[idx] = 0.0f;
         return;
     }
 
-    float T_star = T[idx];
-    float fl_old = fl_prev[idx];
+    const float T_sol = mat.T_solidus;
+    const float T_liq = mat.T_liquidus;
+    const float dT_m  = T_liq - T_sol;
+    if (dT_m < 1e-8f || mat.L_fusion < 1e-6f) return;
 
-    float cp    = mat.cp_solid;
-    float L     = mat.L_fusion;
-    float T_sol = mat.T_solidus;
-    float T_liq = mat.T_liquidus;
-    float dT_m  = T_liq - T_sol;
+    const float To = T_old[idx];
+    const float Ts = T[idx];                 // T_star
 
-    if (dT_m < 1e-8f || L < 1e-6f) return;
+    // Energy delivered this step per unit volume.
+    // For the heat-source kernel this equals Q·dt exactly; for advDiff it
+    // equals the net flux divergence·dt (first-order operator-split accuracy).
+    const float rho_old = mat.getDensity(To);
+    const float cp_old  = mat.getSpecificHeat(To);
+    const float dE      = rho_old * cp_old * (Ts - To);
 
-    // Total specific enthalpy
-    float H = cp * T_star + fl_old * L;
+    // Target enthalpy (piecewise analytic H(T) from material_properties.h)
+    const float H_old    = mat.enthalpyPerVolume(To);
+    const float H_target = H_old + dE;
 
-    float H_sol = cp * T_sol;
-    float H_liq = cp * T_liq + L;
+    // Enthalpy boundaries — evaluate ground-truth H(T) at T_sol and T_liq
+    const float H_solidus  = mat.enthalpyPerVolume(T_sol);
+    const float H_liquidus = mat.enthalpyPerVolume(T_liq);
+
+    const float k_s = mat.rho_solid  * mat.cp_solid;   // J/(m³·K)
+    const float k_l = mat.rho_liquid * mat.cp_liquid;
 
     float T_new, fl_new;
-    if (H <= H_sol) {
-        T_new  = H / cp;
+
+    if (H_target <= H_solidus) {
+        // --- Regime A: pure solid ---
+        // H_sensible_solid(T) = k_s·T  →  T = H_target / k_s
+        // Guard against extreme cooling pulling T below 0K (applyTemperatureSafetyCap
+        // catches this downstream, but defensive clamp keeps the kernel self-consistent).
+        T_new  = fmaxf(H_target / k_s, 1.0f);
         fl_new = 0.0f;
-    } else if (H >= H_liq) {
-        T_new  = (H - L) / cp;
+    } else if (H_target >= H_liquidus) {
+        // --- Regime B: pure liquid ---
+        // Above T_liq, H(T) = H_liquidus + k_l·(T − T_liq) → invert linearly
+        T_new  = T_liq + (H_target - H_liquidus) / k_l;
         fl_new = 1.0f;
     } else {
-        fl_new = (H - H_sol) / (cp * dT_m + L);
+        // --- Regime C: mushy zone — bisect on [T_sol, T_liq] ---
+        // H(T) is strictly monotonically increasing on (T_sol, T_liq) with
+        // dH/dT = k(T) + ρ_ref·L/ΔT_m > 0. Unique root guaranteed.
+        float T_lo = T_sol;
+        float T_hi = T_liq;
+        float T_mid = 0.5f * (T_lo + T_hi);
+
+        // Robust absolute tolerance: rel 1e-6 vs |H_target|, floored at ρ_ref·L.
+        const float H_floor  = 0.5f * (mat.rho_solid + mat.rho_liquid) * mat.L_fusion;
+        const float tol_abs  = 1e-6f * fmaxf(fabsf(H_target), H_floor);
+
+        #pragma unroll 1   // early-exit varies per cell; do not unroll
+        for (int iter = 0; iter < 25; ++iter) {
+            T_mid = 0.5f * (T_lo + T_hi);
+            float H_mid = mat.enthalpyPerVolume(T_mid);
+            float diff  = H_mid - H_target;
+            if (fabsf(diff) < tol_abs) break;
+            if (diff < 0.0f) T_lo = T_mid;
+            else             T_hi = T_mid;
+        }
+        T_new  = T_mid;
+        fl_new = (T_new - T_sol) / dT_m;
         fl_new = fmaxf(0.0f, fminf(1.0f, fl_new));
-        T_new  = T_sol + fl_new * dT_m;
     }
 
     T[idx]  = T_new;
@@ -482,6 +527,9 @@ __global__ void fdmGasWipeKernel(
     float T_ambient,
     int num_cells)
 {
+    // NOTE: energy removed by gas wipe = material.enthalpyIncrement(T_old, T_new)*V.
+    // Use MaterialProperties::enthalpyIncrement as the canonical primitive if tracking
+    // is ever added here (avoids the phantom mushy-zone jump in naive ρ·cp·ΔT·V).
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
     if (fill_level == nullptr) return;
@@ -597,6 +645,8 @@ __global__ void fdmGasWipeWithTrackingKernel(
 // any cell with T > T_boil has its excess energy removed (as if vaporized).
 // ============================================================================
 __global__ void fdmBoilCapKernel(float* T, float T_boil, int num_cells) {
+    // NOTE: energy removed per cell by boil cap = material.enthalpyIncrement(T_boil, T[idx])*V
+    // (positive when T[idx] > T_boil). Use enthalpyIncrement if tracking is added here.
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
     if (T[idx] > T_boil) T[idx] = T_boil;
@@ -678,12 +728,12 @@ ThermalFDM::ThermalFDM(ThermalFDM&& o) noexcept
     : nx_(o.nx_), ny_(o.ny_), nz_(o.nz_), num_cells_(o.num_cells_),
       dt_(o.dt_), dx_(o.dx_), alpha_phys_(o.alpha_phys_),
       material_(o.material_), phase_solver_(o.phase_solver_),
-      d_T_(o.d_T_), d_T_new_(o.d_T_new_),
+      d_T_(o.d_T_), d_T_new_(o.d_T_new_), d_T_old_(o.d_T_old_),
       d_vof_fill_(o.d_vof_fill_), d_gas_wipe_mask_(o.d_gas_wipe_mask_),
       skip_T_cap_(o.skip_T_cap_),
       z_periodic_(o.z_periodic_), n_subcycle_(o.n_subcycle_)
 {
-    o.d_T_ = o.d_T_new_ = nullptr;
+    o.d_T_ = o.d_T_new_ = o.d_T_old_ = nullptr;
     o.d_gas_wipe_mask_ = nullptr;
     o.phase_solver_ = nullptr;
 }
@@ -691,8 +741,10 @@ ThermalFDM::ThermalFDM(ThermalFDM&& o) noexcept
 void ThermalFDM::allocateMemory() {
     CUDA_CHECK(cudaMalloc(&d_T_,     num_cells_ * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_T_new_, num_cells_ * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_T_old_, num_cells_ * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_T_,     0, num_cells_ * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_T_new_, 0, num_cells_ * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_T_old_, 0, num_cells_ * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_gas_wipe_mask_, num_cells_ * sizeof(uint8_t)));
     CUDA_CHECK(cudaMemset(d_gas_wipe_mask_, 0, num_cells_ * sizeof(uint8_t)));
     CUDA_CHECK(cudaMalloc(&d_gas_wipe_energy_raw_, sizeof(unsigned long long)));
@@ -704,16 +756,23 @@ void ThermalFDM::allocateMemory() {
 void ThermalFDM::freeMemory() {
     if (d_T_)     { cudaFree(d_T_);     d_T_ = nullptr; }
     if (d_T_new_) { cudaFree(d_T_new_); d_T_new_ = nullptr; }
+    if (d_T_old_) { cudaFree(d_T_old_); d_T_old_ = nullptr; }
     if (d_gas_wipe_mask_) { cudaFree(d_gas_wipe_mask_); d_gas_wipe_mask_ = nullptr; }
     if (d_gas_wipe_energy_raw_) { cudaFree(d_gas_wipe_energy_raw_); d_gas_wipe_energy_raw_ = nullptr; }
     if (d_boiling_cap_energy_raw_) { cudaFree(d_boiling_cap_energy_raw_); d_boiling_cap_energy_raw_ = nullptr; }
 }
 
 void ThermalFDM::initialize(float initial_temp) {
+    T_initial_ = initial_temp;
     int bs = 256, gs = (num_cells_ + bs - 1) / bs;
     fdmFillKernel<<<gs, bs>>>(d_T_, initial_temp, num_cells_);
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Safe fallback: d_T_old_ = d_T_ so bisection ESM has valid input
+    // even if caller forgets to call storePreviousTemperature() on first step.
+    CUDA_CHECK(cudaMemcpy(d_T_old_, d_T_,
+                          num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice));
 
     if (phase_solver_) {
         phase_solver_->initializeFromTemperature(d_T_);
@@ -721,8 +780,19 @@ void ThermalFDM::initialize(float initial_temp) {
 }
 
 void ThermalFDM::initialize(const float* temp_field) {
+    // Compute mean temperature from host array for enthalpy reference.
+    // Diagnostic approximation: mean T used as T_initial_ when field is non-uniform.
+    double sum = 0.0;
+    for (int i = 0; i < num_cells_; ++i) sum += temp_field[i];
+    T_initial_ = static_cast<float>(sum / num_cells_);
+
     CUDA_CHECK(cudaMemcpy(d_T_, temp_field,
                           num_cells_ * sizeof(float), cudaMemcpyHostToDevice));
+
+    // Safe fallback: d_T_old_ = d_T_ (see initialize(float) for rationale)
+    CUDA_CHECK(cudaMemcpy(d_T_old_, d_T_,
+                          num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice));
+
     if (phase_solver_) {
         phase_solver_->initializeFromTemperature(d_T_);
     }
@@ -765,6 +835,14 @@ void ThermalFDM::streaming() {
     // d_T_ now holds the post-advDiff temperature
 }
 
+// Snapshot T into d_T_old_ — MUST be called at the top of each step loop,
+// before addHeatSource / collisionBGK / any T-modifying operation.
+// Consumed by fdmESMKernel for strict enthalpy-method inversion.
+void ThermalFDM::storePreviousTemperature() {
+    CUDA_CHECK(cudaMemcpy(d_T_old_, d_T_,
+                          num_cells_ * sizeof(float), cudaMemcpyDeviceToDevice));
+}
+
 // Compute gas wipe protection mask via iterative binary dilation
 void ThermalFDM::computeGasWipeProtectionMask(int protection_layers) {
     int bs = 256, gs = (num_cells_ + bs - 1) / bs;
@@ -786,17 +864,17 @@ void ThermalFDM::computeGasWipeProtectionMask(int protection_layers) {
     }
 }
 
-// computeTemperature → ESM phase change correction
+// computeTemperature → ESM phase change correction (bisection enthalpy inversion)
 void ThermalFDM::computeTemperature() {
     if (phase_solver_) {
-        // Save current fl as fl_prev
+        // Save current fl as fl_prev (legacy: kernel no longer reads it, kept for diagnostics)
         phase_solver_->storePreviousLiquidFraction();
 
         int bs = 256, gs = (num_cells_ + bs - 1) / bs;
         fdmESMKernel<<<gs, bs>>>(
-            d_T_,
-            phase_solver_->getLiquidFraction(),
-            phase_solver_->getPreviousLiquidFraction(),
+            d_T_old_,                          // T at start of step (snapshot)
+            d_T_,                              // T* post-source+advDiff (IN), T_new (OUT)
+            phase_solver_->getLiquidFraction(),// OUT: f_l_new
             d_vof_fill_,
             material_,
             num_cells_);
@@ -961,26 +1039,21 @@ void ThermalFDM::copyLiquidFractionToHost(float* h_fl) const {
 }
 
 float ThermalFDM::computeTotalThermalEnergy(float dx) const {
-    // Reduction: E = sum(rho * cp * T * dx^3) + sum(fl * rho * L * dx^3)
-    // Simple host-side reduction for now (same as ThermalLBM)
+    // Enthalpy-based reduction (single pass, sensible + latent unified):
+    //   E = Σ [H(T_i) − H(T_initial_)] · dV
+    // H(T) = sensibleEnthalpyPerVolume + latentEnthalpyPerVolume
+    // Subtracting h0 is equivalent to choosing T_initial_ as the reference state;
+    // the offset cancels in dE/dt but ensures E=0 at t=0 for diagnostics.
+    // f_l(T) is recomputed analytically from T via liquidFraction() — consistent
+    // with the equilibrium mushy-zone convention used throughout the solver.
     std::vector<float> h_T(num_cells_);
     CUDA_CHECK(cudaMemcpy(h_T.data(), d_T_, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
 
-    float dV = dx * dx * dx;
+    const float dV = dx * dx * dx;
+    const float h0  = material_.enthalpyPerVolume(T_initial_);
     double E = 0.0;
     for (int i = 0; i < num_cells_; i++) {
-        float rho = material_.getDensity(h_T[i]);
-        float cp  = material_.getSpecificHeat(h_T[i]);
-        E += rho * cp * h_T[i] * dV;
-    }
-
-    if (phase_solver_) {
-        std::vector<float> h_fl(num_cells_);
-        phase_solver_->copyLiquidFractionToHost(h_fl.data());
-        for (int i = 0; i < num_cells_; i++) {
-            float rho = material_.getDensity(h_T[i]);
-            E += h_fl[i] * rho * material_.L_fusion * dV;
-        }
+        E += (material_.enthalpyPerVolume(h_T[i]) - h0) * dV;
     }
 
     return static_cast<float>(E);

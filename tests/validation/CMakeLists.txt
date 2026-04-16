@@ -1721,3 +1721,40 @@ set_tests_properties(PhaseChangeComprehensive PROPERTIES
     TIMEOUT 300
     LABELS "validation;phase_change;enthalpy;newton;energy;comprehensive;critical"
 )
+
+# ========================================
+# ENTHALPY DIAGNOSTIC ACCEPTANCE TEST
+# ========================================
+
+add_executable(test_enthalpy_diag_validation
+    test_enthalpy_diag.cu
+)
+
+set_target_properties(test_enthalpy_diag_validation PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "86"
+)
+
+target_include_directories(test_enthalpy_diag_validation PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_enthalpy_diag_validation
+    lbm_physics
+    lbm_core
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME EnthalpyDiagAcceptance
+    COMMAND test_enthalpy_diag_validation
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(EnthalpyDiagAcceptance PROPERTIES
+    TIMEOUT 600
+    LABELS "validation;enthalpy;diagnostic;phase_change;energy_balance;acceptance;critical"
+)

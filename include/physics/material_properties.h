@@ -125,6 +125,59 @@ struct MaterialProperties {
     }
 
     /**
+     * @brief Sensible enthalpy per unit volume, H(T) = ∫[0→T] ρ(T')·cp(T') dT' [J/m³]
+     *
+     * Piecewise-analytic integral of (ρ·cp) assumed piecewise-linear in T:
+     *   - Solid branch (T ≤ T_solidus):     ρ_s·cp_s constant   → H = k_s·T
+     *   - Liquid branch (T ≥ T_liquidus):   ρ_l·cp_l constant   → H = k_s·Ts + 0.5(k_s+k_l)(Tl−Ts) + k_l·(T−Tl)
+     *   - Mushy zone (linear interp of ρ·cp) → H = k_s·Ts + 0.5(k_s + k_here)·(T−Ts)
+     *
+     * NOTE: This is SENSIBLE only. Latent heat (fl·ρ_liquid·L_fusion) is accounted
+     * separately to avoid double-counting the mushy-zone ρcp blending.
+     */
+    __host__ __device__ float sensibleEnthalpyPerVolume(float T) const {
+        const float Ts = T_solidus;
+        const float Tl = T_liquidus;
+        const float k_s = rho_solid  * cp_solid;   // J/(m³·K)
+        const float k_l = rho_liquid * cp_liquid;
+        if (T <= Ts) return k_s * T;
+        if (T >= Tl) return k_s * Ts + 0.5f * (k_s + k_l) * (Tl - Ts) + k_l * (T - Tl);
+        const float k_here = k_s + (k_l - k_s) * (T - Ts) / (Tl - Ts);
+        return k_s * Ts + 0.5f * (k_s + k_here) * (T - Ts);
+    }
+
+    /**
+     * @brief Latent enthalpy per unit volume, H_lat(T) = ρ_ref · L_fusion · f_l(T) [J/m³]
+     *
+     * ρ_ref = (ρ_solid + ρ_liquid) / 2  — matches the math derivation that avoids
+     * double-counting the mushy-zone density blending already captured in sensible.
+     */
+    __host__ __device__ float latentEnthalpyPerVolume(float T) const {
+        const float rho_ref = 0.5f * (rho_solid + rho_liquid);
+        return rho_ref * L_fusion * liquidFraction(T);
+    }
+
+    /**
+     * @brief Total enthalpy per unit volume, H(T) = H_sensible(T) + H_latent(T) [J/m³]
+     *
+     * T_ref = 0 (implicit). Use enthalpyIncrement for ΔH between two states.
+     */
+    __host__ __device__ float enthalpyPerVolume(float T) const {
+        return sensibleEnthalpyPerVolume(T) + latentEnthalpyPerVolume(T);
+    }
+
+    /**
+     * @brief Enthalpy increment per unit volume: H(T_new) − H(T_old) [J/m³]
+     *
+     * Use this as the canonical energy-accounting primitive in kernels that
+     * track energy removed/added by a process (e.g. gas wipe, boiling cap).
+     * Correctly handles mushy-zone phase change without phantom jumps.
+     */
+    __host__ __device__ float enthalpyIncrement(float T_old, float T_new) const {
+        return enthalpyPerVolume(T_new) - enthalpyPerVolume(T_old);
+    }
+
+    /**
      * @brief Get thermal conductivity at given temperature
      * @param T Temperature [K]
      * @return Thermal conductivity [W/(m·K)]

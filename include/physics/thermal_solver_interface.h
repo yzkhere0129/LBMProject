@@ -85,6 +85,18 @@ public:
     // Metal-only thermal energy (fill >= 0.01) for diagnostic isolation
     virtual double computeMetalThermalEnergy(float dx) const { return 0.0; }
 
+    /**
+     * @brief Snapshot current T field for bisection-based ESM phase change inversion.
+     *
+     * Must be called at the top of each step BEFORE any T-modifying operation
+     * (laser, heat source, diffusion, cooling). Bisection ESM reconstructs the
+     * exact delivered energy as ρ(T_old)·cp(T_old)·(T*−T_old) and inverts the
+     * true H(T) to recover T_new honoring latent heat.
+     *
+     * Default: no-op (solvers without bisection ESM ignore this).
+     */
+    virtual void storePreviousTemperature() {}
+
     // ================================================================
     // Field access (device pointers)
     // ================================================================
