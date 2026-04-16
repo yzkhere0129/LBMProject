@@ -20,6 +20,9 @@ extern __device__ int tex[7];
 extern __device__ int tey[7];
 extern __device__ int tez[7];
 
+// DEBUG: __device__ material for evaporation kernel (avoid by-value passing)
+__device__ MaterialProperties g_evap_material;
+
 // Forward declaration of kernels
 __global__ void initializeEquilibriumKernel(float* g_src, const float* temperature, int num_cells);
 __global__ void thermalStreamingKernel(const float* g_src, float* g_dst,
@@ -662,15 +665,20 @@ __global__ void applyEvaporationCoolingKernel(
     // heat conduction from the hot liquid to the interface causes
     // effective cooling of the entire high-temperature region.
     // We model this as "effective evaporative cooling" for all cells > T_boil
-    float f = fill_level[idx];
+    //
+    // When fill_level is nullptr (no VOF), treat all cells as metal (f=1).
+    float f = fill_level ? fill_level[idx] : 1.0f;
     if (f <= 0.01f) return;  // Skip gas cells (f~0)
 
+    // Use __device__ global material (avoids by-value struct passing issues with RDC)
+    MaterialProperties mat = g_evap_material;
+
     float T = temperature[idx];
-    float T_boil = material.T_vaporization;
-    float L_vap = material.L_vaporization;
+    float T_boil = mat.T_vaporization;
+    float L_vap = mat.L_vaporization;
 
     // Skip if no evaporation flux at this cell OR if temperature below boiling
-    float J = J_evap[idx];
+    float J = J_evap ? J_evap[idx] : 0.0f;
 
     // For non-interface cells (f >= 0.99), compute effective evaporation
     // based on temperature excess above boiling point
@@ -678,9 +686,8 @@ __global__ void applyEvaporationCoolingKernel(
         if (T <= T_boil) return;
 
         // Clausius-Clapeyron evaporation rate (Anisimov 1995)
-        // NO artificial caps on T, P_sat, or exponent — let physics self-regulate
         const float alpha_evap = 0.18f;
-        const float M_molar = material.molar_mass;
+        const float M_molar = mat.molar_mass;
         const float R_gas = 8.314f;
         const float P_ref = 101325.0f;
         const float PI = 3.14159265359f;
@@ -697,19 +704,19 @@ __global__ void applyEvaporationCoolingKernel(
         if (J <= 0.0f) return;
     }
 
-    float rho = material.getDensity(T);
-    float cp = material.getSpecificHeat(T);
-    float q_evap = J * L_vap * cooling_factor;  // [W/m²] scaled by VOF smearing compensation
+    float rho = mat.getDensity(T);
+    float cp = mat.getSpecificHeat(T);
+    float q_evap = J * L_vap * cooling_factor;
 
     float rho_cp = rho * cp;
     if (rho_cp < 1e-6f) return;
 
     float dT = -(q_evap / dx) * dt / rho_cp;
 
-    // ONLY physical limiter: don't cool below T_boil (can't evaporate below boiling)
+    // ONLY physical limiter: don't cool below T_boil
     float T_after = T + dT;
     if (T_after < T_boil) {
-        dT = T_boil - T;  // Clamp to exactly T_boil
+        dT = T_boil - T;
     }
 
     // Apply temperature change to all distributions (maintains isotropy)
@@ -793,9 +800,22 @@ void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_
                   (ny_ + blockSize.y - 1) / blockSize.y,
                   (nz_ + blockSize.z - 1) / blockSize.z);
 
+    // Use d_vof_fill_level_ (set via setVOFFillLevel) if fill_level parameter is null.
+    // When both are null (no VOF), kernel treats all cells as metal (f=1).
+    const float* effective_fill = fill_level ? fill_level : d_vof_fill_level_;
+
+    // Copy material to __device__ global (avoids by-value struct passing which
+    // can cause IMA with RDC / separable compilation for large structs).
+    MaterialProperties h_mat = material_;
+    CUDA_CHECK(cudaMemcpyToSymbol(g_evap_material, &h_mat, sizeof(MaterialProperties)));
+
+    // Dummy material passed by value (kernel uses g_evap_material instead)
+    MaterialProperties dummy_mat;
+    memset(&dummy_mat, 0, sizeof(dummy_mat));
+
     applyEvaporationCoolingKernel<<<gridSize, blockSize>>>(
-        d_g_src, d_temperature, J_evap, fill_level,
-        nx_, ny_, nz_, dx, dt, cooling_factor, material_
+        d_g_src, d_temperature, J_evap, effective_fill,
+        nx_, ny_, nz_, dx, dt, cooling_factor, dummy_mat
     );
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -805,11 +825,6 @@ void ThermalLBM::applyEvaporationCooling(const float* J_evap, const float* fill_
         CUDA_CHECK(cudaMalloc(&d_cap_energy_removed_, num_cells_ * sizeof(float)));
     }
 
-    // Temperature cap REMOVED — evaporation cooling via Clausius-Clapeyron
-    // is the sole temperature regulator. The exponential growth of P_sat
-    // with T creates a natural thermostat: at T >> T_boil, evaporation
-    // removes energy far faster than the laser can add it, driving T
-    // back toward T_boil. No artificial intervention needed.
     if (d_cap_energy_removed_) {
         CUDA_CHECK(cudaMemset(d_cap_energy_removed_, 0, num_cells_ * sizeof(float)));
     }

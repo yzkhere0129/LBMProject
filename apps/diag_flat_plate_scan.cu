@@ -46,7 +46,7 @@ static MaterialProperties createMat() {
     return mat;
 }
 
-int main() {
+int main(int argc, char** argv) {
     auto t0 = std::chrono::high_resolution_clock::now();
     MaterialProperties mat = createMat();
     const float rho=7900, cp=700, k_c=20, mu=0.005f;
@@ -54,7 +54,8 @@ int main() {
 
     const int NX=80, NY=160, NZ=80;
     const float dx=2.5e-6f, dt=1.0e-8f;
-    const float t_total = 200.0e-6f;
+    float t_total = 200.0e-6f;
+    if (argc >= 2) t_total = atof(argv[1]) * 1e-6f;
     const int z_surface = 40;  // flat surface at z=40 (100μm)
     const int num_cells = NX*NY*NZ;
 
@@ -63,7 +64,8 @@ int main() {
     printf("============================================================\n");
     printf("Domain: %d×%d×%d (dx=%.1fμm)\n", NX, NY, NZ, dx*1e6f);
     printf("Flat surface at z=%d (%.0fμm)\n", z_surface, z_surface*dx*1e6f);
-    printf("Laser: 150W, r=25μm, 1000mm/s along +Y\n\n");
+    printf("Laser: 150W, r=25μm, 1000mm/s along +Y\n");
+    printf("RLBM: τ=0.503, mass_loss=1.0, boiling_cap=ON\n\n");
 
     // Config: identical to production benchmark
     MultiphysicsConfig config;
@@ -119,6 +121,7 @@ int main() {
 
     MultiphysicsSolver solver(config);
     solver.setSmagorinskyCs(0.20f);
+    solver.setRegularized(true, 0.503f);  // RLBM: stable at τ=0.503
 
     // Flat plate: f=1 below surface, smooth interface at z=z_surface
     // The laser kernel requires 0.05 < f < 0.99 to deposit energy,

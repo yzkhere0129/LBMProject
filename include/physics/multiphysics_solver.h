@@ -911,6 +911,7 @@ private:
     int energy_output_interval_;                         ///< Output energy balance every N steps
     static constexpr int default_energy_interval_ = 10;  ///< Default: every 10 steps
     mutable float time_last_computed_;                   ///< Time when energy balance was last computed [s]
+    double laser_energy_accumulated_;                    ///< Laser energy deposited since last diagnostic [J]
 
     /**
      * @brief Compute total heat flux through domain boundaries (lateral conduction)

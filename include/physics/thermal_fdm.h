@@ -140,10 +140,27 @@ private:
     // Gas wipe protection mask: 1 = near interface (protected), 0 = far field (wipe)
     uint8_t* d_gas_wipe_mask_ = nullptr;
 
+    // Energy tracking for gas wipe and subsurface cap (fixed-point, scale 1e12)
+    unsigned long long* d_gas_wipe_energy_raw_ = nullptr;
+    unsigned long long* d_boiling_cap_energy_raw_ = nullptr;
+
     void allocateMemory();
     void freeMemory();
     void swapBuffers() { float* tmp = d_T_; d_T_ = d_T_new_; d_T_new_ = tmp; }
     void computeGasWipeProtectionMask(int protection_layers = 5);
+
+public:
+    /// Apply sub-surface boiling cap: T_cap = T_boil + overshoot_K for f>=0.99 cells
+    void applySubsurfaceBoilingCap(float T_boil, float overshoot_K = 50.0f);
+
+    /// Get energy removed by gas wipe this step [J], resets counter
+    double getGasWipeEnergyRemoved();
+
+    /// Get energy removed by sub-surface boiling cap this step [J], resets counter
+    double getBoilingCapEnergyRemoved();
+
+    /// Compute thermal energy of metal cells only (fill >= 0.01) [J]
+    double computeMetalThermalEnergy(float dx) const override;
 };
 
 } // namespace physics

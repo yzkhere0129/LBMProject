@@ -75,6 +75,16 @@ public:
     /// Hard cap at an arbitrary ceiling (failsafe — does not use material T_vaporization)
     virtual void applyTemperatureFailsafeCap(float T_max) { applyTemperatureSafetyCap(); (void)T_max; }
 
+    // Sub-surface boiling cap (FDM only; no-op for LBM)
+    virtual void applySubsurfaceBoilingCap(float T_boil, float overshoot_K = 50.0f) { (void)T_boil; (void)overshoot_K; }
+
+    // Energy tracking for gas wipe and boiling cap [J], resets counter each call
+    virtual double getGasWipeEnergyRemoved() { return 0.0; }
+    virtual double getBoilingCapEnergyRemoved() { return 0.0; }
+
+    // Metal-only thermal energy (fill >= 0.01) for diagnostic isolation
+    virtual double computeMetalThermalEnergy(float dx) const { return 0.0; }
+
     // ================================================================
     // Field access (device pointers)
     // ================================================================

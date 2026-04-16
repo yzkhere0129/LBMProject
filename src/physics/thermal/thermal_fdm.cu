@@ -500,6 +500,96 @@ __global__ void fdmGasWipeKernel(
 }
 
 // ============================================================================
+// CUDA Kernel: Sub-surface volumetric boiling cap with energy tracking
+// ============================================================================
+// For bulk liquid cells (f >= 0.99) with T > T_cap:
+//   - Cap temperature to T_cap
+//   - Accumulate removed energy (physically: latent heat of volumetric boiling)
+// This prevents sub-surface cells from overheating to 3798K while tracking
+// the removed energy for accurate energy balance diagnostics.
+// ============================================================================
+__global__ void fdmSubsurfaceBoilingCapKernel(
+    float* __restrict__ T,
+    const float* __restrict__ fill_level,
+    float T_cap,
+    MaterialProperties mat, float dV,
+    unsigned long long* __restrict__ d_energy_removed_raw,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+    if (fill_level == nullptr) return;
+
+    float f = fill_level[idx];
+    if (f < 0.99f) return;  // Only bulk liquid (not interface)
+
+    float Tc = T[idx];
+    if (Tc <= T_cap) return;
+
+    float dT = Tc - T_cap;
+    T[idx] = T_cap;
+
+    // R6 FIX: Use temperature-dependent rho(T) and cp(T) matching computeTotalThermalEnergy().
+    // Bulk liquid cells at T > T_boil have rho = rho_liquid, not rho_solid.
+    float rho = mat.getDensity(Tc);
+    float cp = mat.getSpecificHeat(Tc);
+
+    float E_removed = rho * cp * dT * dV;
+    unsigned long long E_fixed = (unsigned long long)(E_removed * 1.0e12);
+    atomicAdd(d_energy_removed_raw, E_fixed);
+}
+
+// ============================================================================
+// CUDA Kernel: Gas wipe with energy tracking
+// ============================================================================
+// Same as fdmGasWipeKernel but also tracks removed energy via atomicAdd.
+// ============================================================================
+__global__ void fdmGasWipeWithTrackingKernel(
+    float* __restrict__ T,
+    const float* __restrict__ fill_level,
+    const uint8_t* __restrict__ protection_mask,
+    float T_ambient,
+    MaterialProperties mat, float dV,
+    unsigned long long* __restrict__ d_energy_removed_raw,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+    if (fill_level == nullptr) return;
+
+    float f = fill_level[idx];
+    if (f >= 0.01f) return;
+
+    float T_old = T[idx];
+    float T_new;
+
+    if (protection_mask[idx] == 0) {
+        T_new = T_ambient;
+    } else {
+        T_new = T_old - 0.01f * (T_old - T_ambient);
+    }
+
+    T[idx] = T_new;
+
+    // R6 FIX: Use temperature-dependent rho(T) and cp(T) matching computeTotalThermalEnergy().
+    // For hot gas cells near the metal (T > T_solidus), rho drops from rho_solid to rho_liquid.
+    // Using constant rho_solid overestimates energy change by up to 2x.
+    float rho = mat.getDensity(T_old);
+    float cp = mat.getSpecificHeat(T_old);
+
+    // Track NET energy change (positive = removed/cooling, negative = added/heating)
+    float dT = T_old - T_new;
+    float E_change = rho * cp * dT * dV;
+    long long E_fixed = (long long)(E_change * 1.0e12);
+    if (E_fixed >= 0) {
+        atomicAdd(d_energy_removed_raw, (unsigned long long)E_fixed);
+    } else {
+        unsigned long long neg = (unsigned long long)(-E_fixed);
+        atomicAdd(d_energy_removed_raw, ~neg + 1ULL);
+    }
+}
+
+// ============================================================================
 // CUDA Kernel: Hard T_boil cap on ALL cells (not just surface)
 // ============================================================================
 // Without VOF free-surface tracking, material above T_boil would vaporize
@@ -605,12 +695,18 @@ void ThermalFDM::allocateMemory() {
     CUDA_CHECK(cudaMemset(d_T_new_, 0, num_cells_ * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_gas_wipe_mask_, num_cells_ * sizeof(uint8_t)));
     CUDA_CHECK(cudaMemset(d_gas_wipe_mask_, 0, num_cells_ * sizeof(uint8_t)));
+    CUDA_CHECK(cudaMalloc(&d_gas_wipe_energy_raw_, sizeof(unsigned long long)));
+    CUDA_CHECK(cudaMalloc(&d_boiling_cap_energy_raw_, sizeof(unsigned long long)));
+    CUDA_CHECK(cudaMemset(d_gas_wipe_energy_raw_, 0, sizeof(unsigned long long)));
+    CUDA_CHECK(cudaMemset(d_boiling_cap_energy_raw_, 0, sizeof(unsigned long long)));
 }
 
 void ThermalFDM::freeMemory() {
     if (d_T_)     { cudaFree(d_T_);     d_T_ = nullptr; }
     if (d_T_new_) { cudaFree(d_T_new_); d_T_new_ = nullptr; }
     if (d_gas_wipe_mask_) { cudaFree(d_gas_wipe_mask_); d_gas_wipe_mask_ = nullptr; }
+    if (d_gas_wipe_energy_raw_) { cudaFree(d_gas_wipe_energy_raw_); d_gas_wipe_energy_raw_ = nullptr; }
+    if (d_boiling_cap_energy_raw_) { cudaFree(d_boiling_cap_energy_raw_); d_boiling_cap_energy_raw_ = nullptr; }
 }
 
 void ThermalFDM::initialize(float initial_temp) {
@@ -708,13 +804,16 @@ void ThermalFDM::computeTemperature() {
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    // Gas phase wipe: reset far-field gas cells to ambient temperature
-    // Near-interface gas (within 5 layers) is protected to prevent energy theft
+    // Gas phase wipe with energy tracking
     if (d_vof_fill_ != nullptr) {
         computeGasWipeProtectionMask(5);
+        float dV = dx_ * dx_ * dx_;
         int bs = 256, gs = (num_cells_ + bs - 1) / bs;
-        fdmGasWipeKernel<<<gs, bs>>>(d_T_, d_vof_fill_, d_gas_wipe_mask_,
-                                      600.0f, num_cells_);
+        // Accumulate energy (do NOT reset — getGasWipeEnergyRemoved() handles reset)
+        fdmGasWipeWithTrackingKernel<<<gs, bs>>>(
+            d_T_, d_vof_fill_, d_gas_wipe_mask_, 600.0f,
+            material_, dV,
+            d_gas_wipe_energy_raw_, num_cells_);
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
     }
@@ -793,7 +892,12 @@ __global__ void fdmEvapCoolingFromFluxKernel(
     float q = J * L_vap * factor;
     float dT = q * dt / (rho * cp * dx);
 
-    T[idx] = fmaxf(mat.T_vaporization, Tc - dT);
+    // R6 FIX: Remove T_vap clamp for energy balance consistency.
+    // The clamp hid the fact that we reported removing J*L_vap but actually
+    // removed less (when the cap fired). Now actual cooling matches the
+    // P_evap diagnostic. Evap mass flux J auto-zeroes when T<=T_boil in
+    // fdmEvapMassFluxKernel, so oscillation is self-limiting.
+    T[idx] = Tc - dT;
 }
 
 void ThermalFDM::applyEvaporationCooling(const float* J_evap, const float* fill,
@@ -930,6 +1034,81 @@ void ThermalFDM::computeEvaporationMassFlux(float* d_J_evap,
         d_T_, fill_level, d_J_evap, material_, nx_, ny_, nz_);
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// ============================================================================
+// Host: Apply sub-surface boiling cap
+// ============================================================================
+void ThermalFDM::applySubsurfaceBoilingCap(float T_boil, float overshoot_K) {
+    if (d_vof_fill_ == nullptr) return;
+    float T_cap = T_boil + overshoot_K;
+    float dV = dx_ * dx_ * dx_;
+    int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+    // Accumulate energy (do NOT reset — getBoilingCapEnergyRemoved() handles reset)
+    fdmSubsurfaceBoilingCapKernel<<<gs, bs>>>(
+        d_T_, d_vof_fill_, T_cap,
+        material_, dV,
+        d_boiling_cap_energy_raw_, num_cells_);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// ============================================================================
+// Host: Retrieve gas wipe energy removed [J], resets counter
+// ============================================================================
+double ThermalFDM::getGasWipeEnergyRemoved() {
+    unsigned long long h_raw = 0;
+    CUDA_CHECK(cudaMemcpy(&h_raw, d_gas_wipe_energy_raw_, sizeof(unsigned long long),
+                          cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemset(d_gas_wipe_energy_raw_, 0, sizeof(unsigned long long)));
+    // Interpret as signed (two's complement) for net energy tracking
+    long long h_signed = static_cast<long long>(h_raw);
+    return static_cast<double>(h_signed) * 1.0e-12;
+}
+
+// ============================================================================
+// Host: Retrieve boiling cap energy removed [J], resets counter
+// ============================================================================
+double ThermalFDM::getBoilingCapEnergyRemoved() {
+    unsigned long long h_raw = 0;
+    CUDA_CHECK(cudaMemcpy(&h_raw, d_boiling_cap_energy_raw_, sizeof(unsigned long long),
+                          cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemset(d_boiling_cap_energy_raw_, 0, sizeof(unsigned long long)));
+    return static_cast<double>(h_raw) * 1.0e-12;
+}
+
+// ============================================================================
+// Host: Compute thermal energy of metal cells only (fill >= 0.01)
+// ============================================================================
+double ThermalFDM::computeMetalThermalEnergy(float dx) const {
+    std::vector<float> h_T(num_cells_);
+    CUDA_CHECK(cudaMemcpy(h_T.data(), d_T_, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
+
+    std::vector<float> h_fill(num_cells_, 1.0f);  // default: all metal if no VOF
+    if (d_vof_fill_) {
+        CUDA_CHECK(cudaMemcpy(h_fill.data(), d_vof_fill_, num_cells_ * sizeof(float), cudaMemcpyDeviceToHost));
+    }
+
+    float dV = dx * dx * dx;
+    double E = 0.0;
+    for (int i = 0; i < num_cells_; i++) {
+        if (h_fill[i] < 0.01f) continue;  // skip gas cells
+        float rho = material_.getDensity(h_T[i]);
+        float cp  = material_.getSpecificHeat(h_T[i]);
+        E += rho * cp * h_T[i] * dV;
+    }
+
+    if (phase_solver_) {
+        std::vector<float> h_fl(num_cells_);
+        phase_solver_->copyLiquidFractionToHost(h_fl.data());
+        for (int i = 0; i < num_cells_; i++) {
+            if (h_fill[i] < 0.01f) continue;
+            float rho = material_.getDensity(h_T[i]);
+            E += h_fl[i] * rho * material_.L_fusion * dV;
+        }
+    }
+
+    return E;
 }
 
 } // namespace physics

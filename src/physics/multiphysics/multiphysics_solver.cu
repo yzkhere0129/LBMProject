@@ -886,7 +886,8 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
       current_step_(0),
       d_energy_temp_(nullptr),
       energy_output_interval_(default_energy_interval_),
-      time_last_computed_(-1.0f)  // Initialize to negative to force first computation
+      time_last_computed_(-1.0f),  // Initialize to negative to force first computation
+      laser_energy_accumulated_(0.0)
 {
     // Ensure density consistency: use material's liquid density
     config_.fluid.density = config_.material.rho_liquid;
@@ -918,7 +919,7 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
     //   dt=0.10μs → interval=50 → Δt=5.0μs
     //   dt=0.05μs → interval=100 → Δt=5.0μs
     // ============================================================
-    const float TARGET_DIAGNOSTIC_INTERVAL_SECONDS = 5.0e-6f;  // 5 μs
+    const float TARGET_DIAGNOSTIC_INTERVAL_SECONDS = 0.5e-6f;  // 0.5 μs (R6: high resolution for energy balance)
     diagnostic_interval_ = std::max(1, static_cast<int>(
         TARGET_DIAGNOSTIC_INTERVAL_SECONDS / config_.dt
     ));
@@ -1675,6 +1676,10 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
                 CUDA_CHECK(cudaMemcpy(d_heat_source, h_Q.data(),
                                       num_cells * sizeof(float), cudaMemcpyHostToDevice));
 
+                // R6: Accumulate laser energy at P_target (fill gate is in the laser
+                // kernel itself, so normalization already accounts for it)
+                laser_energy_accumulated_ += static_cast<double>(P_target) * dt;
+
                 if (current_step_ % diagnostic_interval_ == 0) {
                     printf("[LaserNorm] P_actual=%.2f W, P_target=%.2f W, scale=%.3f\n",
                            (float)P_actual, P_target, scale);
@@ -1684,6 +1689,14 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
     }
 
     thermal_->addHeatSource(d_heat_source, dt);
+
+    // R6: Accumulate laser energy for energy balance diagnostic.
+    // For Beer-Lambert with VOF: already accumulated in normalization block above.
+    // For ray tracing or Beer-Lambert without VOF: accumulate at P_target.
+    if (config_.ray_tracing.enabled || !vof_) {
+        float P_deposited = config_.laser_absorptivity * config_.laser_power;
+        laser_energy_accumulated_ += static_cast<double>(P_deposited) * dt;
+    }
 }
 
 void MultiphysicsSolver::thermalStep(float dt) {
@@ -1811,6 +1824,19 @@ void MultiphysicsSolver::thermalStep(float dt) {
     if (thermal_ && !config_.enable_evaporation_mass_loss) {
         thermal_->applyEvaporationCooling(nullptr, nullptr,
                                           config_.dt, config_.dx, 1.0f);
+    }
+
+    // ============================================================
+    // SUB-SURFACE BOILING CAP
+    // ============================================================
+    // Evaporation cooling only acts on interface cells (f ∈ [0.01, 0.99]).
+    // Bulk liquid cells (f >= 0.99) can overheat beyond T_boil due to
+    // thermal conduction from the laser hotspot. Cap their temperature
+    // at T_boil + 50K (configurable overshoot) and track the removed
+    // energy as volumetric boiling latent heat for energy conservation.
+    // ============================================================
+    if (thermal_) {
+        thermal_->applySubsurfaceBoilingCap(config_.material.T_vaporization, 50.0f);
     }
 
     // ============================================================
@@ -3143,6 +3169,8 @@ void MultiphysicsSolver::printEnergyBalance() {
     float P_evap = balance.P_evaporation;
     float P_rad = balance.P_radiation;
     float P_substrate = balance.P_substrate;
+    float P_gas_wipe = balance.P_gas_wipe;
+    float P_boiling_cap = balance.P_boiling_cap;
     float dE_dt = balance.dE_dt_computed;
 
     // Temperature cap power: energy removed by T_boil-100K hard cap
@@ -3152,30 +3180,21 @@ void MultiphysicsSolver::printEnergyBalance() {
         P_cap = thermal_->computeCapPower(config_.dx, config_.dt);
     }
 
-    // Energy balance: P_laser = P_evap + P_rad + P_substrate + P_cap + dE/dt
+    // Energy balance: P_laser = P_evap + P_rad + P_sub + P_gw + P_bc + dE/dt
     float P_in = P_laser;
-    float P_out = P_evap + P_rad + P_substrate + P_cap;
+    float P_out = P_evap + P_rad + P_substrate + P_gas_wipe + P_boiling_cap;
     float P_storage = dE_dt;
 
     float balance_error = P_in - P_out - P_storage;
     float error_percent = (P_in > 1e-6f) ? (std::abs(balance_error) / P_in * 100.0f) : 0.0f;
 
-    std::cout << "\nEnergy Balance (Step=" << current_step_
-              << ", t=" << current_time_*1e6 << " μs):" << std::endl;
-
-    printf("  P_laser     = %8.2f W  (absorbed laser power)\n", P_laser);
-    printf("  P_evap      = %8.2f W  (evaporation cooling)\n", P_evap);
-    printf("  P_cap       = %8.2f W  (T cap effective evaporation)\n", P_cap);
-    printf("  P_rad       = %8.2f W  (radiation cooling)\n", P_rad);
-    printf("  P_substrate = %8.2f W  (substrate cooling)\n", P_substrate);
-    printf("  dE/dt       = %8.2f W  (thermal energy rate of change)\n", P_storage);
-    std::cout << "  ──────────────────────────" << std::endl;
-
-    std::cout << "  Balance check:" << std::endl;
-    printf("    Input:   P_laser = %8.2f W\n", P_in);
-    printf("    Output:  P_evap + P_rad + P_substrate + P_cap = %8.2f W\n", P_out);
-    printf("    Storage: dE/dt = %8.2f W\n", P_storage);
-    printf("    Error:   %.1f %%", error_percent);
+    std::cout << "\n[ENERGY R6] Step=" << current_step_
+              << ", t=" << current_time_*1e6 << " μs:" << std::endl;
+    printf("  E_total=%.6e J\n", balance.E_total);
+    printf("  P_laser=%.2f  P_evap=%.2f  P_rad=%.2f  P_sub=%.2f  P_gw=%.2f  P_bc=%.2f W\n",
+           P_laser, P_evap, P_rad, P_substrate, P_gas_wipe, P_boiling_cap);
+    printf("  P_out=%.2f  dE/dt=%.2f  balance=%.2f  err=%.1f%%\n",
+           P_out, P_storage, balance_error, error_percent);
 
     if (error_percent < 5.0f) {
         std::cout << "  ✓ PASS (< 5%)" << std::endl;
@@ -3289,18 +3308,18 @@ void MultiphysicsSolver::computeEnergyBalance() {
     const float* uz = fluid_ ? fluid_->getVelocityZ() : nullptr;
 
     // ============================================================================
-    // BUG FIX (Dec 2, 2025): Use ThermalLBM's own energy computation
+    // R6 FIX: Use ThermalFDM's own energy computation, avoid double-counting
     // ============================================================================
-    // PROBLEM: diagnostics::computeThermalEnergy() uses constant density,
-    //          but addHeatSourceKernel() uses temperature-dependent density.
-    //          This creates mismatch: energy computed with rho_liquid (4110)
-    //          but heat deposited using rho_solid (4420) → 7% error.
+    // computeTotalThermalEnergy() returns:
+    //   Σ(ρ(T) × cp(T) × T × dV) + Σ(fl × ρ × L_f × dV)
+    // This ALREADY includes both sensible heat AND latent heat.
     //
-    // SOLUTION: Use ThermalLBM::computeTotalThermalEnergy() which properly
-    //           accounts for temperature-dependent rho(T) and cp(T), matching
-    //           the actual physics in addHeatSourceKernel().
+    // Previous bug: E_latent was computed separately via computeLatentEnergy()
+    // and ADDED to E_total on top of the latent term already inside E_thermal.
+    // This double-counted latent energy, inflating dE/dt by ~dE_latent/dt.
     // ============================================================================
-    balance.E_thermal = thermal_->computeTotalThermalEnergy(config_.dx);
+    float E_total_f = thermal_->computeTotalThermalEnergy(config_.dx);
+    balance.E_thermal = static_cast<double>(E_total_f);
 
     // Kinetic energy: ∫ 0.5 ρ |u|² dV
     if (config_.enable_fluid && fluid_) {
@@ -3316,20 +3335,9 @@ void MultiphysicsSolver::computeEnergyBalance() {
         balance.E_kinetic = 0.0;
     }
 
-    // Latent energy: ∫ ρ L_f f_liquid dV
-    if (config_.enable_phase_change) {
-        computeLatentEnergy(
-            f_liquid,
-            config_.material.rho_liquid,
-            config_.material.L_fusion,
-            config_.dx,
-            config_.nx, config_.ny, config_.nz,
-            d_energy_temp_
-        );
-        CUDA_CHECK(cudaMemcpy(&balance.E_latent, d_energy_temp_, sizeof(double), cudaMemcpyDeviceToHost));
-    } else {
-        balance.E_latent = 0.0;
-    }
+    // Latent energy: already included in E_thermal from computeTotalThermalEnergy().
+    // Set to zero to avoid double-counting in E_total.
+    balance.E_latent = 0.0;
 
     // Total energy
     balance.updateTotal();
@@ -3338,31 +3346,58 @@ void MultiphysicsSolver::computeEnergyBalance() {
     // Compute power terms [W]
     // ========================================================================
 
-    balance.P_laser = getLaserAbsorbedPower();
+    // R6 FIX: Use accumulated laser energy (actual deposited) instead of
+    // recomputing from current position. This avoids phase error when the
+    // laser moves between diagnostic calls.
+    double dt_elapsed_for_power = (time_last_computed_ < 0.0f) ? config_.dt : (current_time_ - time_last_computed_);
+    dt_elapsed_for_power = std::max(dt_elapsed_for_power, 1e-12);
+    balance.P_laser = static_cast<double>(laser_energy_accumulated_) / dt_elapsed_for_power;
     balance.P_evaporation = getEvaporationPower();
     balance.P_radiation = getRadiationPower();
     balance.P_substrate = getSubstratePower();
     balance.P_convection = 0.0;  // TODO: Implement if needed
 
+    // Gas wipe and boiling cap energy tracking (Round 5)
+    // These return cumulative energy [J] since last call, and reset the counter.
+    // Convert to power: P = E_accumulated / dt_elapsed
+    double E_gas_wipe = 0.0, E_boiling_cap = 0.0;
+    if (thermal_) {
+        E_gas_wipe = thermal_->getGasWipeEnergyRemoved();
+        E_boiling_cap = thermal_->getBoilingCapEnergyRemoved();
+        double dt_power = dt_elapsed_for_power;
+        balance.P_gas_wipe = E_gas_wipe / dt_power;
+        balance.P_boiling_cap = E_boiling_cap / dt_power;
+    } else {
+        balance.P_gas_wipe = 0.0;
+        balance.P_boiling_cap = 0.0;
+    }
+
     // ========================================================================
     // Update tracker and compute error
     // ========================================================================
-    // BUG FIX (Dec 2, 2025): Use actual time elapsed since last computation
+    // R6 FIX: Proper first-call initialization + real elapsed time
     //
-    // PROBLEM: Tracker expects dt = time between calls, but we were passing
-    //          config_.dt (single timestep). When computeEnergyBalance() is
-    //          called infrequently (e.g., every 100 steps), dE/dt calculation
-    //          is wrong by factor of 100!
+    // On first call, E_total_prev_ = 0.0 (tracker constructor), so dE/dt is
+    // computed from zero energy — meaningless. Fix: seed the tracker on first
+    // call so dE/dt = 0 for the first interval (no history to compare against).
     //
-    // SOLUTION: Track time of last call and compute actual dt_elapsed.
+    // Also: use actual elapsed time since last diagnostic, not config_.dt.
     // ========================================================================
 
-    double dt_elapsed = (time_last_computed_ < 0.0f) ? config_.dt : (current_time_ - time_last_computed_);
-
-    energy_tracker_.update(balance, dt_elapsed);
+    if (time_last_computed_ < 0.0f) {
+        // First call: seed tracker, no dE/dt history available yet
+        energy_tracker_.seed(balance);
+    } else {
+        double dt_elapsed = current_time_ - time_last_computed_;
+        dt_elapsed = std::max(dt_elapsed, 1e-12);
+        energy_tracker_.update(balance, dt_elapsed);
+    }
 
     // Mark that energy balance was computed at this time
     time_last_computed_ = current_time_;
+
+    // Reset laser energy accumulator for next diagnostic interval
+    laser_energy_accumulated_ = 0.0;
 }
 
 void MultiphysicsSolver::writeEnergyBalanceHistory(const std::string& filename) const {

@@ -55,6 +55,10 @@ struct EnergyBalance {
     double P_substrate;      ///< Substrate cooling (output)
     double P_convection;     ///< Fluid convection through boundaries (typically small)
 
+    // Round 5: energy sinks previously untracked
+    double P_gas_wipe;       ///< Far-field gas thermal reset (energy sink)
+    double P_boiling_cap;    ///< Sub-surface boiling cap (energy sink for bulk liquid T>T_boil)
+
     // ========================================================================
     // Conservation check
     // ========================================================================
@@ -83,6 +87,8 @@ struct EnergyBalance {
         P_radiation = 0.0;
         P_substrate = 0.0;
         P_convection = 0.0;
+        P_gas_wipe = 0.0;
+        P_boiling_cap = 0.0;
 
         dE_dt_computed = 0.0;
         dE_dt_balance = 0.0;
@@ -114,7 +120,8 @@ struct EnergyBalance {
         }
 
         // Expected rate from power balance
-        dE_dt_balance = P_laser - P_evaporation - P_radiation - P_substrate - P_convection;
+        dE_dt_balance = P_laser - P_evaporation - P_radiation - P_substrate - P_convection
+                      - P_gas_wipe - P_boiling_cap;
 
         // Error metrics
         error_absolute = std::abs(dE_dt_computed - dE_dt_balance);
@@ -144,6 +151,8 @@ struct EnergyBalance {
         printf("    P_evap     = %10.2f  (output)\n", P_evaporation);
         printf("    P_rad      = %10.2f  (output)\n", P_radiation);
         printf("    P_sub      = %10.2f  (output)\n", P_substrate);
+        printf("    P_gas_wipe = %10.2f  (gas thermal reset)\n", P_gas_wipe);
+        printf("    P_boil_cap = %10.2f  (sub-surface boiling cap)\n", P_boiling_cap);
         printf("  Balance:\n");
         printf("    dE/dt (computed) = %10.2f W\n", dE_dt_computed);
         printf("    dE/dt (balance)  = %10.2f W\n", dE_dt_balance);
@@ -170,7 +179,7 @@ public:
     /**
      * @brief Constructor
      */
-    EnergyBalanceTracker() : current_(), E_total_prev_(0.0) {
+    EnergyBalanceTracker() : current_(), E_total_prev_(0.0), ema_dE_dt_(0.0), ema_initialized_(false) {
         current_.reset();
     }
 
@@ -182,7 +191,7 @@ public:
     }
 
     /**
-     * @brief Update current snapshot (without storing in history)
+     * @brief Update current snapshot (instantaneous dE/dt)
      * @param balance New energy balance data
      * @param dt Time step [s]
      */
@@ -190,6 +199,22 @@ public:
         current_ = balance;
         current_.computeError(E_total_prev_, dt);
         E_total_prev_ = current_.E_total;
+    }
+
+    /**
+     * @brief Seed tracker with initial state (first call, no dE/dt history)
+     * Sets E_total_prev_ so the next update() call computes a valid dE/dt.
+     */
+    void seed(const EnergyBalance& balance) {
+        current_ = balance;
+        E_total_prev_ = current_.E_total;
+        ema_dE_dt_ = 0.0;
+        ema_initialized_ = false;
+        // dE/dt is zero for first interval (no previous data)
+        current_.dE_dt_computed = 0.0;
+        current_.dE_dt_balance = 0.0;
+        current_.error_absolute = 0.0;
+        current_.error_percent = 0.0;
     }
 
     /**
@@ -236,9 +261,11 @@ public:
         f << "#  8: P_evap [W]\n";
         f << "#  9: P_rad [W]\n";
         f << "# 10: P_substrate [W]\n";
-        f << "# 11: dE/dt_computed [W]\n";
-        f << "# 12: dE/dt_balance [W]\n";
-        f << "# 13: Error [%]\n";
+        f << "# 11: P_gas_wipe [W]\n";
+        f << "# 12: P_boiling_cap [W]\n";
+        f << "# 13: dE/dt_computed [W]\n";
+        f << "# 14: dE/dt_balance [W]\n";
+        f << "# 15: Error [%]\n";
         f << "#\n";
 
         // Data
@@ -256,6 +283,8 @@ public:
               << e.P_evaporation << " "
               << e.P_radiation << " "
               << e.P_substrate << " "
+              << e.P_gas_wipe << " "
+              << e.P_boiling_cap << " "
               << e.dE_dt_computed << " "
               << e.dE_dt_balance << " "
               << e.error_percent << "\n";
@@ -268,6 +297,8 @@ private:
     EnergyBalance current_;           ///< Current timestep data
     std::vector<EnergyBalance> history_;  ///< Time series
     double E_total_prev_;             ///< Previous E_total for dE/dt
+    double ema_dE_dt_;               ///< EMA-smoothed dE/dt (alpha=0.2)
+    bool ema_initialized_;           ///< Whether EMA has been seeded
 };
 
 // ============================================================================
