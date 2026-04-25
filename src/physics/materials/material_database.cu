@@ -61,24 +61,30 @@ MaterialProperties MaterialDatabase::get316L() {
     // Material name
     strcpy(mat.name, "SS316L");
 
-    // Solid state properties (from MATERIAL_DATABASE.yaml)
-    mat.rho_solid = 7990.0f;           // kg/m³
-    mat.cp_solid = 500.0f;             // J/(kg·K)
-    mat.k_solid = 16.2f;               // W/(m·K)
+    // Sprint-1 (2026-04-25): aligned with Flow3D Mills 316L table
+    // (vtk-316L-150W-50um-V800mms/prepin.* rhof/thc1/cv1 ranges).
+    // Old values (cp_solid=500 was -44 %, k_solid=16.2 was -81 % vs Mills) let
+    // the LBM trailing edge cool too slowly, keeping crater open after the
+    // laser passed and inflating apparent W (110 vs F3D narrowing 76 μm).
+    //
+    // Solid state — Mills @ ~1700 K (representative of trailing-edge solidus)
+    mat.rho_solid = 7260.88f;          // kg/m³ (Flow3D rhofs at solidus)
+    mat.cp_solid = 722.0f;             // J/(kg·K) (Flow3D cvs1)
+    mat.k_solid = 29.349f;             // W/(m·K) (Flow3D thcs1)
 
-    // Liquid state properties
-    mat.rho_liquid = 6900.0f;          // kg/m³
-    mat.cp_liquid = 775.0f;            // J/(kg·K)
-    mat.k_liquid = 30.0f;              // W/(m·K)
-    mat.mu_liquid = 6.0e-3f;           // Pa·s
+    // Liquid state — Mills @ ~1700-1800 K
+    mat.rho_liquid = 7249.2f;          // kg/m³ (Flow3D rhof at liquidus)
+    mat.cp_liquid = 726.0f;            // J/(kg·K) (Flow3D cv1 at liquidus)
+    mat.k_liquid = 28.951f;            // W/(m·K) (Flow3D thc1 at liquidus)
+    mat.mu_liquid = 6.0e-3f;           // Pa·s (unchanged, Flow3D mu1 liquidus)
 
-    // Phase change parameters
-    mat.T_solidus = 1658.0f;           // K
-    mat.T_liquidus = 1700.0f;          // K (melting point)
-    mat.T_vaporization = 3090.0f;      // K (boiling point)
+    // Phase change parameters — Flow3D ts1 / tl1
+    mat.T_solidus = 1674.15f;          // K (Flow3D ts1, +16 K shift)
+    mat.T_liquidus = 1697.15f;         // K (Flow3D tl1, -3 K, mushy band 23 K vs old 42 K)
+    mat.T_vaporization = 3090.0f;      // K (boiling point, OpenFOAM laserMeltFoam aligned)
     mat.L_fusion = 260000.0f;          // J/kg
     mat.L_vaporization = 7450000.0f;   // J/kg
-    mat.molar_mass = 0.0558f;          // kg/mol (weighted avg: Fe:0.056, Cr:0.052, Ni:0.059, Mo:0.096)
+    mat.molar_mass = 0.05593f;         // kg/mol (OpenFOAM laserMeltFoam aligned)
 
     // Surface properties (pure 316L — restored to physical values)
     mat.surface_tension = 1.75f;       // N/m at melting point
