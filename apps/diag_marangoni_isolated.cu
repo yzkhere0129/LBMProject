@@ -108,8 +108,8 @@ int main() {
                 float T_A = h_T[pA], T_B = h_T[pB], T_C = h_T[pC];
                 // dTdx at probe A: central diff
                 float dTdx_A = (h_T[pA+1] - h_T[pA-1]) * 0.5f;
-                float v_max_LU = solver.getMaxVelocity();
-                float v_max_phys = v_max_LU * dx / dt;
+                float v_max_phys = solver.getMaxVelocity();  // m/s
+                float v_max_LU = v_max_phys * dt / dx;        // derived lattice-unit view
 
                 printf("%5d %8.1f | %8.0f %10.1f | %8.0f %10.0f | %8.5f %10.3f\n",
                        step, step*dt*1e9f,
@@ -192,8 +192,8 @@ int main() {
 
             if (step % 25 == 0) {
                 solver.copyTemperatureToHost(h_T_out.data());
-                float v_max_LU = solver.getMaxVelocity();
-                float v_phys = v_max_LU * dx / dt;
+                float v_phys = solver.getMaxVelocity();  // m/s
+                float v_max_LU = v_phys * dt / dx;       // derived lattice-unit view
 
                 // Melt pool depth from actual (evolved) T
                 const int cx=NX/2, cy=NY/2;

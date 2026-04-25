@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
     // Recoil pressure parameters (Ti6Al4V Anisimov model)
     // At T > 5000K, P_recoil can exceed 300 MPa - need higher limit for keyhole
     config.recoil_coefficient = 0.54f;      // Knight (1979) coefficient
-    config.recoil_smoothing_width = 2.0f;   // Interface smoothing [cells]
+    config.recoil_smoothing_width = 2.0f;   // Temperature ramp window [K] (2 K ≈ hard threshold)
     config.recoil_max_pressure = 1e8f;      // 100 MPa max (balanced: keyhole + stability)
 
     // Material: Ti6Al4V

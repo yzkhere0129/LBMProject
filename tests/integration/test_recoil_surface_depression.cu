@@ -275,7 +275,7 @@ TEST_F(RecoilSurfaceDepressionTest, RecoilConfigParameters) {
     EXPECT_FLOAT_EQ(solver.getConfig().recoil_max_pressure, 5e7f);
 
     std::cout << "  C_r = " << solver.getConfig().recoil_coefficient << std::endl;
-    std::cout << "  h_interface = " << solver.getConfig().recoil_smoothing_width << " cells" << std::endl;
+    std::cout << "  T_ramp_window = " << solver.getConfig().recoil_smoothing_width << " K" << std::endl;
     std::cout << "  P_max = " << solver.getConfig().recoil_max_pressure * 1e-6f << " MPa" << std::endl;
 
     std::cout << "  [PASS] Recoil configuration parameters stored correctly" << std::endl;

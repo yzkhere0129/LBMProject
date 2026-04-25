@@ -188,8 +188,7 @@ int main(int argc, char** argv) {
 
         if (do_print || do_vtk) {
             float T_max = solver.getMaxTemperature();
-            float v_max_LU = solver.getMaxVelocity();
-            float v_max_phys = v_max_LU * dx / dt;
+            float v_max_phys = solver.getMaxVelocity();
             float laser_x = (config.laser_start_x + v_scan * t) * 1e6f;
 
             // Melt pool depth from temperature

@@ -192,7 +192,7 @@ int main() {
 
         if (do_print || do_vtk) {
             float T_max = solver.getMaxTemperature();
-            float v_max = solver.getMaxVelocity() * dx / dt;
+            float v_max = solver.getMaxVelocity();
 
             std::vector<float> h_T(num_cells), h_f(num_cells);
             solver.copyTemperatureToHost(h_T.data());

@@ -386,8 +386,7 @@ int main(int argc, char** argv) {
 
         if (do_print || do_vtk) {
             float T_max = solver.getMaxTemperature();
-            float v_max_LU = solver.getMaxVelocity();
-            float v_max_phys = v_max_LU * dx / dt;
+            float v_max_phys = solver.getMaxVelocity();
             float laser_y = (config.laser_start_y + 1.0f * t) * 1e6f;
 
             std::vector<float> h_T(num_cells), h_f(num_cells);

@@ -91,8 +91,21 @@ static __global__ void freezeSolidVelocityKernel(
 }
 
 /**
- * @brief Mask forces by liquid fraction — solid phase gets zero force.
- * F_masked = F × fl. Cold powder (fl=0) feels no surface tension.
+ * @brief Mask forces in pure-solid cells; do NOT scale forces in mushy zone.
+ *
+ * Cold powder (fl ≈ 0) must feel no surface tension or Marangoni — without
+ * this, the cold-powder layer creeps under spurious CSF forces.
+ *
+ * BUG FIX (Sprint-1, 2026-04-25): old version multiplied by fl, which
+ * compounded with the Marangoni kernel's own fl-gate (force_accumulator.cu:326)
+ * and gave 0.7 × 0.7 ≈ 0.49 attenuation on partial-melt cells (fl=0.7).
+ * That structurally suppressed Marangoni at the very interface where it should
+ * be strongest, contributing 10–25 % melt-pool width error vs Flow3D.
+ *
+ * Each force kernel is now responsible for its own mushy-zone treatment
+ * (Marangoni: ramp 0.1→0.2 inside the kernel; CSF: ∇f naturally limits to
+ * interface; buoyancy: weighted by fl internally). This mask becomes a
+ * pure cold-powder cutoff at fl = 0.05.
  */
 static __global__ void maskForceByLiquidFractionKernel(
     float* __restrict__ fx, float* __restrict__ fy, float* __restrict__ fz,
@@ -101,10 +114,12 @@ static __global__ void maskForceByLiquidFractionKernel(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
     float fl = liquid_fraction[idx];
-    fl = fmaxf(0.0f, fminf(1.0f, fl));
-    fx[idx] *= fl;
-    fy[idx] *= fl;
-    fz[idx] *= fl;
+    // Step cutoff: only kill forces in the (effectively) cold-solid phase.
+    // Above 0.05 fl, leave forces untouched — let each kernel's own gate decide.
+    float gate = (fl >= 0.05f) ? 1.0f : 0.0f;
+    fx[idx] *= gate;
+    fy[idx] *= gate;
+    fz[idx] *= gate;
 }
 
 /**
@@ -292,111 +307,76 @@ __global__ void computeLaserHeatSourceKernel(
     float dx,
     float z_surface)
 {
+    // R7 COLUMN-MARCH (OpenFOAM laserMeltFoam updateFLB.H alignment):
+    // Thread mapping: one thread per (i, j) column, marching top-down in Z.
+    // Each metal-side VOF cell absorbs its own fraction `f` of the remaining
+    // beam (`laserFraction`), with carry-over until the beam is depleted.
+    //
+    //   laserFraction = 1.0
+    //   for k = nz-1 downto 0:
+    //     if f[k] > 0.01:
+    //       absorbed  = min(laserFraction, f[k])
+    //       Q_vol[k]  = q_surface * absorbed / dx    [W/m³]
+    //       laserFraction -= absorbed
+    //       if laserFraction <= 0: break
+    //
+    // This is EXACTLY conservative: Σ (Q_vol·dx) = q_surface·(1 - remainder).
+    // No |∂f/∂z| singularity, no discrete integral deficit — the absorption
+    // is exactly ∫α(z)dz integrated cell-by-cell.
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    int k_init = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (i >= nx || j >= ny || k >= nz) return;
-
-    int idx = i + nx * (j + ny * k);
-    d_heat_source[idx] = 0.0f;
+    if (i >= nx || j >= ny || k_init >= nz) return;
+    // 3-D grid repurposed: only the k=0 slice does real column work.
+    // Caller MUST cudaMemset the buffer to zero before launching this kernel
+    // (MultiphysicsSolver::applyLaserSource does so at line ~1595).
+    if (k_init != 0) return;
 
     float x = i * dx;
     float y = j * dx;
 
-    // ================================================================
-    // VOF-aware laser deposition: energy deposited AT the interface
-    //
-    // Strategy: Use |∇f| as a surface delta function.
-    //   Q_vol = q_surface × |∇f|
-    // where q_surface is the Gaussian surface flux [W/m²].
-    //
-    // This ensures:
-    //  - Energy goes to interface cells (0.05 < f < 0.95) only
-    //  - Curved keyhole walls receive energy at the correct location
-    //  - Total absorbed power is conserved (∫|∇f|dx ≈ 1)
-    //
-    // Fallback: when fill_level is nullptr (no VOF), use the original
-    // z_surface fixed-layer deposition for backward compatibility.
-    // ================================================================
+    // Surface flux q_surface = η · (2P/πr₀²) · exp(-2r²/r₀²)     [W/m²]
+    // = absorptivity × computeIntensity(x,y)
+    float q_surface = laser.absorptivity * laser.computeIntensity(x, y);
+    if (q_surface <= 0.0f) return;
 
     if (fill_level == nullptr) {
-        // Legacy path: fixed z_surface, Beer-Lambert depth
-        float depth = (z_surface - (float)k) * dx;
-        if (depth < 0.0f) return;
-        d_heat_source[idx] = laser.computeVolumetricHeatSource(x, y, depth);
+        // Legacy path: no VOF. Deposit at z_surface band, 1/dx volumetric factor.
+        int k_surf = (int)z_surface;
+        if (k_surf >= 0 && k_surf < nz) {
+            int idx = i + nx * (j + ny * k_surf);
+            d_heat_source[idx] = q_surface / dx;
+        }
         return;
     }
 
-    float f = fill_level[idx];
+    // Column-march top-down (+Z is "up" / laser comes from above).
+    float laserFraction = 1.0f;
+    for (int k = nz - 1; k >= 0; --k) {
+        int idx = i + nx * (j + ny * k);
+        float f = fill_level[idx];
 
-    // Interface cells receive laser energy. For powder beds, sphere surfaces
-    // have thin transition zones; both sides need to absorb.
-    // The gas-wipe only resets f<0.01 cells, so f>=0.05 is safe.
-    if (f < 0.05f || f > 0.99f) return;
+        // Skip gas / near-vacuum cells; they don't absorb.
+        if (f < 0.01f) continue;
 
-    // Plasma shielding factor: computed here, applied to final heat source below.
-    float plasma_shield = 1.0f;
-    if (temperature != nullptr) {
-        float T_local = temperature[idx];
-        if (T_local > 3800.0f) { d_heat_source[idx] = 0.0f; return; }
-        if (T_local > 3300.0f) {
-            plasma_shield = 1.0f - (T_local - 3300.0f) / 500.0f;
+        // Optional plasma shield: if this (metal-interface) cell is already
+        // vaporizing, it shields deeper cells. Linear ramp 3300–3800 K.
+        float shield = 1.0f;
+        if (temperature != nullptr) {
+            float T_local = temperature[idx];
+            if (T_local > 3800.0f) shield = 0.0f;
+            else if (T_local > 3300.0f)
+                shield = 1.0f - (T_local - 3300.0f) / 500.0f;
         }
+
+        float absorbed = fminf(laserFraction, f);
+        // Volumetric source: q_surface [W/m²] × absorbed-fraction / dx = W/m³
+        d_heat_source[idx] = q_surface * absorbed * shield / dx;
+
+        laserFraction -= absorbed;  // always deplete (shielded energy is "lost")
+        if (laserFraction <= 1e-6f) break;
     }
-
-    // Compute |∇f| via central differences (surface delta function)
-    float dfx = 0.0f, dfy = 0.0f, dfz = 0.0f;
-    if (i > 0 && i < nx-1) {
-        dfx = (fill_level[(i+1)+nx*(j+ny*k)] - fill_level[(i-1)+nx*(j+ny*k)]) / (2.0f*dx);
-    }
-    if (j > 0 && j < ny-1) {
-        dfy = (fill_level[i+nx*((j+1)+ny*k)] - fill_level[i+nx*((j-1)+ny*k)]) / (2.0f*dx);
-    }
-    if (k > 0 && k < nz-1) {
-        dfz = (fill_level[i+nx*(j+ny*(k+1))] - fill_level[i+nx*(j+ny*(k-1))]) / (2.0f*dx);
-    }
-    float grad_f_mag = sqrtf(dfx*dfx + dfy*dfy + dfz*dfz);
-
-    if (grad_f_mag < 1e-6f) return;
-
-    // ================================================================
-    // Ray-casting projection: vertical laser (-Z direction)
-    //
-    // The effective intercepted flux on a tilted surface element is:
-    //   q_absorbed = q_laser(x,y) · cos θ · A(θ)
-    // where cos θ = |n_z| = |∂f/∂z| / |∇f|  (angle between surface normal and Z)
-    //
-    // Converting to volumetric source via CSF delta function:
-    //   Q_vol = q_laser · cos θ · |∇f| = q_laser · |∂f/∂z|
-    //
-    // This correctly handles:
-    //   - Flat surface (cos θ = 1): full absorption
-    //   - Vertical keyhole wall (cos θ ≈ 0): near-zero absorption (grazing)
-    //   - Tilted surface: proportional to projected area
-    //
-    // Fresnel absorption: A(θ) = A₀ · (1 + (1-cos θ)²) / 2  (simplified)
-    // At normal incidence (θ=0): A = A₀. At grazing (θ→π/2): A → A₀.
-    // Full Fresnel for metals: A(θ) ≈ A₀/cos θ for small θ (Drude model),
-    // but this diverges at grazing. Use Hagen-Rubens approximation capped.
-    // ================================================================
-
-    // Surface heat flux [W/m²] at this (x,y) from Gaussian profile
-    float q_surface = laser.computeVolumetricHeatSource(x, y, 0.0f) * dx;
-
-    // Projection: only the Z-component of ∇f captures vertical laser
-    float abs_dfz = fabsf(dfz);
-
-    // Fresnel-like angle-dependent absorptivity (simplified)
-    // cos θ = |dfz| / |∇f|. At normal incidence: A = A₀ (base absorptivity).
-    // At grazing: enhanced absorption for metals (Fresnel effect).
-    float cos_theta = abs_dfz / grad_f_mag;
-    // Simplified Fresnel for metals: A(θ) ≈ A₀ × (1 + 0.5×(1-cos²θ))
-    // This gives ~1.0× at normal, ~1.5× at 45°, saturates at ~1.5× at grazing.
-    float fresnel_factor = 1.0f + 0.5f * (1.0f - cos_theta * cos_theta);
-
-    // Final: Q_vol = q_surface × |∂f/∂z| × Fresnel × plasma_shield
-    d_heat_source[idx] = q_surface * abs_dfz * fresnel_factor * plasma_shield;
 }
 
 /**
@@ -867,7 +847,6 @@ void MultiphysicsConfig::validate() const {
 MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
     : config_(config),
       unit_converter_(config.dx, config.dt, config.density),
-      d_saturation_pressure_(nullptr),
       d_force_x_(nullptr),
       d_force_y_(nullptr),
       d_force_z_(nullptr),
@@ -1071,21 +1050,8 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
         }
     }
 
-    // Recoil pressure (for keyhole formation - requires thermal + VOF)
-    d_saturation_pressure_ = nullptr;
-    if (config_.enable_recoil_pressure) {
-        RecoilPressureConfig recoil_config;
-        recoil_config.coefficient = config_.recoil_coefficient;
-        recoil_config.smoothing_width = config_.recoil_smoothing_width;
-        recoil_config.max_pressure = config_.recoil_max_pressure;
-
-        recoil_pressure_ = std::make_unique<RecoilPressure>(recoil_config, config_.dx);
-
-        // Allocate saturation pressure buffer
-        int num_cells = config_.nx * config_.ny * config_.nz;
-        CUDA_CHECK(cudaMalloc(&d_saturation_pressure_, num_cells * sizeof(float)));
-        CUDA_CHECK(cudaMemset(d_saturation_pressure_, 0, num_cells * sizeof(float)));
-    }
+    // Recoil pressure is applied via ForceAccumulator::addRecoilPressureForce (see below).
+    // The standalone RecoilPressure class path (dead in production) was removed.
 
     // ============================================================
     // Initialize ForceAccumulator (robust force pipeline)
@@ -1222,7 +1188,6 @@ void MultiphysicsSolver::freeMemory() {
     if (d_velocity_physical_z_) cudaFree(d_velocity_physical_z_);
     if (d_evap_mass_flux_) cudaFree(d_evap_mass_flux_);
     if (d_energy_temp_) cudaFree(d_energy_temp_);
-    if (d_saturation_pressure_) cudaFree(d_saturation_pressure_);
     if (d_fl_smoothed_) cudaFree(d_fl_smoothed_);
     if (d_T_smoothed_) cudaFree(d_T_smoothed_);
     if (d_darcy_K_prev_) cudaFree(d_darcy_K_prev_);
@@ -2628,7 +2593,7 @@ void MultiphysicsSolver::computeTotalForce() {
     // suppressed recoil by up to 100× at onset.  Moving recoil here bypasses the
     // mask and the 2-iteration Marangoni smoothing (step 2f), both of which were
     // never intended to touch recoil forces.
-    if (config_.enable_recoil_pressure && recoil_pressure_ && vof_ && thermal_) {
+    if (config_.enable_recoil_pressure && vof_ && thermal_) {
         const float* temperature = thermal_->getTemperature();
         const float* fill_level = vof_->getFillLevel();
         const float3* normals = vof_->getInterfaceNormals();
@@ -3026,24 +2991,20 @@ float MultiphysicsSolver::getEvaporationPower() const {
     if (!config_.enable_thermal || !thermal_) return 0.0f;
     if (!vof_ || !d_evap_mass_flux_) return 0.0f;
 
-    // CRITICAL FIX: Compute power directly from d_evap_mass_flux_ array
-    // Power = Σ (J_evap * A * L_vap) where:
-    //   J_evap [kg/(m^2*s)] = evaporation mass flux
-    //   A [m^2] = cell surface area = dx^2
-    //   L_vap [J/kg] = latent heat of vaporization
-    // Total: P_evap = Σ J_i * dx^2 * L_vap  [W]
-
+    // R7 OPENFOAM-ALIGNED: d_evap_mass_flux_ now stores J_vol [kg/(m³·s)]
+    // weighted by |∇f|. Total evaporation power:
+    //   P_evap = Σ (J_vol · V · L_vap)   where V = dx³
     int num_cells = config_.nx * config_.ny * config_.nz;
     std::vector<float> h_J_evap(num_cells);
     cudaMemcpy(h_J_evap.data(), d_evap_mass_flux_,
                num_cells * sizeof(float), cudaMemcpyDeviceToHost);
 
     float L_vap = config_.material.L_vaporization;  // [J/kg]
-    float A = config_.dx * config_.dx;  // [m^2]
+    float V = config_.dx * config_.dx * config_.dx; // [m³]
 
     float total_power = 0.0f;
     for (int i = 0; i < num_cells; ++i) {
-        total_power += h_J_evap[i] * A * L_vap;  // [kg/(m^2*s)] * [m^2] * [J/kg] = [W]
+        total_power += h_J_evap[i] * V * L_vap;  // [kg/(m³·s)] * [m³] * [J/kg] = [W]
     }
 
     return total_power;

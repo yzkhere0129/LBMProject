@@ -161,8 +161,7 @@ void runTest(const TestConfig& tc, const char* csv_dir) {
 
         if (step % 1000 == 0 || step == tc.steps) {
             float T_max = solver.getMaxTemperature();
-            float v_lat = solver.getMaxVelocity();
-            float v_phys = v_lat * dx / dt;
+            float v_phys = solver.getMaxVelocity();  // m/s
             float Ma = v_phys / cs_phys;
 
             std::vector<float> h_T(num_cells), h_f(num_cells);
@@ -202,7 +201,7 @@ void runTest(const TestConfig& tc, const char* csv_dir) {
     fclose(csv);
 
     float T_final = solver.getMaxTemperature();
-    float v_final = solver.getMaxVelocity() * dx / dt;
+    float v_final = solver.getMaxVelocity();  // m/s
     float Ma_final = v_final / cs_phys;
     printf("\n  RESULT [%s]: %s — T_max=%.0fK, v_max=%.1f m/s, Ma=%.3f\n\n",
            tc.id, stable?"STABLE":"DIVERGED", T_final, v_final, Ma_final);

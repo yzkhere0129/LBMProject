@@ -36,9 +36,12 @@ static MaterialProperties createMat() {
     mat.k_solid=20; mat.k_liquid=20;
     mat.mu_liquid=0.005f;
     mat.T_solidus=1650; mat.T_liquidus=1700;
-    mat.T_vaporization=3200.0f;
+    // R6 final alignment to OpenFOAM laserMeltFoam:
+    //   T_vap = 3090 K (was 3200K, OpenFOAM boiling-pressure reference)
+    //   molar_mass = 0.05593 kg/mol (was 0.0558, weighted avg pure-element value)
+    mat.T_vaporization=3090.0f;
     mat.L_fusion=260000; mat.L_vaporization=7.45e6f;
-    mat.molar_mass=0.0558f;
+    mat.molar_mass=0.05593f;
     mat.surface_tension=1.75f;
     mat.dsigma_dT=-4.3e-4f;
     mat.absorptivity_solid=0.35f; mat.absorptivity_liquid=0.35f;
@@ -59,6 +62,18 @@ int main(int argc, char** argv) {
     const int z_surface = 40;  // flat surface at z=40 (100μm)
     const int num_cells = NX*NY*NZ;
 
+    // Ablation mode: argv[2] = "M" (Marangoni only), "R" (Recoil only),
+    //                           "MR" (both, default), "NONE" (neither)
+    const char* abl_mode = (argc >= 3) ? argv[2] : "MR";
+    bool enable_marangoni_flag = (std::strcmp(abl_mode, "M") == 0) ||
+                                  (std::strcmp(abl_mode, "MR") == 0);
+    bool enable_recoil_flag    = (std::strcmp(abl_mode, "R") == 0) ||
+                                  (std::strcmp(abl_mode, "MR") == 0);
+    printf("Ablation mode: %s  (Marangoni=%s, Recoil=%s)\n",
+           abl_mode,
+           enable_marangoni_flag ? "ON" : "OFF",
+           enable_recoil_flag    ? "ON" : "OFF");
+
     printf("============================================================\n");
     printf("  Flat Plate Baseline: 316L (no powder)\n");
     printf("============================================================\n");
@@ -77,10 +92,10 @@ int main(int argc, char** argv) {
     config.enable_fluid=true;
     config.enable_vof=true; config.enable_vof_advection=true;
     config.enable_laser=true; config.enable_darcy=true;
-    config.enable_marangoni=true; config.enable_surface_tension=true;
+    config.enable_marangoni=enable_marangoni_flag; config.enable_surface_tension=true;
     config.enable_buoyancy=false;
     config.enable_evaporation_mass_loss=true;
-    config.enable_recoil_pressure=true;
+    config.enable_recoil_pressure=enable_recoil_flag;
     config.enable_radiation_bc=false;
 
     config.kinematic_viscosity = nu*dt/(dx*dx);
@@ -91,6 +106,11 @@ int main(int argc, char** argv) {
     config.dsigma_dT=mat.dsigma_dT;
     config.recoil_force_multiplier=1.0f;
     config.recoil_max_pressure=1e8f;
+    // R6 Fix 4: repurpose recoil_smoothing_width as temperature ramp [K].
+    // Smooth activation from (T_boil - width) to T_boil prevents a single
+    // overheated cell from producing full recoil ×3-10 atmospheric pressure.
+    // 200K window matches the HKL evaporation-cooling activation scale.
+    config.recoil_smoothing_width=200.0f;
     config.marangoni_csf_multiplier=1.0f;
     config.evap_cooling_factor=1.0f;
 
@@ -122,6 +142,10 @@ int main(int argc, char** argv) {
     MultiphysicsSolver solver(config);
     solver.setSmagorinskyCs(0.20f);
     solver.setRegularized(true, 0.503f);  // RLBM: stable at τ=0.503
+    // R6 Audit 1: Guo-2002 forcing scheme with (1-ω/2) prefactor.
+    // At τ=0.51 (ω=1.96), Guo's source factor ≈ 0.02, drastically reducing
+    // force injection vs EDM's unconditional equilibrium shift.
+    solver.setUseGuoForcing(true);
 
     // Flat plate: f=1 below surface, smooth interface at z=z_surface
     // The laser kernel requires 0.05 < f < 0.99 to deposit energy,
@@ -166,7 +190,7 @@ int main(int argc, char** argv) {
 
         if (do_print || do_vtk) {
             float T_max = solver.getMaxTemperature();
-            float v_max = solver.getMaxVelocity() * dx / dt;
+            float v_max = solver.getMaxVelocity();
             float laser_y = (100.0e-6f + 1.0f * t) * 1e6f;
 
             std::vector<float> h_T(num_cells), h_f(num_cells);

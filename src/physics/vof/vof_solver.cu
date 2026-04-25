@@ -1828,13 +1828,20 @@ float VOFSolver::computeTotalMass() const {
 
     CUDA_CHECK(cudaFree(d_partial_sums));
 
-    // Final reduction on CPU
-    float total_mass = 0.0f;
+    // Final reduction on CPU using double precision + Kahan compensation.
+    // Sprint-1 fix (2026-04-25): old code used FP32 sequential accumulation;
+    // for ~3.8M cells the relative error was O(N)·ε_mach ≈ 4×10⁻¹, completely
+    // washing out the GPU tree-reduction precision and making the 0.001%
+    // mass-drift target unmeasurable in diagnostics.
+    double total_mass_dbl = 0.0;
+    double kahan_c = 0.0;
     for (float sum : h_partial_sums) {
-        total_mass += sum;
+        double y = static_cast<double>(sum) - kahan_c;
+        double t = total_mass_dbl + y;
+        kahan_c = (t - total_mass_dbl) - y;
+        total_mass_dbl = t;
     }
-
-    return total_mass;
+    return static_cast<float>(total_mass_dbl);
 }
 
 void VOFSolver::enforceGlobalMassConservation(float target_mass) {
@@ -1901,16 +1908,16 @@ __global__ void applyEvaporationMassLossKernel(
     int idx = i + nx * (j + ny * k);
 
     float f = fill_level[idx];
-    float J = J_evap[idx];
+    float J_vol = J_evap[idx];   // R7: volumetric [kg/(m³·s)] (|∇f|-weighted)
 
     // Skip cells with no material or no evaporation
-    if (f <= 0.0f || J <= 0.0f) {
+    if (f <= 0.0f || J_vol <= 0.0f) {
         return;
     }
 
-    // Compute fill level change
-    // df = -J_evap * dt / (rho * dx)
-    float df = -J * dt / (rho * dx);
+    // R7 OPENFOAM-ALIGNED: J_evap carries volumetric mass-loss rate.
+    // df = -J_vol · dt / ρ   (no /dx; |∇f| already provided that factor).
+    float df = -J_vol * dt / rho;
 
     // ============================================================
     // Stability limiter: max 2% reduction per timestep

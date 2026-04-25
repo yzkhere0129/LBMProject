@@ -226,7 +226,7 @@ int main() {
 
         if (do_print || do_vtk) {
             float T_max = solver.getMaxTemperature();
-            float v_max = solver.getMaxVelocity() * dx / dt;
+            float v_max = solver.getMaxVelocity();
             bool laser_on = (t <= t_laser_off);
 
             std::vector<float> h_T(num_cells), h_f(num_cells);

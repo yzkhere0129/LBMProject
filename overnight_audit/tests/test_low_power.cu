@@ -154,8 +154,7 @@ void runTest(const TestConfig& tc) {
 
         if (step % 500 == 0 || step == tc.steps) {
             float T_max = solver.getMaxTemperature();
-            float v_max_lat = solver.getMaxVelocity();
-            float v_max = v_max_lat * dx / dt;
+            float v_max = solver.getMaxVelocity();  // m/s
             float Ma = v_max / cs_phys;
 
             std::vector<float> h_T(num_cells), h_f(num_cells);
@@ -190,11 +189,12 @@ void runTest(const TestConfig& tc) {
         }
     }
 
+    float v_final = solver.getMaxVelocity();  // m/s
     printf("\n  RESULT: %s — T_max=%.0fK, v_max=%.0f m/s, Ma=%.2f\n",
            stable ? "STABLE" : "DIVERGED",
            solver.getMaxTemperature(),
-           solver.getMaxVelocity() * dx / dt,
-           solver.getMaxVelocity() * dx / dt / cs_phys);
+           v_final,
+           v_final / cs_phys);
 }
 
 int main() {

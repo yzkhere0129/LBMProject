@@ -148,7 +148,7 @@ public:
      * @param M Molar mass [kg/mol]
      * @param P_atm Atmospheric pressure [Pa]
      * @param C_r Recoil coefficient (dimensionless, ~0.54)
-     * @param smoothing_width Interface smoothing width [cells]
+     * @param smoothing_width Temperature ramp window [K] for smoothstep activation from (T_boil - width) to T_boil. Small values (~2) degrade to a hard threshold; ~200 gives a physically smooth onset.
      * @param max_pressure Maximum allowed pressure [Pa]
      * @param nx, ny, nz Grid dimensions
      * @param dx Lattice spacing [m] (required for volumetric force conversion)

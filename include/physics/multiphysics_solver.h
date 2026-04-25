@@ -263,10 +263,10 @@ struct MultiphysicsConfig {
         float surface_tension_coeff  = 1.65f;    ///< σ [N/m]
         float dsigma_dT              = -0.26e-3f; ///< dσ/dT [N/(m·K)]
         float recoil_coefficient     = 0.54f;    ///< C_r (Knight 1979)
-        float recoil_smoothing_width = 2.0f;     ///< Interface smoothing [cells]
+        float recoil_smoothing_width = 30.0f;    ///< Temperature ramp window [K] for recoil smoothstep (R6: was "cells", Sprint-1: physical default = 30 K). Smooths the activation from (T_boil-W) to T_boil. 2 K ≈ hard step (numerical noise amplifier); 200 K pollutes T<T_boil region with non-Anisimov pressure. 30 K balances stability + physics. See force_accumulator.cu:524.
         float recoil_max_pressure    = 1e8f;     ///< Numerical pressure cap [Pa]
         float recoil_force_multiplier = 1.0f;    ///< Force multiplier for VOF smearing compensation
-        float marangoni_csf_multiplier = 4.0f;  ///< CSF |∇f| integral compensation (2-cell interface → ×4)
+        float marangoni_csf_multiplier = 1.0f;  ///< R8: physical default (no compensation); every production app must leave this at 1.0
         float evap_cooling_factor    = 1.0f;    ///< Evaporation cooling scaling (compensate VOF smearing)
         float molar_mass             = 0.0476f;  ///< Molar mass [kg/mol] (Ti6Al4V default)
     };
@@ -614,6 +614,12 @@ public:
         if (fluid_) fluid_->setRegularized(enable, tau_override);
     }
 
+    /// R6 Audit 1: Switch force injection from EDM to Guo-2002. Only active
+    /// when Regularized collision is enabled.
+    void setUseGuoForcing(bool enable) {
+        if (fluid_) fluid_->setUseGuoForcing(enable);
+    }
+
     /**
      * @brief Get melt pool depth (distance from interface to T < T_liquidus)
      * @return Depth [m]
@@ -789,13 +795,9 @@ private:
     std::unique_ptr<MarangoniEffect> marangoni_;
     std::unique_ptr<LaserSource> laser_;
     std::unique_ptr<RayTracingLaser> ray_tracing_laser_;
-    std::unique_ptr<RecoilPressure> recoil_pressure_;
 
     // Force accumulation pipeline (replaces fragile scattered force computation)
     std::unique_ptr<ForceAccumulator> force_accumulator_;
-
-    // Device memory for recoil pressure computation
-    float* d_saturation_pressure_;  ///< Saturation pressure field [Pa]
 
     // Device memory for force accumulation
     float* d_force_x_;

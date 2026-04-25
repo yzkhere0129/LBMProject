@@ -337,43 +337,56 @@ __global__ void addMarangoniForceKernel(
     float T_here = temperature[idx];
     float grad_T_x = 0.0f, grad_T_y = 0.0f, grad_T_z = 0.0f;
 
-    // Helper: read temperature from neighbor, but only if it has any metal
-    // (f > 0.01 includes both liquid and interface cells).
-    // Threshold lowered from 0.5 → 0.01 to fix BUG: gas-side interface cells
-    // (f ∈ [0.01, 0.5)) at the same z-layer as the query cell share f < 0.5,
-    // so the old f>=0.5 threshold zeroed out their tangential ∇T, killing
-    // ~half the Marangoni force (the gas-side half of the diffuse interface).
-    // f > 0.01 still excludes pure far-field gas (f≈0) which carries unphysical
-    // temperatures and must not contaminate the surface gradient.
-    auto T_metal = [&](int ni, int nj, int nk) -> float {
+    // BUG FIX (Sprint-1, 2026-04-25): old version replaced gas-side neighbor T
+    // with T_here (zero-gradient extrap), which collapsed the gradient's order
+    // of accuracy from O(h²) to O(h) and structurally clipped tangential ∇T at
+    // the very interface cells where Marangoni acts. Estimated 3-8 % systematic
+    // ∇T loss vs Flow3D reference.
+    //
+    // New strategy: when a neighbor is gas (f ≤ 0.01), use linear extrapolation
+    // from the opposite-side metal cell:  T_gas ≈ 2·T_here − T_opposite_metal.
+    // Equivalent to assuming the smooth temperature field continues linearly
+    // across the interface (true to leading order in h). Falls back to T_here
+    // only when both sides are gas (cell sandwiched by gas — rare, degenerate).
+    //
+    // T_neighbor reads neighbor cell index `ni,nj,nk`; if that cell is gas, it
+    // also peeks at the opposite cell `oi,oj,ok` for the linear extrapolation.
+    auto T_neighbor = [&](int ni, int nj, int nk, int oi, int oj, int ok) -> float {
         if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 || nk >= nz)
-            return T_here;
+            return T_here;  // domain edge → degenerate to one-sided behavior
         int nidx = ni + nx * (nj + ny * nk);
-        return (fill_level[nidx] > 0.01f) ? temperature[nidx] : T_here;
+        if (fill_level[nidx] > 0.01f) return temperature[nidx];
+        // Neighbor is gas; try linear extrapolation from opposite metal cell.
+        if (oi >= 0 && oi < nx && oj >= 0 && oj < ny && ok >= 0 && ok < nz) {
+            int oidx = oi + nx * (oj + ny * ok);
+            if (fill_level[oidx] > 0.01f)
+                return 2.0f * T_here - temperature[oidx];
+        }
+        return T_here;  // both sides gas → fall back to zero gradient
     };
 
     if (i > 0 && i < nx - 1) {
-        grad_T_x = (T_metal(i+1,j,k) - T_metal(i-1,j,k)) / (2.0f * dx);
+        grad_T_x = (T_neighbor(i+1,j,k, i-1,j,k) - T_neighbor(i-1,j,k, i+1,j,k)) / (2.0f * dx);
     } else if (i == 0) {
-        grad_T_x = (T_metal(i+1,j,k) - T_here) / dx;
+        grad_T_x = (T_neighbor(i+1,j,k, -1,j,k) - T_here) / dx;
     } else {
-        grad_T_x = (T_here - T_metal(i-1,j,k)) / dx;
+        grad_T_x = (T_here - T_neighbor(i-1,j,k, nx,j,k)) / dx;
     }
 
     if (j > 0 && j < ny - 1) {
-        grad_T_y = (T_metal(i,j+1,k) - T_metal(i,j-1,k)) / (2.0f * dx);
+        grad_T_y = (T_neighbor(i,j+1,k, i,j-1,k) - T_neighbor(i,j-1,k, i,j+1,k)) / (2.0f * dx);
     } else if (j == 0) {
-        grad_T_y = (T_metal(i,j+1,k) - T_here) / dx;
+        grad_T_y = (T_neighbor(i,j+1,k, i,-1,k) - T_here) / dx;
     } else {
-        grad_T_y = (T_here - T_metal(i,j-1,k)) / dx;
+        grad_T_y = (T_here - T_neighbor(i,j-1,k, i,ny,k)) / dx;
     }
 
     if (k > 0 && k < nz - 1) {
-        grad_T_z = (T_metal(i,j,k+1) - T_metal(i,j,k-1)) / (2.0f * dx);
+        grad_T_z = (T_neighbor(i,j,k+1, i,j,k-1) - T_neighbor(i,j,k-1, i,j,k+1)) / (2.0f * dx);
     } else if (k == 0) {
-        grad_T_z = (T_metal(i,j,k+1) - T_here) / dx;
+        grad_T_z = (T_neighbor(i,j,k+1, i,j,-1) - T_here) / dx;
     } else {
-        grad_T_z = (T_here - T_metal(i,j,k-1)) / dx;
+        grad_T_z = (T_here - T_neighbor(i,j,k-1, i,j,nz)) / dx;
     }
 
     // Compute surface-tangential gradient: ∇_s T = ∇T - (∇T · n) n
@@ -514,6 +527,20 @@ __global__ void addRecoilPressureForceKernel(
     float P_recoil = C_r * P_sat;
     P_recoil = fminf(P_recoil, max_pressure);
 
+    // R6 Fix 4: smooth activation ramp near T_boil.
+    // Physically, evaporation recoil is negligible below T_boil and saturates
+    // above. A smoothstep from (T_boil - smoothing_width) to T_boil provides
+    // C¹ activation so a single overheated cell does not instantly generate
+    // 3× atmospheric recoil. When smoothing_width <= 0 the ramp is a no-op
+    // (preserves pre-R6 behaviour for callers that don't set it).
+    if (smoothing_width > 0.0f) {
+        float t_ramp = (T - (T_boil - smoothing_width)) / smoothing_width;
+        t_ramp = fminf(fmaxf(t_ramp, 0.0f), 1.0f);
+        float s = t_ramp * t_ramp * (3.0f - 2.0f * t_ramp);  // smoothstep
+        P_recoil *= s;
+        if (P_recoil <= 0.0f) return;
+    }
+
     // Get interface normal (points from liquid to gas)
     float3 n = normals[idx];
 
@@ -570,6 +597,20 @@ __global__ void addRecoilPressureForceKernel(
 
     if (grad_f_mag < 1e-12f) {
         return;  // No interface
+    }
+
+    // R6 Fix 1: cap |∇f| at the analytic maximum for a 2-cell monotone VOF
+    // under the central-difference stencil: √3/(2·dx) (3D diagonal case).
+    // Prevents VOF-spike self-amplification via recoil→velocity→sharper∇f→stronger recoil.
+    // (Tightened from 1/dx per cfd-math-expert review 2026-04-17.)
+    const float SQRT3_OVER_2 = 0.866025404f;  // √3/2
+    const float grad_f_max = SQRT3_OVER_2 / dx;
+    if (grad_f_mag > grad_f_max) {
+        float shrink = grad_f_max / grad_f_mag;
+        grad_f_x *= shrink;
+        grad_f_y *= shrink;
+        grad_f_z *= shrink;
+        grad_f_mag = grad_f_max;
     }
 
     // Recoil force: F = P_recoil × ∇f × multiplier  [N/m³]

@@ -301,9 +301,8 @@ int main(int argc, char** argv) {
             solver.copyTemperatureToHost(h_T.data());
             float T_max = solver.getMaxTemperature();
 
-            // Max velocity (lattice → physical)
-            float v_max_LU = solver.getMaxVelocity();
-            float v_max_phys = v_max_LU * dx / dt;
+            // Max velocity (already physical m/s)
+            float v_max_phys = solver.getMaxVelocity();
 
             // Melt pool depth at center column
             const int cx = NX / 2, cy = NY / 2;
@@ -347,8 +346,8 @@ int main(int argc, char** argv) {
                     printf("  %6.0f %8.0f %8.0f\n", z_um + Z_OFFSET, h_T[idx], depth);
                 }
                 // Compute effective Pe at the surface
-                float v_max_LU = solver.getMaxVelocity();
-                float v_phys = v_max_LU * dx / dt;
+                float v_phys = solver.getMaxVelocity();  // m/s
+                float v_max_LU = v_phys * dt / dx;       // derived lattice-unit view
                 float Pe = v_phys * (20e-6f) / alpha;  // L_char = 20um melt depth
                 printf("  v_max = %.2f m/s (%.4f LU), Pe = %.1f\n", v_phys, v_max_LU, Pe);
             }

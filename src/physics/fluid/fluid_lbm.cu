@@ -31,6 +31,10 @@ __global__ void fluidRegularizedCollisionEDMKernel(
     const float*, float*, float*, float*, float*, float*,
     const float*, const float*, const float*, const float*,
     float omega, float cs_smag, int nx, int ny, int nz);
+__global__ void fluidRegularizedCollisionGuoKernel(
+    const float*, float*, float*, float*, float*, float*,
+    const float*, const float*, const float*, const float*,
+    float omega, float cs_smag, int nx, int ny, int nz);
 
 // Forward declarations of helper functions
 __device__ __forceinline__ double computeEquilibriumDouble(
@@ -385,10 +389,17 @@ void FluidLBM::collisionBGKwithEDM(const float* force_x,
         // Regularized kernel uses more registers than TRT; use smaller block
         dim3 block_reg(4, 4, 4);
         dim3 grid_reg((nx_ + 3) / 4, (ny_ + 3) / 4, (nz_ + 3) / 4);
-        fluidRegularizedCollisionEDMKernel<<<grid_reg, block_reg>>>(
-            d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
-            force_x, force_y, force_z, darcy_coeff, omega_,
-            cs_smag_, nx_, ny_, nz_);
+        if (use_guo_forcing_) {
+            fluidRegularizedCollisionGuoKernel<<<grid_reg, block_reg>>>(
+                d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+                force_x, force_y, force_z, darcy_coeff, omega_,
+                cs_smag_, nx_, ny_, nz_);
+        } else {
+            fluidRegularizedCollisionEDMKernel<<<grid_reg, block_reg>>>(
+                d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
+                force_x, force_y, force_z, darcy_coeff, omega_,
+                cs_smag_, nx_, ny_, nz_);
+        }
     } else if (omega_minus_ > 0.0f) {
         fluidTRTCollisionEDMKernel<<<grid, block>>>(
             d_f_src, d_f_dst, d_rho, d_ux, d_uy, d_uz,
@@ -1426,11 +1437,15 @@ __global__ void fluidBGKCollisionEDMKernel(
     float u_bare_y = my * inv_denom;
     float u_bare_z = mz * inv_denom;
 
-    // EDM velocity increment: Δu = F / ρ
-    float inv_rho = 1.0f / fmaxf(m_rho, RHO_MIN);
-    float du_x = fx * inv_rho;
-    float du_y = fy * inv_rho;
-    float du_z = fz * inv_rho;
+    // EDM velocity increment: Δu = F / (ρ + 0.5K) — Sprint-1 fix (2026-04-25):
+    // previously Δu = F/ρ, which let Marangoni inject full force in mushy zone
+    // even though u_bare was Darcy-suppressed (ρ+0.5K denominator). Net effect:
+    // u_shifted = u_bare + Δu became >> u_bare in mushy cells, breaking the
+    // EDM "force is small perturbation of equilibrium" premise and leaking
+    // Marangoni through Darcy. Now Δu shares the same Darcy-aware denominator.
+    float du_x = fx * inv_denom;
+    float du_y = fy * inv_denom;
+    float du_z = fz * inv_denom;
 
     // Physical velocity for output: u_phys = u_bare + F/(2ρ)
     // This is the second-order accurate velocity (Guo-compatible definition)
@@ -1461,6 +1476,18 @@ __global__ void fluidBGKCollisionEDMKernel(
     float u_shifted_x = u_bare_x + du_x;
     float u_shifted_y = u_bare_y + du_y;
     float u_shifted_z = u_bare_z + du_z;
+
+    // Sprint-1 fix (2026-04-25): clamp u_shifted to keep EDM equilibrium valid
+    // (Ma<0.43 truncated-Hermite). Previously only u_bare was clamped, leaving
+    // u_shifted free to violate Ma in keyhole hot spots. Now mirrors the
+    // Regularized-EDM kernel below.
+    float u_shifted_mag = sqrtf(u_shifted_x*u_shifted_x + u_shifted_y*u_shifted_y + u_shifted_z*u_shifted_z);
+    if (u_shifted_mag > U_MAX) {
+        float scale = U_MAX / u_shifted_mag;
+        u_shifted_x *= scale;
+        u_shifted_y *= scale;
+        u_shifted_z *= scale;
+    }
 
     // Load all local distributions for Smagorinsky LES computation
     float f_local[19];
@@ -1557,11 +1584,11 @@ __global__ void fluidTRTCollisionEDMKernel(
     float u_bare_y = my * inv_denom;
     float u_bare_z = mz * inv_denom;
 
-    // EDM velocity increment: Δu = F / ρ
-    float inv_rho = 1.0f / fmaxf(m_rho, RHO_MIN);
-    float du_x = fx * inv_rho;
-    float du_y = fy * inv_rho;
-    float du_z = fz * inv_rho;
+    // EDM Δu = F / (ρ + 0.5K) — Sprint-1 fix (2026-04-25): same Darcy-aware
+    // denominator as u_bare, prevents Marangoni leak through mushy Darcy.
+    float du_x = fx * inv_denom;
+    float du_y = fy * inv_denom;
+    float du_z = fz * inv_denom;
 
     // Physical velocity for output: u_phys = u_bare + F/(2ρ)
     float u_phys_x = u_bare_x + 0.5f * du_x;
@@ -1591,6 +1618,15 @@ __global__ void fluidTRTCollisionEDMKernel(
     float u_shifted_x = u_bare_x + du_x;
     float u_shifted_y = u_bare_y + du_y;
     float u_shifted_z = u_bare_z + du_z;
+
+    // Sprint-1 fix (2026-04-25): clamp u_shifted (Ma<0.43) — mirrors Regularized.
+    {
+        float us_mag = sqrtf(u_shifted_x*u_shifted_x + u_shifted_y*u_shifted_y + u_shifted_z*u_shifted_z);
+        if (us_mag > U_MAX) {
+            float s = U_MAX / us_mag;
+            u_shifted_x *= s; u_shifted_y *= s; u_shifted_z *= s;
+        }
+    }
 
     // Smagorinsky LES for TRT: adjust omega+ (symmetric relaxation)
     float f_local[19];
@@ -1686,15 +1722,16 @@ __global__ void fluidRegularizedCollisionEDMKernel(
     const float RHO_MIN = 1e-6f;
     float K = darcy_coeff[id];
     float denom = fmaxf(m_rho + 0.5f * K, RHO_MIN);
-    float u_bare_x = mx / denom;
-    float u_bare_y = my / denom;
-    float u_bare_z = mz / denom;
+    float inv_denom = 1.0f / denom;
+    float u_bare_x = mx * inv_denom;
+    float u_bare_y = my * inv_denom;
+    float u_bare_z = mz * inv_denom;
 
-    // EDM velocity increment
-    float inv_rho = 1.0f / fmaxf(m_rho, RHO_MIN);
-    float du_x = fx * inv_rho;
-    float du_y = fy * inv_rho;
-    float du_z = fz * inv_rho;
+    // EDM Δu = F / (ρ + 0.5K) — Sprint-1 fix (2026-04-25): Darcy-aware
+    // denominator prevents Marangoni leaking through mushy Darcy zone.
+    float du_x = fx * inv_denom;
+    float du_y = fy * inv_denom;
+    float du_z = fz * inv_denom;
 
     float u_phys_x = u_bare_x + 0.5f * du_x;
     float u_phys_y = u_bare_y + 0.5f * du_y;
@@ -1752,6 +1789,20 @@ __global__ void fluidRegularizedCollisionEDMKernel(
     float u_shifted_y = u_bare_y + du_y;
     float u_shifted_z = u_bare_z + du_z;
 
+    // R6 Fix 3: clamp u_shifted with the same U_MAX used for u_bare.
+    // The EDM equilibrium-shift term feq(u_shifted) is quadratic in velocity;
+    // without this clamp the shift pumps momentum into the distribution when
+    // strong body forces make |u_bare + F/ρ| >> U_MAX.
+    float u_shifted_mag = sqrtf(u_shifted_x*u_shifted_x
+                               + u_shifted_y*u_shifted_y
+                               + u_shifted_z*u_shifted_z);
+    if (u_shifted_mag > U_MAX) {
+        float s = U_MAX / u_shifted_mag;
+        u_shifted_x *= s;
+        u_shifted_y *= s;
+        u_shifted_z *= s;
+    }
+
     for (int q = 0; q < 19; q++) {
         float cx = ex[q], cy = ey[q], cz = ez[q];
 
@@ -1777,6 +1828,171 @@ __global__ void fluidRegularizedCollisionEDMKernel(
         f_dst[id + q * n_cells] = feq_bare
             + (1.0f - omega_eff) * f_neq_reg
             + (feq_shifted - feq_bare);
+    }
+}
+
+// ============================================================================
+// Regularized LBM + Guo's Forcing Scheme (R6 Audit 1)
+// ============================================================================
+// EDM injects the force via an equilibrium SHIFT (feq(u+Δu) − feq(u)) with
+// unconditional amplitude. At τ → 0.5 (near-inviscid), this over-pumps
+// momentum by a factor of 1 / (1 − ω/2), which is ~50× at τ=0.51.
+//
+// Guo's scheme (Guo et al., Phys. Rev. E 65, 046308 (2002)) uses:
+//   - Equilibrium velocity u_eq = u_bare + F/(2ρ)                (half-shift)
+//   - Forcing source term   S_q = (1 − ω/2) · w_q · [ (c_q − u_eq)/cs² +
+//                                  (c_q·u_eq)·c_q/cs⁴ ] · F
+//   - Π_neq measured against feq(u_eq), NOT feq(u_bare)
+// The (1 − ω/2) prefactor vanishes as τ → 0.5, preserving the inviscid
+// Galilean-invariance and preventing spurious momentum injection.
+//
+// Reference: Zhaoli Guo, Chuguang Zheng, Baochang Shi, "Discrete lattice
+// effects on the forcing term in the lattice Boltzmann method", PRE 2002.
+// ============================================================================
+__global__ void fluidRegularizedCollisionGuoKernel(
+    const float* f_src,
+    float* f_dst,
+    float* rho_out,
+    float* ux_out,
+    float* uy_out,
+    float* uz_out,
+    const float* force_x,
+    const float* force_y,
+    const float* force_z,
+    const float* darcy_coeff,
+    float omega,
+    float cs_smag,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    float fx = force_x[id];
+    float fy = force_y[id];
+    float fz = force_z[id];
+
+    // Step 1: Compute macroscopic moments
+    float m_rho = 0.0f, mx = 0.0f, my = 0.0f, mz = 0.0f;
+    float f_local[19];
+    for (int q = 0; q < 19; q++) {
+        float f = f_src[id + q * n_cells];
+        f_local[q] = f;
+        m_rho += f;
+        mx += ex[q] * f;
+        my += ey[q] * f;
+        mz += ez[q] * f;
+    }
+
+    // Semi-implicit Darcy velocity (post-streaming momentum / effective mass)
+    const float RHO_MIN = 1e-6f;
+    float K = darcy_coeff[id];
+    float denom = fmaxf(m_rho + 0.5f * K, RHO_MIN);
+    float inv_denom = 1.0f / denom;
+    float u_bare_x = mx * inv_denom;
+    float u_bare_y = my * inv_denom;
+    float u_bare_z = mz * inv_denom;
+
+    // Half-shifted velocity for Guo's scheme: u_eq = u_bare + F/(2(ρ+0.5K))
+    // Sprint-1 fix (2026-04-25): use Darcy-aware denominator (was F/ρ, leaked
+    // Marangoni through mushy zone). Same fix applied to BGK/TRT/Regularized
+    // EDM kernels above.
+    float du_x = fx * inv_denom;
+    float du_y = fy * inv_denom;
+    float du_z = fz * inv_denom;
+
+    float u_eq_x = u_bare_x + 0.5f * du_x;
+    float u_eq_y = u_bare_y + 0.5f * du_y;
+    float u_eq_z = u_bare_z + 0.5f * du_z;
+
+    // Clamp u_eq (Ma < 0.43) for equilibrium truncated-Hermite validity
+    const float U_MAX = 0.25f;
+    float u_eq_mag = sqrtf(u_eq_x*u_eq_x + u_eq_y*u_eq_y + u_eq_z*u_eq_z);
+    if (u_eq_mag > U_MAX) {
+        float s = U_MAX / u_eq_mag;
+        u_eq_x *= s; u_eq_y *= s; u_eq_z *= s;
+    }
+
+    // Also clamp u_bare for stress-tensor measurement consistency
+    float u_bare_mag = sqrtf(u_bare_x*u_bare_x + u_bare_y*u_bare_y + u_bare_z*u_bare_z);
+    if (u_bare_mag > U_MAX) {
+        float s = U_MAX / u_bare_mag;
+        u_bare_x *= s; u_bare_y *= s; u_bare_z *= s;
+    }
+
+    rho_out[id] = m_rho;
+    ux_out[id] = u_eq_x;  // Guo's observable velocity
+    uy_out[id] = u_eq_y;
+    uz_out[id] = u_eq_z;
+
+    // Step 2: Stress-tensor measurement against feq(u_eq) (Guo convention)
+    float Pi_xx = 0, Pi_yy = 0, Pi_zz = 0;
+    float Pi_xy = 0, Pi_xz = 0, Pi_yz = 0;
+
+    for (int q = 0; q < 19; q++) {
+        float feq = D3Q19::computeEquilibrium(q, m_rho, u_eq_x, u_eq_y, u_eq_z);
+        float f_neq = f_local[q] - feq;
+        float cx = ex[q], cy = ey[q], cz = ez[q];
+        Pi_xx += f_neq * cx * cx;
+        Pi_yy += f_neq * cy * cy;
+        Pi_zz += f_neq * cz * cz;
+        Pi_xy += f_neq * cx * cy;
+        Pi_xz += f_neq * cx * cz;
+        Pi_yz += f_neq * cy * cz;
+    }
+
+    // Smagorinsky
+    float omega_eff = omega;
+    if (cs_smag > 0.0f) {
+        omega_eff = computeSmagorinskyOmega(f_local, m_rho, u_eq_x, u_eq_y, u_eq_z, omega, cs_smag);
+    }
+
+    // Step 3: Guo source-term prefactor (1 − ω/2) — kills force at τ=0.5
+    float guo_prefactor = 1.0f - 0.5f * omega_eff;
+
+    // Step 4: Reconstruct regularized f_neq + collide + Guo source term
+    const float cs2 = 1.0f / 3.0f;
+    const float inv_cs2 = 3.0f;           // 1/cs²
+    const float inv_cs4_half = 4.5f;      // 1/(2·cs⁴) = 9/2
+    const float inv_cs4 = 9.0f;           // 1/cs⁴ (for (c·u)·c term)
+
+    for (int q = 0; q < 19; q++) {
+        float cx = ex[q], cy = ey[q], cz = ez[q];
+        float wq = w[q];
+
+        // Projection: Π_αβ^neq onto the traceless basis Qαβ
+        float Qxx = cx*cx - cs2;
+        float Qyy = cy*cy - cs2;
+        float Qzz = cz*cz - cs2;
+        float Qxy = cx*cy;
+        float Qxz = cx*cz;
+        float Qyz = cy*cz;
+
+        float PiQ = Pi_xx*Qxx + Pi_yy*Qyy + Pi_zz*Qzz
+                  + 2.0f*(Pi_xy*Qxy + Pi_xz*Qxz + Pi_yz*Qyz);
+
+        float f_neq_reg = wq * inv_cs4_half * PiQ;
+
+        float feq_q = D3Q19::computeEquilibrium(q, m_rho, u_eq_x, u_eq_y, u_eq_z);
+
+        // Guo source term (Guo, Zheng, Shi 2002, Eq. 20):
+        //   S_q = (1 − ω/2) · w_q · [ (c_q − u)/cs² + (c_q·u)·c_q/cs⁴ ] · F
+        float cdotu = cx * u_eq_x + cy * u_eq_y + cz * u_eq_z;
+        float Sx = inv_cs2 * (cx - u_eq_x) + inv_cs4 * cdotu * cx;
+        float Sy = inv_cs2 * (cy - u_eq_y) + inv_cs4 * cdotu * cy;
+        float Sz = inv_cs2 * (cz - u_eq_z) + inv_cs4 * cdotu * cz;
+        float source_q = guo_prefactor * wq * (Sx * fx + Sy * fy + Sz * fz);
+
+        // Regularized collision + Guo source:
+        //   f_new = feq(u_eq) + (1 − ω) f_neq_reg + S_q
+        f_dst[id + q * n_cells] = feq_q
+            + (1.0f - omega_eff) * f_neq_reg
+            + source_q;
     }
 }
 
