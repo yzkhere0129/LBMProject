@@ -2593,25 +2593,20 @@ void MultiphysicsSolver::computeTotalForce() {
     // Physical rationale: solid metal has yield strength and does not respond
     // to surface tension / Marangoni forces. Only liquid (fl > 0) should feel
     // these forces. Without this, cold powder creeps under spurious CSF forces.
-    // F_actual = F_calculated × fl
-    if (thermal_ && (config_.enable_surface_tension || config_.enable_marangoni)) {
-        const float* liquid_fraction = thermal_->getLiquidFraction();
-        if (liquid_fraction) {
-            int num_cells = config_.nx * config_.ny * config_.nz;
-            int thr = 256;
-            int blk_1d = (num_cells + thr - 1) / thr;
-            // Inline lambda-style kernel call — reuse existing infrastructure
-            float* fx = force_accumulator_->getFx();
-            float* fy = force_accumulator_->getFy();
-            float* fz = force_accumulator_->getFz();
-            // Apply fl mask via a simple scaling kernel
-            // (defined as static __global__ at top of file)
-            maskForceByLiquidFractionKernel<<<blk_1d, thr>>>(
-                fx, fy, fz, liquid_fraction, num_cells);
-            CUDA_CHECK_KERNEL();
-            CUDA_CHECK(cudaDeviceSynchronize());
-        }
-    }
+    //
+    // BUG-1 FIX (Night Protocol, 2026-04-26): the outer maskForceByLiquidFractionKernel
+    // call was REMOVED.  It double-suppressed Marangoni in the mushy zone:
+    //   - inner gate (force_accumulator.cu:323-329) already returns early when
+    //     fl < 0.1 (cold powder), and ramps a smooth fl-gate factor in [0.1, 0.2];
+    //   - the outer F·fl mask additionally multiplied the same force by fl,
+    //     giving total suppression of fl·gate(fl) — at fl=0.5 → 50 % loss; at
+    //     fl=0.15 → 92.5 % loss; at fl=0.95 → 5 % loss.
+    // The mushy zone is exactly where trailing-edge back-flow needs Marangoni to
+    // pump liquid into the centre groove (Phase-1 night-run measurement: side
+    // ridges +6-8 μm correct, but centre Δh stuck at -16-20 μm).  Cross-confirmed
+    // by cfd-cuda-architect + cfd-math-expert reports as a 10-25 % pool-width and
+    // surface-flow regression.  Inner gate alone is the physically motivated
+    // boundary; outer F·fl is a redundant safety blanket.
 
     // Step 2h. Recoil pressure force — added AFTER fl masking and force smoothing.
     //
