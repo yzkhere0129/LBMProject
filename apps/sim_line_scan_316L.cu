@@ -96,12 +96,25 @@ int main() {
     // ==================================================================
     MultiphysicsConfig config;
 
-    // --- Domain: 1200 × 150 × 100 μm (production run) ---
-    config.nx = 600;
-    config.ny = 75;
-    config.nz = 50;
+    // --- Domain: 2600 × 200 × 240 μm @ dx=2μm (Flow3D-aligned scan length, M16 2026-04-25) ---
+    // Keep dx=2μm (preserves keyhole DDA accuracy + force-LU stability via dt=80ns).
+    // M14 dx=5μm: rays escape 52 % vs 29 % at dx=2μm (lost keyhole physics).
+    // M15 dx=2.5μm with dt=0.5μs: forces in LU scaled ~31× → catastrophic cap
+    // triggered step 263 (35 cells over LU_cap=0.38).
+    //
+    // Compromise: keep dx=2μm + dt=80ns, expand domain only to fix the actual
+    // user-flagged issues:
+    //   x: 1200 → 2600 μm (full Flow3D scan length, no mid-track cutoff)
+    //   y: 150 → 200 μm  (still narrower than Flow3D 405 μm but 1.3× wider)
+    //   z: 100 → 240 μm  (avoids keyhole punching through 100μm-thick substrate)
+    //
+    // Cell count 1300×100×120 = 15.6 M, GPU memory ~5 GB, wall time ~30 min on
+    // RTX 4090 for 2 ms total. VTK output 50 frames × 350 MB ≈ 17 GB.
+    config.nx = 1300;
+    config.ny = 100;
+    config.nz = 120;
     config.dx = 2.0e-6f;
-    config.dt = 8.0e-8f;   // 80 ns (20% tighter for CFL margin at high v)
+    config.dt = 8.0e-8f;  // 80 ns (kept to keep force_LU = F_phys · dt²/(dx·ρ) below cap=0.38)
 
     // --- Material ---
     config.material = MaterialDatabase::get316L();
@@ -135,7 +148,7 @@ int main() {
     config.laser_spot_radius        = 50.0e-6f;
     config.laser_absorptivity       = 0.40f;     // fallback for non-RT path
     config.laser_penetration_depth  = 10.0e-6f;
-    config.laser_start_x            = 100.0e-6f;  // Start at x = 100 μm
+    config.laser_start_x            = 500.0e-6f;  // Sprint-1: 500 μm pre-scan margin (Flow3D px_min=-497.5μm)
     config.laser_start_y            = -1.0f;      // Auto-center Y
     config.laser_scan_vx            = v_scan;     // 800 mm/s in +x
     config.laser_scan_vy            = 0.0f;
@@ -205,12 +218,15 @@ int main() {
     config.vof_subcycles               = 1;
     config.enable_vof_mass_correction  = false;
 
-    // --- Timing: 1.0 ms production run ---
-    const float t_total  = 1000.0e-6f;   // 1.0 ms
+    // --- Timing: 2.0 ms full Flow3D-aligned run, 50 frames ---
+    const float t_total  = 2000.0e-6f;   // 2.0 ms (matches Flow3D twfin)
     const int num_steps  = static_cast<int>(t_total / config.dt);
-    const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);
+    const int vtk_every  = static_cast<int>(40.0e-6f / config.dt);  // 40 μs cadence → 50 frames
     const int diag_every = 1000;
-    const float interface_z = 0.80f * config.nz;  // z=40 cells
+    // Substrate top at z = 200 μm (= 0.833 · nz · dx). LBM domain z∈[0,240]μm:
+    // metal occupies [0, 200] (100 cells), gas [200, 240] (20 cells).
+    // Aligns with Flow3D pz=[-197.5, 102.5] where substrate top is at F3D z=0.
+    const float interface_z = 100.0f;  // z=100 cells × dx=2μm = 200 μm
 
     // ==================================================================
     // Print summary
