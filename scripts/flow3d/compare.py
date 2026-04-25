@@ -136,6 +136,31 @@ def melt_pool_bbox_lbm(lbm, T_liq):
     return dict(L=L, W=W, D=D, Tmax=float(T.max()), n_cells=int(mask.sum()))
 
 
+def crater_bbox_lbm(lbm, fill_top=0.5, initial_top_frac=0.8):
+    """Pool *crater* bbox: where fill_level dropped below threshold *strictly inside*
+    the original substrate (k <= initial_top_frac * nz - 1).
+    Independent of thermal diffusion — measures only VOF interface displacement.
+    Returns L/W/D in μm. initial_top_frac matches sim_line_scan_316L's interface_z."""
+    f = lbm['f']
+    nx, ny, nz = lbm['dims']
+    dx, dy, dz = lbm['spacing']
+    # Substrate top index — assume flat initial surface at this k (sim_line_scan: 0.8 * nz).
+    k_top = int(initial_top_frac * nz) - 1
+    if k_top < 1:
+        return dict(L_c=0.0, W_c=0.0, D_c=0.0, n_crater=0)
+    sub = f[:, :, :k_top+1]  # cells at or below substrate top
+    crater = (sub < fill_top)
+    if not crater.any():
+        return dict(L_c=0.0, W_c=0.0, D_c=0.0, n_crater=0)
+    ii, jj, kk = np.where(crater)
+    L = (ii.max() - ii.min() + 1) * dx * 1e6
+    W = (jj.max() - jj.min() + 1) * dy * 1e6
+    D = (kk.max() + 1) * dz * 1e6  # depth from very bottom into substrate (k=0 base)
+    # Better D: depth of crater = (k_top+1 - kk.min()) cells (from top down)
+    D = (k_top - kk.min() + 1) * dz * 1e6
+    return dict(L_c=L, W_c=W, D_c=D, n_crater=int(crater.sum()))
+
+
 def hausdorff_chamfer(A, B):
     """Symmetric Hausdorff + symmetric mean chamfer (meters)."""
     if A is None or len(A) == 0 or B is None or len(B) == 0:
@@ -211,6 +236,7 @@ def main():
     # Pool bbox — use only F3D points within LBM domain (avoid spurious far track)
     f3d_bbox = melt_pool_bbox(f3d_pts_in, f3d_T_in, args.t_liq)
     lbm_bbox = melt_pool_bbox_lbm(lbm, args.t_liq)
+    lbm_crater = crater_bbox_lbm(lbm)
 
     # LBM v_max (Flow3D doesn't have velocity)
     if lbm['u'] is not None:
@@ -249,6 +275,10 @@ def main():
         pool_D_LBM_um=lbm_bbox['D'],
         Tmax_LBM_K=lbm_bbox['Tmax'],
         n_cells_above_Tliq_LBM=lbm_bbox['n_cells'],
+        crater_L_LBM_um=lbm_crater['L_c'],
+        crater_W_LBM_um=lbm_crater['W_c'],
+        crater_D_LBM_um=lbm_crater['D_c'],
+        n_crater_cells_LBM=lbm_crater['n_crater'],
         vmax_LBM_m_s=vmax_lbm,
     )
 
