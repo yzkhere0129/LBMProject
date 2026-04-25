@@ -1,0 +1,12 @@
+M16d Raised Track Analysis (LBM 800×75×100 @ dx=2μm, dt=80ns)
+================================================================
+t [μs]  keyhole_D  raised_Δh  FWHM   v_max
+  40       14μm      +2μm     2μm    early
+  80       32μm      +8μm    20μm    0.49 m/s
+ 160       60μm     +18μm    54μm    0.89 m/s
+ 240       70μm     +22μm    64μm    1.89 m/s
+ 320       70μm     +24μm    58μm    2.03 m/s
+
+Flow3D reference: +15.3 μm raised track, D=78μm
+LBM achieves D=70μm (90% F3D), Δh=18-24μm (120-160% F3D)
+v_max physical 2.8 m/s, v_z 2.03 m/s — within Flow3D range 1-4 m/s
