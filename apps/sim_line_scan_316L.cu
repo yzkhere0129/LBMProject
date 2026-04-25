@@ -178,13 +178,17 @@ int main() {
     // --- Surface ---
     config.surface_tension_coeff    = config.material.surface_tension;
     config.dsigma_dT                = config.material.dsigma_dT;
-    // Sprint-1 M17 verdict (2026-04-25): csf_multiplier 1.0→0.7 only moves
-    // Δh from +24 → +22 μm (8 % change for 30 % Marangoni reduction).
-    // Δh is mass-conservation-saturated, not Marangoni-linear. Revert to 1.0
-    // (physically correct per Brackbill 1992) until pool_L extension addresses
-    // the real coupling: keyhole volume / pool_L = Δh; LBM pool_L=250μm vs
-    // F3D pool_L=500μm explains the entire +24 vs +15 difference.
-    // Default config.marangoni_csf_multiplier = 1.0 (already in MultiphysicsConfig).
+    // S2-A1 (csf=2.0) made groove DEEPER (-24μm vs -20). Marangoni stronger
+    // pushes liquid further to edges, where it sinks down instead of rising.
+    // Reverted to 1.0. Real fix needs different mechanism.
+    config.marangoni_csf_multiplier = 1.0f;
+    // S2-A2 tested recoil_smoothing_width=5 (vs default 30K ramp) — ZERO effect
+    // on raised track. Reverted to default. Sprint-2 finding: the LBM cannot
+    // form central ridge because laser deposition geometry (column-march, no
+    // sharp keyhole wall) produces shallow-bowl pool with low surface
+    // curvature → weak capillary backflow → groove never refills. Architectural,
+    // not parametric.
+    // (config.recoil_smoothing_width uses default 30 K from MultiphysicsConfig)
 
     // --- Buoyancy ---
     config.thermal_expansion_coeff  = 1.2e-4f;
