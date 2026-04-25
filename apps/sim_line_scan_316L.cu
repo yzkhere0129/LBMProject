@@ -133,12 +133,23 @@ int main() {
     const float v_scan = 0.8f;  // 800 mm/s
     config.laser_power              = 150.0f;
     config.laser_spot_radius        = 50.0e-6f;
-    config.laser_absorptivity       = 0.40f;
+    config.laser_absorptivity       = 0.40f;     // fallback for non-RT path
     config.laser_penetration_depth  = 10.0e-6f;
     config.laser_start_x            = 100.0e-6f;  // Start at x = 100 μm
     config.laser_start_y            = -1.0f;      // Auto-center Y
     config.laser_scan_vx            = v_scan;     // 800 mm/s in +x
     config.laser_scan_vy            = 0.0f;
+
+    // --- Ray-tracing laser (Sprint-1: complex-Fresnel for keyhole physics) ---
+    config.ray_tracing.enabled            = true;
+    config.ray_tracing.use_fresnel        = true;
+    config.ray_tracing.fresnel_n_refract  = 2.9613f;   // 316L @ 1064 nm Mills
+    config.ray_tracing.fresnel_k_extinct  = 4.0133f;
+    config.ray_tracing.num_rays           = 4096;       // dense enough for 50 μm spot
+    config.ray_tracing.max_bounces        = 5;          // ~70 % effective absorption
+    config.ray_tracing.max_dda_steps      = 1500;       // domain ~1.2 mm / dx 2 μm → 600 cells, +slack
+    config.ray_tracing.energy_cutoff      = 0.01f;
+    config.ray_tracing.absorptivity       = 0.40f;      // unused when use_fresnel=true
 
     // --- Fluid ---
     config.kinematic_viscosity      = 0.065f;     // tau ≈ 0.7

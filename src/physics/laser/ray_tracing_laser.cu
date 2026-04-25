@@ -71,21 +71,49 @@ __global__ void initializeRaysKernel(
 // Device helper: Fresnel absorptivity (angle-dependent, real metal)
 // ============================================================================
 
-__device__ inline float fresnelAbsorptivity(float cos_theta, float n_r) {
-    // Simplified Fresnel for metals (real refractive index only):
-    //   R_s = [(cosθ - n)/(cosθ + n)]²
-    //   R_p = [(n·cosθ - 1)/(n·cosθ + 1)]²
-    //   α = 1 - 0.5*(R_s + R_p)
+__device__ inline float fresnelAbsorptivity(float cos_theta, float n_r, float k_r) {
+    // Full complex-index Fresnel for metals — Born & Wolf, Optics §13.2.
+    // Sprint-1 (2026-04-25): added k_r (extinction coefficient). At normal
+    // incidence with (n=2.96, k=4.01) for 316L @1064 nm:
+    //   R₀ = ((n-1)² + k²) / ((n+1)² + k²) = 0.685
+    //   α₀ = 1 - R₀ = 0.315
+    // Multi-bounce inside a keyhole cavity accumulates effective absorption
+    // toward Flow3D's calibrated 70 % value. Without k, R₀ degenerated to
+    // ((n-1)/(n+1))² = 0.495 with α₀ = 0.505, badly miscounting reflections.
+    //
+    // Full angle-dependent formula (Born & Wolf 13.2.13):
+    //   Let p = n²-k²-sin²θ;  q = 4 n² k².
+    //   2a² = sqrt(p² + q) + p
+    //   2b² = sqrt(p² + q) - p
+    //   R_s = ((a-cosθ)² + b²) / ((a+cosθ)² + b²)
+    //   R_p = R_s · ((a-sinθ·tanθ)² + b²) / ((a+sinθ·tanθ)² + b²)
+    //   α   = 1 - 0.5·(R_s + R_p)
     float c = fabsf(cos_theta);
-    float Rs_num = c - n_r;
-    float Rs_den = c + n_r;
-    float Rs = (Rs_num * Rs_num) / (Rs_den * Rs_den + RT_EPS);
-
-    float Rp_num = n_r * c - 1.0f;
-    float Rp_den = n_r * c + 1.0f;
-    float Rp = (Rp_num * Rp_num) / (Rp_den * Rp_den + RT_EPS);
-
-    return 1.0f - 0.5f * (Rs + Rp);
+    if (c > 1.0f) c = 1.0f;
+    float s2 = 1.0f - c*c;          // sin²θ
+    float p  = n_r*n_r - k_r*k_r - s2;
+    float q  = 4.0f * n_r*n_r * k_r*k_r;
+    float disc = sqrtf(fmaxf(p*p + q, 0.0f));
+    float a2 = 0.5f * (disc + p);
+    float b2 = 0.5f * (disc - p);
+    if (a2 < 0.0f) a2 = 0.0f;
+    if (b2 < 0.0f) b2 = 0.0f;
+    float a  = sqrtf(a2);
+    float b2_       = b2;          // already a²,b² are squared; Rs/Rp use them directly
+    // R_s
+    float Rs_num = (a - c)*(a - c) + b2_;
+    float Rs_den = (a + c)*(a + c) + b2_ + RT_EPS;
+    float Rs = Rs_num / Rs_den;
+    // R_p — use sinθ·tanθ = s²/c (avoids tan blow-up at grazing; falls back to Rs at c→0)
+    float st = (c > RT_EPS) ? (s2 / c) : 0.0f;
+    float Rp_num = (a - st)*(a - st) + b2_;
+    float Rp_den = (a + st)*(a + st) + b2_ + RT_EPS;
+    float Rp_factor = Rp_num / Rp_den;
+    float Rp = Rs * Rp_factor;
+    float alpha = 1.0f - 0.5f * (Rs + Rp);
+    if (alpha < 0.0f) alpha = 0.0f;
+    if (alpha > 1.0f) alpha = 1.0f;
+    return alpha;
 }
 
 // ============================================================================
@@ -105,6 +133,7 @@ __global__ void traceRaysKernel(
     float absorptivity,
     bool use_fresnel,
     float fresnel_n,
+    float fresnel_k,
     int max_bounces,
     int max_dda_steps,
     float energy_cutoff,
@@ -270,7 +299,7 @@ __global__ void traceRaysKernel(
 
                 // --- Absorption ---
                 float alpha = use_fresnel
-                    ? fresnelAbsorptivity(cos_dn, fresnel_n)
+                    ? fresnelAbsorptivity(cos_dn, fresnel_n, fresnel_k)
                     : absorptivity;
 
                 float E_absorbed = ray.energy * alpha;
@@ -424,6 +453,7 @@ void RayTracingLaser::traceAndDeposit(const float* d_fill_level,
         config_.absorptivity,
         config_.use_fresnel,
         config_.fresnel_n_refract,
+        config_.fresnel_k_extinct,
         config_.max_bounces,
         config_.max_dda_steps,
         config_.energy_cutoff,

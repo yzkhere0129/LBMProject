@@ -51,7 +51,8 @@ struct RayTracingConfig {
     int   max_dda_steps      = 500;     ///< Safety limit on DDA iterations per bounce
     float absorptivity       = 0.35f;   ///< Base absorptivity α₀ (constant Fresnel)
     bool  use_fresnel        = false;   ///< Angle-dependent Fresnel model (Phase 2)
-    float fresnel_n_refract  = 6.7f;    ///< Refractive index ratio n₂/n₁ (Fe@1064nm)
+    float fresnel_n_refract  = 2.9613f; ///< Real part n  (316L @ 1064nm Mills)
+    float fresnel_k_extinct  = 4.0133f; ///< Imaginary part k (316L @ 1064nm Mills) — Sprint-1: needed for metal Fresnel; without k, single-bounce α is wildly off and keyhole cannot form
     float energy_cutoff      = 0.01f;   ///< Terminate when energy < cutoff × initial
     float spawn_margin_cells = 2.0f;    ///< Spawn height above domain top [cells]
     int   normal_smoothing   = 0;       ///< fill_level smoothing passes (0 = use raw)
