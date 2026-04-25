@@ -57,7 +57,15 @@ if laser_x_um is None:
         laser_x_um = float('nan')
 
 # Behind laser: x < laser_x_um
-behind_mask = (x_centerline < laser_x_um) & ~np.isnan(z_centerline)
+# Sprint-1 v2 fix (2026-04-25): exclude scan-start splash transient.
+# The first ~100μm of scan path has an unphysical +20μm splash from
+# initial keyhole punching. This is a numerical startup artifact, not
+# Marangoni-driven raised track. Only count "scan path long-past-laser"
+# region: x in [laser_start + 200μm, laser_x - 100μm].
+laser_start_um = 500  # sim_line_scan_316L
+behind_mask = ((x_centerline > laser_start_um + 200) &
+               (x_centerline < laser_x_um - 100) &
+               ~np.isnan(z_centerline))
 front_mask  = (x_centerline >= laser_x_um) & ~np.isnan(z_centerline)
 
 z_at_laser = z_centerline[np.argmin(np.abs(x_centerline - laser_x_um))] if not np.isnan(laser_x_um) else float('nan')
