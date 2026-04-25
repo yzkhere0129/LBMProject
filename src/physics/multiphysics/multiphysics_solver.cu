@@ -1663,8 +1663,16 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
 
     // R6: Accumulate laser energy for energy balance diagnostic.
     // For Beer-Lambert with VOF: already accumulated in normalization block above.
-    // For ray tracing or Beer-Lambert without VOF: accumulate at P_target.
-    if (config_.ray_tracing.enabled || !vof_) {
+    // For ray tracing: read actual deposited power (Fresnel multi-bounce can
+    //   give much higher effective absorption than config_.laser_absorptivity).
+    //   Sprint-1 fix (2026-04-25): was using laser_absorptivity*P_laser, which
+    //   reported 60 W vs the actual RT-deposited 102-108 W → ENERGY R6 balance
+    //   reported 70-80 % error when it was really ~10 %.
+    // For Beer-Lambert without VOF: accumulate at the absorptivity-scaled value.
+    if (config_.ray_tracing.enabled && ray_tracing_laser_) {
+        float P_deposited = ray_tracing_laser_->getDepositedPower();
+        laser_energy_accumulated_ += static_cast<double>(P_deposited) * dt;
+    } else if (!vof_) {
         float P_deposited = config_.laser_absorptivity * config_.laser_power;
         laser_energy_accumulated_ += static_cast<double>(P_deposited) * dt;
     }
