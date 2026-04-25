@@ -2312,9 +2312,22 @@ void MultiphysicsSolver::fluidStep(float dt) {
         cfl_diag_count++;
     }
 
-    // Get Darcy coefficient field (nullptr if Darcy disabled)
+    // Get Darcy coefficient field (nullptr if Darcy disabled OR not yet computed)
     const float* darcy_K = (config_.enable_darcy && force_accumulator_) ?
         force_accumulator_->getDarcyCoefficient() : nullptr;
+
+    // Sprint-1 (2026-04-25): warn once if enable_darcy=true but darcy_K is null.
+    // This silently falls back to Guo collision and is hard to notice in logs;
+    // happens when computeDarcyCoefficientField was never called (e.g. thermal
+    // module not yet initialized in early steps).
+    if (config_.enable_darcy && !darcy_K) {
+        static int darcy_warn_count = 0;
+        if (darcy_warn_count++ == 0) {
+            std::cerr << "[multiphysics] WARN: enable_darcy=true but darcy_K is null. "
+                      << "Falling back to Guo BGK collision (no Darcy drag). "
+                      << "Check that thermal_ provides liquid_fraction before fluidStep().\n";
+        }
+    }
 
     if (darcy_K) {
         // EDM collision: equilibrium shift replaces Guo source term.

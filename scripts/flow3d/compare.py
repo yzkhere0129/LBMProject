@@ -171,21 +171,35 @@ def main():
     # Apply offset to Flow3D coords (now both in LBM frame)
     f3d_pts_aligned = f3d_pts + offset
 
+    # Crop Flow3D points to LBM domain bbox (the F3D run can have a wider scan
+    # span than the LBM domain; comparing far points yields fake constant
+    # Hausdorff dominated by domain-extent mismatch).
+    nx, ny, nz = lbm['dims']
+    dx_lbm, dy_lbm, dz_lbm = lbm['spacing']
+    ox, oy, oz = lbm['origin']
+    lbm_bbox_min = np.array([ox, oy, oz])
+    lbm_bbox_max = lbm_bbox_min + np.array([(nx-1)*dx_lbm, (ny-1)*dy_lbm, (nz-1)*dz_lbm])
+    in_lbm = ((f3d_pts_aligned >= lbm_bbox_min) & (f3d_pts_aligned <= lbm_bbox_max)).all(axis=1)
+    f3d_pts_in = f3d_pts_aligned[in_lbm]
+    f3d_T_in = f3d_T[in_lbm]
+    n_f3d_in_lbm = int(in_lbm.sum())
+
     # LBM iso-surface
     verts, faces = lbm_surface_marching_cubes(lbm, level=0.5)
 
-    # Surface metrics
-    if verts is not None:
-        hc = hausdorff_chamfer(f3d_pts_aligned, verts)
+    # Surface metrics — use only F3D points inside the LBM domain
+    if verts is not None and len(f3d_pts_in) > 0:
+        hc = hausdorff_chamfer(f3d_pts_in, verts)
     else:
         hc = dict(haus=np.nan, chamfer=np.nan, dAB_max=np.nan, dBA_max=np.nan)
 
     # Sample LBM T at Flow3D vertices (for surface temperature comparison)
+    # Use only the F3D points inside the LBM domain (cropped above).
     T_lbm_at_f3d = trilinear_sample(lbm['T'], lbm['dims'], lbm['spacing'], lbm['origin'],
-                                     f3d_pts_aligned)
+                                     f3d_pts_in)
     valid = np.isfinite(T_lbm_at_f3d)
     if valid.any():
-        dT = T_lbm_at_f3d[valid] - f3d_T[valid]
+        dT = T_lbm_at_f3d[valid] - f3d_T_in[valid]
         T_rms = float(np.sqrt(np.mean(dT ** 2)))
         T_p95 = float(np.percentile(np.abs(dT), 95))
         T_max_err = float(np.max(np.abs(dT)))
@@ -194,8 +208,8 @@ def main():
     else:
         T_rms, T_p95, T_max_err, n_valid, n_total = (np.nan, np.nan, np.nan, 0, int(valid.size))
 
-    # Pool bbox
-    f3d_bbox = melt_pool_bbox(f3d_pts_aligned, f3d_T, args.t_liq)
+    # Pool bbox — use only F3D points within LBM domain (avoid spurious far track)
+    f3d_bbox = melt_pool_bbox(f3d_pts_in, f3d_T_in, args.t_liq)
     lbm_bbox = melt_pool_bbox_lbm(lbm, args.t_liq)
 
     # LBM v_max (Flow3D doesn't have velocity)
@@ -214,6 +228,7 @@ def main():
         offset_m=offset.tolist(),
         t_liq_K=args.t_liq,
         n_f3d_pts=len(f3d_pts),
+        n_f3d_in_lbm=n_f3d_in_lbm,
         n_lbm_iso_verts=(len(verts) if verts is not None else 0),
         haus_um=hc['haus'] * 1e6,
         chamfer_um=hc['chamfer'] * 1e6,

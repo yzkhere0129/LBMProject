@@ -110,6 +110,13 @@ int main() {
     config.enable_thermal           = true;
     config.enable_thermal_advection = true;
     config.enable_phase_change      = true;
+    // Sprint-1 (2026-04-25): use FDM thermal — D3Q7 LBM thermal's gas-wipe
+    // (thermal_lbm.cu:1186) hard-clamps fill_level<0.01 cells to 600K every
+    // step, leaking laser energy from the streaming-pushed phantom field.
+    // FDM has neither streaming nor wipe; it is also where R6 column-march V2
+    // and implicit Newton evaporation cooling live (much more accurate near
+    // T_boil where Anisimov recoil is sensitive).
+    config.use_fdm_thermal          = true;
     config.enable_fluid             = true;
     config.enable_vof               = true;
     config.enable_vof_advection     = true;
