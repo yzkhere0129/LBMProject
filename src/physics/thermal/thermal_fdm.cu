@@ -448,7 +448,11 @@ __global__ void fdmEvaporationCoolingKernel(
     float M     = mat.molar_mass;       // kg/mol
     constexpr float R_gas = 8.314f;     // J/(mol·K)
     constexpr float P_ref = 101325.0f;  // Pa (1 atm)
-    constexpr float alpha_evap = 0.18f;
+    // R6 OpenFOAM-alignment: Hertz-Knudsen sticking coefficient from laserMeltFoam.
+    // Previous 0.18 was the Semak-1995 "partial-pressure" value; laserMeltFoam's
+    // UEqn.H/TEqn.H uses σ=0.82 (~full accommodation), which dominates the T
+    // regulation and drops steady-state T from ~3760 K to near T_boil.
+    constexpr float alpha_evap = 0.82f;
 
     float exponent = (L_vap * M / R_gas) * (1.0f / T_boil - 1.0f / Tc);
     // Clamp exponent to prevent overflow (exp(88) ≈ FLT_MAX)
@@ -614,7 +618,13 @@ __global__ void fdmGasWipeWithTrackingKernel(
     if (protection_mask[idx] == 0) {
         T_new = T_ambient;
     } else {
-        T_new = T_old - 0.01f * (T_old - T_ambient);
+        // Sprint-1 (2026-04-25): was 0.01·(T-T_amb) per step which over a few
+        // hundred steps still drains protected hot-vapor cells. Now zero — let
+        // the protected interior evolve under diffusion + advection only.
+        // Streaming artifacts inside D3Q7 LBM-thermal would re-emerge here, but
+        // FDM is the production thermal path and it has no streaming, so the
+        // gentle relaxation was over-kill.
+        T_new = T_old;
     }
 
     T[idx] = T_new;
@@ -884,7 +894,16 @@ void ThermalFDM::computeTemperature() {
 
     // Gas phase wipe with energy tracking
     if (d_vof_fill_ != nullptr) {
-        computeGasWipeProtectionMask(5);
+        // Sprint-1 (2026-04-25): protection layers 5 → 50.
+        // The 5-cell radius (10 μm at dx=2μm) was far too small for keyhole
+        // geometries — keyhole interior cells (60-80 μm below original surface)
+        // were unprotected and got hard-reset to T_ambient every step,
+        // siphoning ~55 % of laser-deposited power into gas wipe (P_gw=55 W of
+        // 100 W input). 50-cell radius (~100 μm) safely covers the full keyhole
+        // depth + a margin for hot vapor near the cavity walls. The dilation
+        // is sequential O(N) per layer but each pass is a fast GPU kernel
+        // over 2.25 M cells.
+        computeGasWipeProtectionMask(50);
         float dV = dx_ * dx_ * dx_;
         int bs = 256, gs = (num_cells_ + bs - 1) / bs;
         // Accumulate energy (do NOT reset — getGasWipeEnergyRemoved() handles reset)
@@ -950,7 +969,103 @@ void ThermalFDM::applySubstrateCoolingBC(float dt, float dx, float h, float T_su
     // TODO: implement convective BC at z_min
 }
 
-// Kernel: apply evaporation cooling from pre-computed mass flux at ALL interface cells
+// R7 IMPLICIT OPENFOAM-ALIGNED: Backward-Euler Newton iteration for
+// evaporation cooling. Solves locally at each cell:
+//
+//   T_new - T_old = -β · J_surf(T_new)
+//   β = |∇f| · L_vap · factor · dt / (ρ·cp)
+//
+// J_surf(T) = α · P_sat(T) / √(2π·R·T/M)     (Hertz-Knudsen)
+// dJ/dT    = J · [L_vap·M/(R·T²) - 1/(2T)]    (analytic derivative)
+//
+// This prevents the explicit-scheme overshoot where T lags one step behind
+// the cooling rate, which becomes catastrophic when P_sat(T) grows by
+// 10× in ~100 K. The implicit form tracks the cooling self-consistently.
+//
+// Reads fill_level for |∇f| reconstruction (central diff).
+__global__ void fdmEvapCoolingImplicitKernel(
+    float* __restrict__ T,
+    const float* __restrict__ fill_level,
+    MaterialProperties mat,
+    float dt, float inv_dx,
+    float cooling_factor,
+    int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int num_cells = nx * ny * nz;
+    if (idx >= num_cells) return;
+    if (fill_level == nullptr) return;
+
+    int k = idx / (nx * ny);
+    int r = idx - k * nx * ny;
+    int j = r / nx;
+    int i = r - j * nx;
+
+    int ip = (i < nx - 1) ? i + 1 : i;
+    int im = (i > 0)      ? i - 1 : i;
+    int jp = (j < ny - 1) ? j + 1 : j;
+    int jm = (j > 0)      ? j - 1 : j;
+    int kp = (k < nz - 1) ? k + 1 : k;
+    int km = (k > 0)      ? k - 1 : k;
+
+    float denom_x = (float)(ip - im); if (denom_x < 1e-6f) denom_x = 1.0f;
+    float denom_y = (float)(jp - jm); if (denom_y < 1e-6f) denom_y = 1.0f;
+    float denom_z = (float)(kp - km); if (denom_z < 1e-6f) denom_z = 1.0f;
+
+    float dfx = (fill_level[ip + nx*(j  + ny*k )] - fill_level[im + nx*(j  + ny*k )]) * inv_dx / denom_x;
+    float dfy = (fill_level[i  + nx*(jp + ny*k )] - fill_level[i  + nx*(jm + ny*k )]) * inv_dx / denom_y;
+    float dfz = (fill_level[i  + nx*(j  + ny*kp)] - fill_level[i  + nx*(j  + ny*km)]) * inv_dx / denom_z;
+    float grad_f = sqrtf(dfx*dfx + dfy*dfy + dfz*dfz);
+
+    const float grad_cap = 0.866f * inv_dx;
+    if (grad_f > grad_cap) grad_f = grad_cap;
+    if (grad_f < 0.02f * inv_dx) return;
+
+    float T_old = T[idx];
+    float T_boil = mat.T_vaporization;
+    if (T_old <= T_boil) return;
+
+    constexpr float R_gas = 8.314f;
+    constexpr float P_ref = 101325.0f;
+    constexpr float alpha_evap = 0.82f;
+
+    float rho = mat.getDensity(T_old);
+    float cp  = mat.getSpecificHeat(T_old);
+    float L_vap = mat.L_vaporization;
+    float M     = mat.molar_mass;
+
+    // β groups all cell-local constants
+    float beta = grad_f * L_vap * cooling_factor * dt / (rho * cp);
+
+    // Newton iteration to solve  T_new - T_old + β · J_surf(T_new) = 0
+    float T_new = T_old;
+    #pragma unroll 8
+    for (int it = 0; it < 8; ++it) {
+        float expo = (L_vap * M / R_gas) * (1.0f / T_boil - 1.0f / T_new);
+        expo = fminf(expo, 50.0f);
+        float P_sat = P_ref * expf(expo);
+        float sqrt_fac = sqrtf(2.0f * 3.14159265f * R_gas * T_new / M);
+        float J_surf = alpha_evap * P_sat / sqrt_fac;
+        // dJ/dT via log-derivative:
+        //   d(ln P_sat)/dT = L·M/(R·T²)
+        //   d(ln sqrt_fac)/dT = 1/(2T)
+        //   dJ/dT = J · [L·M/(R·T²) − 1/(2T)]
+        float dJ_dT = J_surf * (L_vap * M / (R_gas * T_new * T_new) - 0.5f / T_new);
+
+        float F  = T_new - T_old + beta * J_surf;
+        float Fp = 1.0f + beta * dJ_dT;
+        float dT = F / Fp;
+        T_new -= dT;
+        if (fabsf(dT) < 1e-2f) break;   // 0.01 K tolerance
+        if (T_new < T_boil) { T_new = T_boil; break; }
+    }
+
+    if (T_new < T_boil) T_new = T_boil;
+    if (T_new > T_old)  T_new = T_old;   // cooling only (safety)
+    T[idx] = T_new;
+}
+
+// Explicit variant kept for fallback / regression testing.
 __global__ void fdmEvapCoolingFromFluxKernel(
     float* __restrict__ T,
     const float* __restrict__ J_evap,
@@ -961,31 +1076,32 @@ __global__ void fdmEvapCoolingFromFluxKernel(
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
-    float J = J_evap[idx];
-    if (J <= 0.0f) return;
+    float J_vol = J_evap[idx];
+    if (J_vol <= 0.0f) return;
 
     float Tc = T[idx];
     float rho = mat.getDensity(Tc);
     float cp = mat.getSpecificHeat(Tc);
-    float q = J * L_vap * factor;
-    float dT = q * dt / (rho * cp * dx);
-
-    // R6 FIX: Remove T_vap clamp for energy balance consistency.
-    // The clamp hid the fact that we reported removing J*L_vap but actually
-    // removed less (when the cap fired). Now actual cooling matches the
-    // P_evap diagnostic. Evap mass flux J auto-zeroes when T<=T_boil in
-    // fdmEvapMassFluxKernel, so oscillation is self-limiting.
-    T[idx] = Tc - dT;
+    float q_vol = J_vol * L_vap * factor;
+    float dT = q_vol * dt / (rho * cp);
+    float T_boil = mat.T_vaporization;
+    float T_new = Tc - dT;
+    if (T_new < T_boil) T_new = T_boil;
+    T[idx] = T_new;
 }
 
 void ThermalFDM::applyEvaporationCooling(const float* J_evap, const float* fill,
                                           float dt, float dx, float factor) {
     if (J_evap != nullptr) {
-        // Recoil-enabled path: use pre-computed mass flux from computeEvaporationMassFlux
+        // R7 IMPLICIT PATH: backward-Euler Newton iteration on T_new.
+        // J_evap is still computed upstream (consumed by VOF mass loss).
+        // For thermal cooling we re-derive J(T_new) to avoid the explicit
+        // lag that lets T overshoot T_boil by hundreds of Kelvin.
         int bs = 256, gs = (num_cells_ + bs - 1) / bs;
-        fdmEvapCoolingFromFluxKernel<<<gs, bs>>>(
-            d_T_, J_evap, d_vof_fill_,
-            material_.L_vaporization, dt, dx, material_, factor, num_cells_);
+        float inv_dx = 1.0f / dx;
+        fdmEvapCoolingImplicitKernel<<<gs, bs>>>(
+            d_T_, d_vof_fill_, material_, dt, inv_dx, factor,
+            nx_, ny_, nz_);
         CUDA_CHECK_KERNEL();
     } else {
         // Fallback path: HKL cooling on overheated interface cells only.
@@ -1064,47 +1180,97 @@ float ThermalFDM::computeEvaporationPower(const float*, float) const { return 0.
 float ThermalFDM::computeRadiationPower(const float*, float, float, float) const { return 0.0f; }
 float ThermalFDM::computeSubstratePower(float, float, float) const { return 0.0f; }
 float ThermalFDM::computeCapPower(float, float) const { return 0.0f; }
-// Evaporation mass flux kernel for VOF mass loss
+// R7 OPENFOAM-ALIGNED: Evaporation mass flux distributed via |∇f|.
+// OpenFOAM laserMeltFoam TEqn.H applies Qv through the VOF transition band
+// using `delGradAlpha = |∇α|` as a surface delta function. We mirror that:
+//
+//   J_surf [kg/(m²·s)] = α · P_sat(T) / √(2π·R·T/M)     (Hertz-Knudsen-Langmuir)
+//   J_vol  [kg/(m³·s)] = J_surf × |∇f|                   (CSF distribution)
+//
+// Units change: the buffer J_evap now carries [kg/(m³·s)] — a volumetric
+// mass-source rate. All downstream consumers (fdmEvapCoolingFromFluxKernel
+// in this file, applyEvaporationMassLossKernel in vof_solver.cu) must drop
+// their historical `/ dx` factor, since |∇f| already has units of 1/length.
+//
+// Conservation: ∫J_vol·dV = J_surf·∫|∇f|·dV ≈ J_surf·A_surface, i.e. the
+// correct surface integral of the Hertz-Knudsen flux.
 __global__ void fdmEvapMassFluxKernel(
     const float* __restrict__ T,
     const float* __restrict__ fill_level,
     float* __restrict__ J_evap,
     MaterialProperties mat,
+    float inv_dx,               // 1/dx [1/m] for central differences
     int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= nx*ny*nz) return;
 
     J_evap[idx] = 0.0f;
-
-    // Only at interface cells on the metal side
     if (fill_level == nullptr) return;
-    float f = fill_level[idx];
-    if (f < 0.01f || f > 0.99f) return;
+
+    // Decompose idx → (i, j, k)
+    int k = idx / (nx * ny);
+    int r = idx - k * nx * ny;
+    int j = r / nx;
+    int i = r - j * nx;
+
+    // |∇f| central diff (one-sided clamp at domain edges).
+    // Use 1/dx (inv_dx) so result is in [1/m].
+    int ip = (i < nx - 1) ? i + 1 : i;
+    int im = (i > 0)      ? i - 1 : i;
+    int jp = (j < ny - 1) ? j + 1 : j;
+    int jm = (j > 0)      ? j - 1 : j;
+    int kp = (k < nz - 1) ? k + 1 : k;
+    int km = (k > 0)      ? k - 1 : k;
+
+    float denom_x = (float)(ip - im);
+    float denom_y = (float)(jp - jm);
+    float denom_z = (float)(kp - km);
+    if (denom_x < 1e-6f) denom_x = 1.0f;
+    if (denom_y < 1e-6f) denom_y = 1.0f;
+    if (denom_z < 1e-6f) denom_z = 1.0f;
+
+    float dfx = (fill_level[ip + nx*(j  + ny*k )] - fill_level[im + nx*(j  + ny*k )]) * inv_dx / denom_x;
+    float dfy = (fill_level[i  + nx*(jp + ny*k )] - fill_level[i  + nx*(jm + ny*k )]) * inv_dx / denom_y;
+    float dfz = (fill_level[i  + nx*(j  + ny*kp)] - fill_level[i  + nx*(j  + ny*km)]) * inv_dx / denom_z;
+
+    float grad_f = sqrtf(dfx*dfx + dfy*dfy + dfz*dfz);
+
+    // Fix 1 style clamp: |∇f| ≤ √3/(2·dx) (theoretical max for tanh interface)
+    const float grad_cap = 0.866f * inv_dx;  // √3/2 / dx
+    if (grad_f > grad_cap) grad_f = grad_cap;
+
+    // No evaporation far from an interface
+    const float grad_threshold = 0.02f * inv_dx;   // ~2% of the cap
+    if (grad_f < grad_threshold) return;
 
     float Tc = T[idx];
     float T_boil = mat.T_vaporization;
     if (Tc <= T_boil) return;
 
-    // Hertz-Knudsen-Langmuir mass flux
+    // Hertz-Knudsen-Langmuir surface mass flux [kg/(m²·s)]
     constexpr float R_gas = 8.314f;
     constexpr float P_ref = 101325.0f;
-    constexpr float alpha_evap = 0.18f;
+    constexpr float alpha_evap = 0.82f;  // R6 OpenFOAM-alignment
 
     float exponent = (mat.L_vaporization * mat.molar_mass / R_gas)
                    * (1.0f / T_boil - 1.0f / Tc);
     exponent = fminf(exponent, 50.0f);
     float P_sat = P_ref * expf(exponent);
 
-    J_evap[idx] = alpha_evap * P_sat
-                / sqrtf(2.0f * 3.14159265f * R_gas * Tc / mat.molar_mass);
+    float J_surf = alpha_evap * P_sat
+                 / sqrtf(2.0f * 3.14159265f * R_gas * Tc / mat.molar_mass);
+
+    // Output is volumetric: [kg/(m²·s)] × [1/m] = [kg/(m³·s)]
+    J_evap[idx] = J_surf * grad_f;
 }
 
 void ThermalFDM::computeEvaporationMassFlux(float* d_J_evap,
                                              const float* fill_level) const {
     int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+    float inv_dx = 1.0f / dx_;
     fdmEvapMassFluxKernel<<<gs, bs>>>(
-        d_T_, fill_level, d_J_evap, material_, nx_, ny_, nz_);
+        d_T_, fill_level, d_J_evap, material_, inv_dx, nx_, ny_, nz_);
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
 }
