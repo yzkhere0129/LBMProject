@@ -894,16 +894,19 @@ void ThermalFDM::computeTemperature() {
 
     // Gas phase wipe with energy tracking
     if (d_vof_fill_ != nullptr) {
-        // Sprint-1 (2026-04-25): protection layers 5 → 50.
-        // The 5-cell radius (10 μm at dx=2μm) was far too small for keyhole
-        // geometries — keyhole interior cells (60-80 μm below original surface)
-        // were unprotected and got hard-reset to T_ambient every step,
-        // siphoning ~55 % of laser-deposited power into gas wipe (P_gw=55 W of
-        // 100 W input). 50-cell radius (~100 μm) safely covers the full keyhole
-        // depth + a margin for hot vapor near the cavity walls. The dilation
-        // is sequential O(N) per layer but each pass is a fast GPU kernel
-        // over 2.25 M cells.
-        computeGasWipeProtectionMask(50);
+        // Sprint-1 M16 (2026-04-25): tuned protection_layers based on dx.
+        // 50 layers × 15.6 M cells (M16 domain) = 780 M dilation ops per step
+        // → wall time blew up 30× vs M13b small domain. Adjusted to be ~ 50 μm
+        // physical reach regardless of dx, by computing layers from dx.
+        // 50 μm covers most of keyhole depth (typical 60-80 μm) plus margin.
+        // Combined with M13b's "no gentle relaxation in protected zone", the
+        // remaining gentle-edge cells around the protected zone don't drain
+        // significant energy.
+        int protection_phys_um = 50;
+        int n_layers = (int)((float)protection_phys_um / (dx_ * 1e6f) + 0.5f);
+        if (n_layers < 5) n_layers = 5;
+        if (n_layers > 30) n_layers = 30;  // cap to keep wall time reasonable
+        computeGasWipeProtectionMask(n_layers);
         float dV = dx_ * dx_ * dx_;
         int bs = 256, gs = (num_cells_ + bs - 1) / bs;
         // Accumulate energy (do NOT reset — getGasWipeEnergyRemoved() handles reset)
