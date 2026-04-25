@@ -62,11 +62,15 @@ front_mask  = (x_centerline >= laser_x_um) & ~np.isnan(z_centerline)
 
 z_at_laser = z_centerline[np.argmin(np.abs(x_centerline - laser_x_um))] if not np.isnan(laser_x_um) else float('nan')
 z_max_behind = np.nanmax(z_centerline[behind_mask]) if behind_mask.any() else float('nan')
+z_p95_behind = np.percentile(z_centerline[behind_mask], 95) if behind_mask.any() else float('nan')
 z_min_overall = np.nanmin(z_centerline)
 z_max_overall = np.nanmax(z_centerline)
 
-# Raised track height: difference from initial top
-track_height = z_max_behind - z0 if not np.isnan(z_max_behind) else float('nan')
+# Raised track height: difference from initial top.
+# Use 95%-ile not max — max captures isolated boundary/numerical outliers.
+# F3D 95%ile vs LBM 95%ile gives a fair bulk comparison.
+track_height_max = z_max_behind - z0 if not np.isnan(z_max_behind) else float('nan')
+track_height = z_p95_behind - z0 if not np.isnan(z_p95_behind) else float('nan')
 
 # FWHM of raised region behind laser (z > z0 + 0.5 * (z_max_behind - z0))
 if behind_mask.any() and not np.isnan(track_height) and track_height > 0:
@@ -94,17 +98,18 @@ print(f"  z_at_laser:                 {z_at_laser:.1f} μm")
 print(f"  z_max_behind_laser:         {z_max_behind:.1f} μm")
 print(f"")
 print(f"== RAISED TRACK ANALYSIS ==")
-print(f"  Track height (z_max - z₀): {track_height:+.1f} μm")
-print(f"  FWHM of raised region:      {fwhm:.0f} μm")
+print(f"  Track Δh (95%ile, bulk):  {track_height:+.1f} μm    ← preferred metric")
+print(f"  Track Δh (max):           {track_height_max:+.1f} μm    (may include outliers)")
+print(f"  FWHM of raised region:    {fwhm:.0f} μm")
 if not np.isnan(track_height):
     if track_height > 5:
-        verdict = "YES — strong raised track (Marangoni backflow + accumulation)"
+        verdict = "STRONG raised track"
     elif track_height > 1:
-        verdict = "WEAK — slight raised track"
+        verdict = "WEAK raised track"
     elif track_height > -5:
-        verdict = "FLAT — surface barely above initial level"
+        verdict = "FLAT"
     else:
-        verdict = "DEPRESSED — surface entirely below z₀"
-    print(f"  Verdict: {verdict}")
+        verdict = "DEPRESSED"
+    print(f"  Verdict (95%ile-based): {verdict}")
 print(f"")
-print(f"For Flow3D reference: 316L 150W 0.8m/s gives Δh ≈ +15 μm above initial surface.")
+print(f"Flow3D reference @ t=1184μs: Δh_max=+10.1 μm, Δh_95%ile=+9.6 μm")

@@ -49,12 +49,13 @@ for path in vtks:
 
     behind = (x_centerline < laser_x) & ~np.isnan(z_centerline)
     z_min = np.nanmin(z_centerline) if has_metal.any() else np.nan
-    z_max_behind = np.nanmax(z_centerline[behind]) if behind.any() else np.nan
+    z_p95_behind = np.percentile(z_centerline[behind], 95) if behind.any() else np.nan
 
     kh_depth.append(z0 - z_min if not np.isnan(z_min) else np.nan)
-    raised_h.append(z_max_behind - z0 if not np.isnan(z_max_behind) else np.nan)
-    if behind.any() and not np.isnan(z_max_behind) and (z_max_behind > z0):
-        half = z0 + 0.5 * (z_max_behind - z0)
+    # Use 95%ile not max — max captures boundary/numerical outliers.
+    raised_h.append(z_p95_behind - z0 if not np.isnan(z_p95_behind) else np.nan)
+    if behind.any() and not np.isnan(z_p95_behind) and (z_p95_behind > z0):
+        half = z0 + 0.5 * (z_p95_behind - z0)
         raised_mask = (z_centerline > half) & behind
         if raised_mask.any():
             xr = x_centerline[raised_mask]
@@ -88,11 +89,11 @@ ax.set(xlabel='t [μs]', ylabel='Keyhole depth [μm]', title='Keyhole depth (z�
 ax.legend(); ax.grid(alpha=0.3)
 
 ax = axes[0, 1]
-ax.plot(t_us, raised_h, 'b-s', lw=2, markersize=5, label='LBM raised track Δh')
-ax.axhline(y=15.3, color='k', linestyle='--', alpha=0.7, label='Flow3D Δh = +15.3 μm')
+ax.plot(t_us, raised_h, 'b-s', lw=2, markersize=5, label='LBM Δh (95%ile)')
+ax.axhline(y=9.6, color='k', linestyle='--', alpha=0.7, label='Flow3D Δh ≈ +9.6 μm (95%ile)')
 ax.axhline(y=0, color='gray', linestyle=':', alpha=0.5)
 ax.set(xlabel='t [μs]', ylabel='Raised track Δh [μm]',
-       title='Raised track height behind laser (Marangoni 翻滚+堆积)')
+       title='Raised track height behind laser (95%ile, bulk metric)')
 ax.legend(); ax.grid(alpha=0.3)
 
 ax = axes[1, 0]
