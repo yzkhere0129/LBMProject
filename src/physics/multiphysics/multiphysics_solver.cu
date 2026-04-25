@@ -1815,7 +1815,14 @@ void MultiphysicsSolver::thermalStep(float dt) {
     // energy as volumetric boiling latent heat for energy conservation.
     // ============================================================
     if (thermal_) {
-        thermal_->applySubsurfaceBoilingCap(config_.material.T_vaporization, 50.0f);
+        // Sprint-1 (2026-04-25): raised overshoot from 50 K to 1500 K.
+        // The 50 K cap effectively pinned bulk T at T_boil+50 K = 3140 K, which
+        // broadcast laterally and forced LBM Tmax 3650 K vs Flow3D 4262 K peak
+        // (-14 %). Real LPBF keyhole bottoms can superheat to 4500-5500 K
+        // (Khairallah 2016, Flow3D peak 4262 K). The aggressive cap was
+        // for stability when ESM evap cooling was less robust; with R7
+        // implicit Newton evap cooling now in production it can be relaxed.
+        thermal_->applySubsurfaceBoilingCap(config_.material.T_vaporization, 1500.0f);
     }
 
     // ============================================================
