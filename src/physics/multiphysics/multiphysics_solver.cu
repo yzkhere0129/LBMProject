@@ -2527,18 +2527,21 @@ void MultiphysicsSolver::computeTotalForce() {
         }
 
         if (liquid_fraction) {
-            // Step 1: Smooth fl with 27-point isotropic kernel
-            dim3 blk(8, 8, 8);
-            dim3 grd((config_.nx+7)/8, (config_.ny+7)/8, (config_.nz+7)/8);
-            smoothField27Kernel<<<grd, blk>>>(
-                liquid_fraction, d_fl_smoothed_,
-                config_.nx, config_.ny, config_.nz);
-            CUDA_CHECK_KERNEL();
-            CUDA_CHECK(cudaDeviceSynchronize());
+            // Sprint-1 (2026-04-25): use raw thermodynamic fl for Darcy K instead
+            // of the 27-point smoothed field. The smoothing was originally added
+            // for stability, but it widened the mushy zone by ~3 cells laterally
+            // and shifted the Darcy damping front away from the physical solidus.
+            // That artificial widening directly contributes to LBM melt-pool W
+            // being 110-150 % of Flow3D. The α=0.3 under-relaxation in Step 3
+            // below provides sufficient temporal smoothing to keep K stable.
+            //
+            // (smoothField27Kernel call removed; d_fl_smoothed_ allocation kept
+            // because it is still consumed by the Marangoni / surface-tension
+            // gradient stencil at lines 2455-2459 above.)
 
-            // Step 2: Compute Darcy K from smoothed fl (with gas-phase exemption)
+            // Step 2: Compute Darcy K from RAW fl (with gas-phase exemption)
             force_accumulator_->computeDarcyCoefficientField(
-                d_fl_smoothed_,
+                liquid_fraction,
                 vof_ ? vof_->getFillLevel() : nullptr,
                 config_.darcy_coefficient,
                 config_.density, config_.dx, config_.dt);
