@@ -96,25 +96,24 @@ int main() {
     // ==================================================================
     MultiphysicsConfig config;
 
-    // --- Domain: 2600 × 200 × 240 μm @ dx=2μm (Flow3D-aligned scan length, M16 2026-04-25) ---
-    // Keep dx=2μm (preserves keyhole DDA accuracy + force-LU stability via dt=80ns).
-    // M14 dx=5μm: rays escape 52 % vs 29 % at dx=2μm (lost keyhole physics).
-    // M15 dx=2.5μm with dt=0.5μs: forces in LU scaled ~31× → catastrophic cap
-    // triggered step 263 (35 cells over LU_cap=0.38).
+    // --- Domain: 1600 × 75 × 100 μm @ dx=2μm (M16d compromise, 2026-04-25) ---
+    // M16/M16b/M16c at 1300×100×120 cells: per-step cost was 18× expected scale
+    // (3 sec/step at 15.6M cells vs 0.024 sec/step at 2.25M); root cause is
+    // memory traffic / cache pressure beyond the kernel-level optimizations
+    // accessible without a profiling pass.
     //
-    // Compromise: keep dx=2μm + dt=80ns, expand domain only to fix the actual
-    // user-flagged issues:
-    //   x: 1200 → 2600 μm (full Flow3D scan length, no mid-track cutoff)
-    //   y: 150 → 200 μm  (still narrower than Flow3D 405 μm but 1.3× wider)
-    //   z: 100 → 240 μm  (avoids keyhole punching through 100μm-thick substrate)
-    //
-    // Cell count 1300×100×120 = 15.6 M, GPU memory ~5 GB, wall time ~30 min on
-    // RTX 4090 for 2 ms total. VTK output 50 frames × 350 MB ≈ 17 GB.
-    config.nx = 1300;
-    config.ny = 100;
-    config.nz = 120;
+    // Pragmatic compromise: extend ONLY the scan-direction (nx) and ONLY the
+    // depth (nz). Keep transverse (ny) tight since Flow3D pool W≈85μm and
+    // LBM pool W≈100μm — 150μm transverse is already 75% margin.
+    //   x: 1200 → 1600 μm  (covers t=2ms scan: 0+0.8·2000=1600μm + 100 margin)
+    //   y: 150 →  150 μm  (unchanged; M13b verified W stays within)
+    //   z: 100 →  200 μm  (substrate thickness 2× to keep keyhole ~80μm away from base)
+    // Cell count: 800 × 75 × 100 = 6 M (2.7× M13b, ~10 min wall expected).
+    config.nx = 800;
+    config.ny = 75;
+    config.nz = 100;
     config.dx = 2.0e-6f;
-    config.dt = 8.0e-8f;  // 80 ns (kept to keep force_LU = F_phys · dt²/(dx·ρ) below cap=0.38)
+    config.dt = 8.0e-8f;
 
     // --- Material ---
     config.material = MaterialDatabase::get316L();
@@ -223,10 +222,10 @@ int main() {
     const int num_steps  = static_cast<int>(t_total / config.dt);
     const int vtk_every  = static_cast<int>(40.0e-6f / config.dt);  // 40 μs cadence → 50 frames
     const int diag_every = 1000;
-    // Substrate top at z = 200 μm (= 0.833 · nz · dx). LBM domain z∈[0,240]μm:
-    // metal occupies [0, 200] (100 cells), gas [200, 240] (20 cells).
-    // Aligns with Flow3D pz=[-197.5, 102.5] where substrate top is at F3D z=0.
-    const float interface_z = 100.0f;  // z=100 cells × dx=2μm = 200 μm
+    // Substrate top at z = 160 μm (k=80). LBM domain z∈[0,200]μm:
+    // metal [0,160] (80 cells), gas [160,200] (20 cells). Keyhole 80μm深 → 离底
+    // 80μm 缓冲（vs M13b 仅 20μm，避免 punch-through），离顶 20μm OK。
+    const float interface_z = 80.0f;  // z=80 cells × dx=2μm = 160 μm
 
     // ==================================================================
     // Print summary

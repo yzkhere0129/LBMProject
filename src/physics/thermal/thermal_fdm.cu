@@ -867,11 +867,17 @@ void ThermalFDM::computeGasWipeProtectionMask(int protection_layers) {
     dim3 grd((nx_ + blk.x - 1) / blk.x,
              (ny_ + blk.y - 1) / blk.y,
              (nz_ + blk.z - 1) / blk.z);
+    // Sprint-1 perf (2026-04-25): each dilation iteration USED to sync after,
+    // turning N layers into N×~50μs sync overhead. With protection_layers=30
+    // and 15.6 M cells (M16 domain), 30 syncs/step blew wall time 30× over
+    // the small-domain baseline. Default stream serializes kernel launches
+    // automatically, so inter-iteration sync is unnecessary; only sync once
+    // at the end of the chain.
     for (int iter = 0; iter < protection_layers; iter++) {
         dilateProtectionMaskKernel<<<grd, blk>>>(d_gas_wipe_mask_, nx_, ny_, nz_);
-        CUDA_CHECK_KERNEL();
-        CUDA_CHECK(cudaDeviceSynchronize());
     }
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // computeTemperature → ESM phase change correction (bisection enthalpy inversion)
