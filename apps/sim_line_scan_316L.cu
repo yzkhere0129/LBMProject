@@ -178,12 +178,13 @@ int main() {
     // --- Surface ---
     config.surface_tension_coeff    = config.material.surface_tension;
     config.dsigma_dT                = config.material.dsigma_dT;
-    // Sprint-1 M17 (2026-04-25): dial back Marangoni CSF multiplier from 1.0 → 0.7.
-    // M16d showed raised track Δh = +24 μm vs Flow3D +15.3 μm = 60 % over.
-    // Strict CSF (Brackbill 1992) says ∫|∇f|dn = 1 with no compensation factor,
-    // but the LBM CSF |∇f| discretization gives a slight overshoot at sharp
-    // interfaces. Empirical 0.7 should bring Δh to ~+17 μm (10 % over F3D).
-    config.marangoni_csf_multiplier = 0.7f;
+    // Sprint-1 M17 verdict (2026-04-25): csf_multiplier 1.0→0.7 only moves
+    // Δh from +24 → +22 μm (8 % change for 30 % Marangoni reduction).
+    // Δh is mass-conservation-saturated, not Marangoni-linear. Revert to 1.0
+    // (physically correct per Brackbill 1992) until pool_L extension addresses
+    // the real coupling: keyhole volume / pool_L = Δh; LBM pool_L=250μm vs
+    // F3D pool_L=500μm explains the entire +24 vs +15 difference.
+    // Default config.marangoni_csf_multiplier = 1.0 (already in MultiphysicsConfig).
 
     // --- Buoyancy ---
     config.thermal_expansion_coeff  = 1.2e-4f;
