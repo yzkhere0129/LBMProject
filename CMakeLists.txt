@@ -170,6 +170,40 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_line_scan_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_line_scan_316L lbm_physics lbm_io CUDA::cudart)
 
+    # Night-protocol Phase-1 (mushy 200K→23K + spot 50→39 μm)
+    add_executable(sim_linescan_phase1 apps/sim_linescan_phase1.cu)
+    set_target_properties(sim_linescan_phase1 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_phase1 lbm_physics lbm_io CUDA::cudart)
+
+    # Night-protocol Phase-2 (Phase-1 + VOF mass correction)
+    add_executable(sim_linescan_phase2 apps/sim_linescan_phase2.cu)
+    set_target_properties(sim_linescan_phase2 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_phase2 lbm_physics lbm_io CUDA::cudart)
+
+    # Night-protocol Phase-3 (Phase-1 + lower viscosity τ→0.55)
+    add_executable(sim_linescan_phase3 apps/sim_linescan_phase3.cu)
+    set_target_properties(sim_linescan_phase3 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_phase3 lbm_physics lbm_io CUDA::cudart)
+
+    # Dawn-3: dσ/dT sensitivity
+    add_executable(sim_linescan_dawn3 apps/sim_linescan_dawn3.cu)
+    set_target_properties(sim_linescan_dawn3 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_dawn3 lbm_physics lbm_io CUDA::cudart)
+
+    # Night-protocol Phase-4 final 2 ms validation
+    add_executable(sim_linescan_phase4 apps/sim_linescan_phase4.cu)
+    set_target_properties(sim_linescan_phase4 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_phase4 lbm_physics lbm_io CUDA::cudart)
+
+    # Sprint-3 perturbative tests
+    add_executable(sim_linescan_S3A1 apps/sim_linescan_S3A1.cu)
+    set_target_properties(sim_linescan_S3A1 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_S3A1 lbm_physics lbm_io CUDA::cudart)
+
+    add_executable(sim_linescan_S3A3 apps/sim_linescan_S3A3.cu)
+    set_target_properties(sim_linescan_S3A3 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_S3A3 lbm_physics lbm_io CUDA::cudart)
+
     # LPBF powder bed simulation (316L, realistic powder layer)
     add_executable(sim_powder_bed_316L apps/sim_powder_bed_316L.cu)
     set_target_properties(sim_powder_bed_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -189,6 +223,26 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     add_executable(viz_bubble scripts/viz/viz_bubble.cu)
     set_target_properties(viz_bubble PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(viz_bubble lbm_physics lbm_core CUDA::cudart)
+
+    # Visualization: 3D dam break (Koshizuka 1996) — VOF + gravity benchmark
+    add_executable(viz_dam_break_3d scripts/viz/viz_dam_break_3d.cu)
+    set_target_properties(viz_dam_break_3d PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_dam_break_3d lbm_physics lbm_core CUDA::cudart)
+
+    # Visualization: 3D weir flow (Thürey 2011) — free-surface channel with obstacle
+    add_executable(viz_weir_3d scripts/viz/viz_weir_3d.cu)
+    set_target_properties(viz_weir_3d PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_weir_3d lbm_physics lbm_core CUDA::cudart)
+
+    # Aerodynamics benchmark: cylinder flow (Schäfer-Turek 2D-2, Re=100)
+    add_executable(viz_cylinder_flow scripts/viz/viz_cylinder_flow.cu)
+    set_target_properties(viz_cylinder_flow PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_cylinder_flow lbm_physics lbm_core CUDA::cudart)
+
+    # Aerodynamics benchmark: NACA 0012 airfoil (Kurtulus 2015, Re=1000, α=10°)
+    add_executable(viz_naca0012 scripts/viz/viz_naca0012.cu)
+    set_target_properties(viz_naca0012 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(viz_naca0012 lbm_physics lbm_core CUDA::cudart)
 
     # Visualization: Marangoni 1D return flow benchmark
     add_executable(viz_marangoni_returnflow scripts/viz/viz_marangoni_returnflow.cu)
@@ -337,6 +391,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     add_executable(test_recoil_scale apps/test_recoil_scale.cu)
     set_target_properties(test_recoil_scale PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_recoil_scale lbm_physics CUDA::cudart)
+
+    # R6 Deep-dive: Spatial force-singularity audit (3-cell smooth interface)
+    add_executable(test_force_singularity apps/test_force_singularity.cu)
+    set_target_properties(test_force_singularity PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_force_singularity lbm_physics CUDA::cudart)
+
+    # R6 Deep-dive: 0-D thermal overshoot audit (explicit Euler T march)
+    add_executable(test_thermal_overshoot apps/test_thermal_overshoot.cu)
+    set_target_properties(test_thermal_overshoot PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_thermal_overshoot CUDA::cudart)
 
     # Unit test: Recoil pressure force — isolated analytical comparison
     add_executable(test_recoil_unit apps/test_recoil_unit.cu)
