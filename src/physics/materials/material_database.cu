@@ -93,7 +93,14 @@ MaterialProperties MaterialDatabase::get316L() {
     // Optical properties (at 1064nm laser wavelength)
     mat.absorptivity_solid = 0.38f;
     mat.absorptivity_liquid = 0.42f;
-    mat.emissivity = 0.28f;
+    // Round-5 / 2026-04-26: emissivity 0.28 → 0.55 to match F3D prepin
+    // hflem1=0.55 (vtk-316L-150W-50um-V800mms/prepin.* &xput section).
+    // F3D's 0.55 captures partial oxidation + rougher melt-pool surface
+    // typical of LPBF; our prior 0.28 was a polished-316L value.
+    // Estimated impact on trailing-zone Δh: 1-2 μm (emissivity-driven
+    // Q_rad scales as ε·σ_SB·T⁴, dominant only at T>2500 K — affects
+    // peak melt pool, less effect on trailing solidification timing).
+    mat.emissivity = 0.55f;
 
     if (!mat.validate()) {
         throw std::runtime_error("Invalid material properties for 316L");
