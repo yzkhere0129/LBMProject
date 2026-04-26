@@ -161,9 +161,9 @@ TEST(TRTDegenerateToBGK, FlatField_NoForce_NoDarcy) {
 
     // Pull distributions back to host
     std::vector<float> f_bgk(Q * NUM_CELLS), f_trt(Q * NUM_CELLS);
-    CUDA_CHECK(cudaMemcpy(f_bgk.data(), fluid_bgk.getDistributionBuffer(),
+    CUDA_CHECK(cudaMemcpy(f_bgk.data(), fluid_bgk.getDistributionSrc(),
                           Q * NUM_CELLS * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(f_trt.data(), fluid_trt.getDistributionBuffer(),
+    CUDA_CHECK(cudaMemcpy(f_trt.data(), fluid_trt.getDistributionSrc(),
                           Q * NUM_CELLS * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Distribution-level check

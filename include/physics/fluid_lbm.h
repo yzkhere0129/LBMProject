@@ -171,6 +171,13 @@ public:
     void setRegularized(bool enable, float tau_override = 0.0f);
 
     /**
+     * @brief Switch force injection from EDM (default) to Guo-2002.
+     * Only consulted by the Regularized collision path. TRT path always uses EDM.
+     * @param enable true → Guo forcing kernel, false → EDM kernel (default)
+     */
+    void setUseGuoForcing(bool enable) { use_guo_forcing_ = enable; }
+
+    /**
      * @brief Perform TRT collision step with uniform force
      *
      * Two-Relaxation-Time (TRT) collision operator improves accuracy
@@ -527,6 +534,7 @@ private:
     float tau_;             ///< BGK relaxation time
     float omega_minus_;     ///< TRT anti-symmetric relaxation (0 = BGK mode)
     bool use_regularized_ = false;  ///< Use Regularized collision instead of TRT
+    bool use_guo_forcing_ = false;  ///< In Regularized path: true→Guo, false→EDM (default)
 
     // Boundary configuration
     BoundaryType boundary_x_;  ///< Boundary type in x-direction
