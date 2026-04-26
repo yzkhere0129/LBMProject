@@ -117,6 +117,7 @@ add_cuda_test(test_vof_mass_conservation unit/vof/test_vof_mass_conservation.cu)
 add_cuda_test(test_vof_interface_compression unit/vof/test_vof_interface_compression.cu)
 add_cuda_test(test_vof_mass_correction_weighted unit/vof/test_vof_mass_correction_weighted.cu)
 add_cuda_test(test_vof_mass_correction_flux unit/vof/test_vof_mass_correction_flux.cu)
+add_cuda_test(test_track_b_lpbf_probe unit/vof/test_track_b_lpbf_probe.cu)
 
 # ============================================================================
 # COMPREHENSIVE VOF TEST SUITE (80% → 95% coverage target)
