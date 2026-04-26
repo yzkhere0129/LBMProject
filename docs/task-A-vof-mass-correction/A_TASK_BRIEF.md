@@ -90,14 +90,71 @@ python3 scripts/flow3d/check_mass_conservation.py \
     output_phase2/line_scan_000000.vtk output_phase2/line_scan_005000.vtk
 ```
 
-Target: at t=400 μs, centerline Δh ≥ Phase-1's -18.9 μm AND mass-loss
-rate within 0.5 % of Phase-1's -1.66 % per 800 μs.
+## Acceptance Criteria — STRICT (revised 2026-04-26 by main session)
 
-## Don't merge until
+The original "improves over Phase-1" wording was too permissive: any
+≥1 μm gain at t=800 μs would technically satisfy it. Below is the
+hardened version.
 
-- New algorithm passes the reproduction comparison above
-- TRT-degenerate-to-BGK anchor test still passes
-  (`./build/tests/validation/test_trt_degenerate_to_bgk`)
-- No regression on existing 75 phase-change validation tests
-- Centerline Δh improves over both Phase-1 (-16) and Phase-2 (-28.9) at
-  t=800 μs
+### Pass conditions — ALL must hold
+
+| # | Metric                              | Threshold |
+|---|-------------------------------------|-----------|
+| 1 | Centerline Δh @ t = 800 μs (95%ile) | **≥ -10 μm** (Phase-1 baseline -16; F3D target -1; midpoint as merge bar) |
+| 2 | Centerline Δh @ t = 2 ms            | **≥ -10 μm** (steady state must not regress vs t=800 μs) |
+| 3 | Side-ridge Δh @ x_offset = -100, -200 μm | **both in [+3, +10] μm range** (must include F3D mean +4 and max +7.5) |
+| 4 | Total mass drift over t_total       | **\|ΔM/M₀\| < 1.0 %** (absolute, not relative to Phase-1) |
+| 5 | TRT degenerate-to-BGK anchor test   | PASS (`./build/tests/validation/test_trt_degenerate_to_bgk`) |
+| 6 | All 75 phase-change validation tests | PASS (no regression) |
+| 7 | v_z @ -150 μm at t = 800 μs         | **> +0.10 m/s** (Phase-1 had +0.196 — recirculation must not die) |
+
+### Reject conditions — ANY ONE triggers abort
+
+- Tried 3 different destination algorithms (e.g., v_z-weighted,
+  trailing-band masked, evap-source reconstruction), best Δh improvement
+  over Phase-1 (-16) is **< 3 μm**
+- Any algorithm produces NaN or instability before t < 500 μs in the
+  Phase-2 reproduction harness
+- Any algorithm pushes side ridges above **+15 μm** at any trailing-zone
+  offset (physically tearing the surface)
+- Mass drift exceeds **3.0 %** (worse than baseline Phase-1's -2.55 %)
+
+### Merge protocol
+
+- **All 7 pass conditions met** → squash + rebase to `benchmark/conduction-316L`,
+  with a commit message describing the algorithm + measured improvements
+- **Reject condition triggered** → DO NOT merge code. Instead:
+  - Commit a `lessons_learned.md` to `docs/task-A-vof-mass-correction/`
+    describing each algorithm tried, its failure mode, and what data
+    pointed at the next physical bottleneck (likely Bogner FSLBM or
+    sharp-interface VOF rewrite — both Sprint-level)
+  - Cherry-pick *only* `docs/task-A-vof-mass-correction/` to main
+  - Delete the worktree branch
+
+### Validation harness — required before any merge
+
+```
+# 1. Short test (33 min) — Phase-2 reproduction
+cd /home/yzk/LBMProject_vof_mass_correction
+cmake --build build --target sim_linescan_phase2 -j 4
+rm -rf output_phase2 && mkdir output_phase2
+stdbuf -oL ./build/sim_linescan_phase2 > output_phase2/run.log 2>&1
+python3 scripts/flow3d/phase1_summary.py output_phase2/line_scan_010000.vtk
+python3 scripts/flow3d/check_mass_conservation.py \
+    output_phase2/line_scan_000000.vtk output_phase2/line_scan_010000.vtk
+
+# 2. Full test (~85 min) — Phase-4 2 ms validation
+cmake --build build --target sim_linescan_phase4 -j 4
+rm -rf output_phase4 && mkdir output_phase4
+stdbuf -oL ./build/sim_linescan_phase4 > output_phase4/run.log 2>&1
+python3 scripts/flow3d/phase1_summary.py output_phase4/line_scan_025000.vtk
+
+# 3. Regression suite
+ctest --test-dir build -L "validation;phase_change" --timeout 120
+./build/tests/validation/test_trt_degenerate_to_bgk
+```
+
+Comparison reference data already in repo:
+- `output_line_scan/line_scan_010000.vtk`           — pre-fix baseline (-20 μm)
+- `output_phase1/line_scan_010000.vtk`              — Phase-1 best so far (-16 μm)
+- `vtk-316L-150W-50um-V800mms/150WV800mms-50um_99.vtk` — F3D ground truth (-1 μm)
