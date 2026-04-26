@@ -1279,9 +1279,10 @@ __global__ void computeVzWeightSumKernel(
     float w = 0.0f;
     if (idx < num_cells) {
         float f = fill_level[idx];
-        // Interface cells only: pure liquid (f≥1) cannot accept more,
-        // pure gas (f≤0) cannot give up any.
-        if (f > 0.0f && f < 1.0f) {
+        // Interface cells only — same threshold as countInterfaceCellsKernel
+        // and applyMassCorrectionKernel (B2 fix 2026-04-27, was strict 0/1).
+        // Saturated bulk (f≤0.01 or f≥0.99) has unreliable gradients/normals.
+        if (f > 0.01f && f < 0.99f) {
             w = fmaxf(sign_dm * velocity_z[idx], 0.0f);
         }
     }
@@ -1315,7 +1316,8 @@ __global__ void applyVzWeightedMassCorrectionKernel(
     if (idx >= num_cells) return;
 
     float f = fill_level[idx];
-    if (f <= 0.0f || f >= 1.0f) return;        // skip pure gas / pure liquid
+    // B2 fix (2026-04-27): match Pass-1 threshold and applyMassCorrectionKernel.
+    if (f <= 0.01f || f >= 0.99f) return;      // skip near-pure cells
 
     float w = fmaxf(sign_dm * velocity_z[idx], 0.0f);
     if (w <= 0.0f) return;                     // wrong flow direction
@@ -1407,6 +1409,11 @@ void VOFSolver::freeMemory() {
 void VOFSolver::initialize(const float* fill_level) {
     CUDA_CHECK(cudaMemcpy(d_fill_level_, fill_level, num_cells_ * sizeof(float),
                cudaMemcpyHostToDevice));
+
+    // B4 fix (2026-04-27): reset mass-correction state on (re)initialize so
+    // multi-instance / re-initialise tests don't inherit a stale baseline.
+    mass_reference_ = -1.0f;
+    mass_correction_call_count_ = 0;
 
     // Initialize cell flags based on fill level
     convertCells();
@@ -1883,6 +1890,11 @@ float VOFSolver::computeTotalMass() const {
 // ============================================================================
 void VOFSolver::applyMassCorrectionInline(const float* d_vz) {
     if (!mass_correction_enabled_) return;
+
+    // B1 fix (2026-04-27): explicit sync before reading d_fill_level_.
+    // Callers (advectFillLevel TVD/PLIC) end with cudaDeviceSynchronize but
+    // the ordering was implicit. Make it explicit so future call sites are safe.
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     float mass_current = computeTotalMass();
     if (mass_reference_ < 0.0f) {

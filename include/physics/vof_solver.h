@@ -367,6 +367,12 @@ private:
     // Cached scratch buffers (lazy-allocated, reused across calls).
     // Bug-3 fix (2026-04-26): previously cudaMalloc'd inside computeTotalMass()
     // and the correction path on every invocation — 3× per advection step.
+    //
+    // INVARIANT: every kernel that uses these buffers MUST launch with the same
+    // block size (currently 256). The lazy realloc only checks gridSize against
+    // a stored `_size_`, so changing block size between launches without changing
+    // num_cells_ would silently underrun the buffer. Search "blockSize = 256"
+    // in vof_solver.cu — all uses agree. (B3 hazard noted 2026-04-27.)
     mutable float* d_mass_partial_sums_ = nullptr;
     mutable int d_mass_partial_sums_size_ = 0;
     int* d_interface_partial_counts_ = nullptr;
