@@ -1150,7 +1150,6 @@ add_executable(test_trt_degenerate_to_bgk
 
 set_target_properties(test_trt_degenerate_to_bgk PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "86"
 )
 
 target_include_directories(test_trt_degenerate_to_bgk PRIVATE
