@@ -1401,7 +1401,18 @@ __device__ inline float fluxWeightAtCell(
 }
 
 /**
- * @brief Pass 1 — Track-B reduce W = Σ max(sign_dm * (-∇f·v), 0) over interface cells.
+ * @brief Pass 1 — Track-C reduce W = Σ max(sign_dm * (∇f·v), 0) over interface cells.
+ *
+ * Track-C augments Track-B with two geometric gates that zero w before accumulation:
+ *   Gate 1 (trailing-band x-mask): skip cells ahead of the laser spot, where recoil
+ *     dominates and ∇f·v falsely appears inward.
+ *     Active when laser_x_lu >= 0; skips cell i > laser_x_lu - trailing_margin_lu.
+ *   Gate 2 (z-floor gate): skip elevated cells (side ridges, splash deposits) that
+ *     should never be refill targets.
+ *     Active when z_substrate_lu >= 0; skips cell k > z_substrate_lu + z_offset_lu.
+ *
+ * Both gates cost 2 integer compares per thread and have zero impact when disabled
+ * (laser_x_lu < 0 or z_substrate_lu < 0).
  */
 __global__ void computeFluxWeightSumKernel(
     const float* __restrict__ fill_level,
@@ -1413,7 +1424,11 @@ __global__ void computeFluxWeightSumKernel(
     int nx, int ny, int nz,
     int bc_x, int bc_y, int bc_z,
     float* __restrict__ partial_sums,
-    int num_cells)
+    int num_cells,
+    float laser_x_lu,        ///< Current laser x in lattice units; <0 = gate disabled
+    float trailing_margin_lu, ///< x-exclusion half-width [lu]; cells with i > laser_x_lu-margin excluded
+    float z_substrate_lu,     ///< Substrate top index [lu]; <0 = gate disabled
+    float z_offset_lu)        ///< Extra allowance above substrate [lu] before exclusion kicks in
 {
     extern __shared__ float sdata[];
     int tid = threadIdx.x;
@@ -1426,13 +1441,24 @@ __global__ void computeFluxWeightSumKernel(
             int i = idx % nx;
             int j = (idx / nx) % ny;
             int k = idx / (nx * ny);
-            float vx = velocity_x[idx];
-            float vy = velocity_y[idx];
-            float vz = velocity_z[idx];
-            float ndotv_inward = fluxWeightAtCell(
-                fill_level, i, j, k, nx, ny, nz, dx, vx, vy, vz,
-                bc_x, bc_y, bc_z);
-            w = fmaxf(sign_dm * ndotv_inward, 0.0f);
+
+            // Gate 1: trailing-band x-mask — exclude active laser zone
+            if (laser_x_lu >= 0.0f && (float)i > laser_x_lu - trailing_margin_lu) {
+                // inside or ahead of laser spot; skip
+            }
+            // Gate 2: z-floor gate — exclude elevated cells above substrate
+            else if (z_substrate_lu >= 0.0f && (float)k > z_substrate_lu + z_offset_lu) {
+                // elevated cell (ridge/splash); skip
+            }
+            else {
+                float vx = velocity_x[idx];
+                float vy = velocity_y[idx];
+                float vz = velocity_z[idx];
+                float ndotv_inward = fluxWeightAtCell(
+                    fill_level, i, j, k, nx, ny, nz, dx, vx, vy, vz,
+                    bc_x, bc_y, bc_z);
+                w = fmaxf(sign_dm * ndotv_inward, 0.0f);
+            }
         }
     }
     sdata[tid] = w;
@@ -1446,7 +1472,9 @@ __global__ void computeFluxWeightSumKernel(
 }
 
 /**
- * @brief Pass 2 — Track-B apply (Δm/W) * max(sign_dm * (-∇f·v), 0) per cell.
+ * @brief Pass 2 — Track-C apply (Δm/W) * max(sign_dm * (∇f·v), 0) per cell.
+ * Same geometric gates as computeFluxWeightSumKernel (must be identical to keep
+ * the Pass-1 / Pass-2 cell sets consistent).
  */
 __global__ void applyFluxWeightedMassCorrectionKernel(
     float* fill_level,
@@ -1458,7 +1486,11 @@ __global__ void applyFluxWeightedMassCorrectionKernel(
     float dx,
     int nx, int ny, int nz,
     int bc_x, int bc_y, int bc_z,
-    int num_cells)
+    int num_cells,
+    float laser_x_lu,
+    float trailing_margin_lu,
+    float z_substrate_lu,
+    float z_offset_lu)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_cells) return;
@@ -1469,6 +1501,12 @@ __global__ void applyFluxWeightedMassCorrectionKernel(
     int i = idx % nx;
     int j = (idx / nx) % ny;
     int k = idx / (nx * ny);
+
+    // Gate 1: trailing-band x-mask
+    if (laser_x_lu >= 0.0f && (float)i > laser_x_lu - trailing_margin_lu) return;
+    // Gate 2: z-floor gate
+    if (z_substrate_lu >= 0.0f && (float)k > z_substrate_lu + z_offset_lu) return;
+
     float vx = velocity_x[idx];
     float vy = velocity_y[idx];
     float vz = velocity_z[idx];
@@ -2202,7 +2240,9 @@ void VOFSolver::applyMassCorrectionInline(const float* d_vx,
     computeFluxWeightSumKernel<<<gridSize, blockSize, blockSize * sizeof(float)>>>(
         d_fill_level_, d_vx, d_vy, d_vz, sign_dm, dx_,
         nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i,
-        d_mass_partial_sums_, num_cells_);
+        d_mass_partial_sums_, num_cells_,
+        mass_correction_laser_x_lu_, mass_correction_trailing_margin_lu_,
+        mass_correction_z_substrate_lu_, mass_correction_z_offset_lu_);
     CUDA_CHECK_KERNEL();
 
     std::vector<float> h_partial(gridSize);
@@ -2220,16 +2260,19 @@ void VOFSolver::applyMassCorrectionInline(const float* d_vx,
         float delta_per_W = static_cast<float>(static_cast<double>(damped_dm) / W_dbl);
         applyFluxWeightedMassCorrectionKernel<<<gridSize, blockSize>>>(
             d_fill_level_, d_vx, d_vy, d_vz, sign_dm, delta_per_W,
-            dx_, nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i, num_cells_);
+            dx_, nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i, num_cells_,
+            mass_correction_laser_x_lu_, mass_correction_trailing_margin_lu_,
+            mass_correction_z_substrate_lu_, mass_correction_z_offset_lu_);
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
 
         if (mass_correction_call_count_ % 500 == 0) {
             float mass_after = computeTotalMass();
-            printf("[VOF MASS CORRECTION B1-flux] ΔM=%.3e (%.4f%%), W=%.3e, "
-                   "applied=%.3e (damp=%.2f)\n",
+            printf("[VOF MASS CORRECTION C-flux] ΔM=%.3e (%.4f%%), W=%.3e, "
+                   "applied=%.3e (damp=%.2f, laser_x=%.1f, z_sub=%.1f)\n",
                    delta_m, mass_error_fraction * 100.0f,
-                   W_dbl, mass_after - mass_current, mass_correction_damping_);
+                   W_dbl, mass_after - mass_current, mass_correction_damping_,
+                   mass_correction_laser_x_lu_, mass_correction_z_substrate_lu_);
         }
         mass_correction_call_count_++;
         return;
@@ -2269,6 +2312,95 @@ void VOFSolver::applyMassCorrectionInline(const float* d_vx,
         }
     }
     mass_correction_call_count_++;
+}
+
+// ============================================================================
+// Track-C public entry point — exercises gates with caller-supplied params.
+// Designed so unit tests can drive the Track-C kernels with synthetic fields
+// and arbitrary gate values, without going through advectFillLevel().
+// ============================================================================
+void VOFSolver::enforceMassConservationFlux(
+    float target_mass,
+    const float* d_vx, const float* d_vy, const float* d_vz,
+    float laser_x_lu, float trailing_margin_lu,
+    float z_substrate_lu, float z_offset_lu)
+{
+    if (d_vx == nullptr || d_vy == nullptr || d_vz == nullptr) return;
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float mass_current = computeTotalMass();
+    float delta_m = target_mass - mass_current;
+    if (fabsf(delta_m) <= 1e-6f) return;
+
+    int blockSize = 256;
+    int gridSize  = (num_cells_ + blockSize - 1) / blockSize;
+
+    if (d_mass_partial_sums_size_ < gridSize) {
+        if (d_mass_partial_sums_) cudaFree(d_mass_partial_sums_);
+        CUDA_CHECK(cudaMalloc(&d_mass_partial_sums_, gridSize * sizeof(float)));
+        d_mass_partial_sums_size_ = gridSize;
+    }
+
+    float sign_dm  = (delta_m >= 0.0f) ? 1.0f : -1.0f;
+    int bc_x_i = static_cast<int>(bc_x_);
+    int bc_y_i = static_cast<int>(bc_y_);
+    int bc_z_i = static_cast<int>(bc_z_);
+
+    computeFluxWeightSumKernel<<<gridSize, blockSize, blockSize * sizeof(float)>>>(
+        d_fill_level_, d_vx, d_vy, d_vz, sign_dm, dx_,
+        nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i,
+        d_mass_partial_sums_, num_cells_,
+        laser_x_lu, trailing_margin_lu, z_substrate_lu, z_offset_lu);
+    CUDA_CHECK_KERNEL();
+
+    std::vector<float> h_partial(gridSize);
+    CUDA_CHECK(cudaMemcpy(h_partial.data(), d_mass_partial_sums_,
+                          gridSize * sizeof(float), cudaMemcpyDeviceToHost));
+    double W_dbl = 0.0, kc = 0.0;
+    for (float p : h_partial) {
+        double y = static_cast<double>(p) - kc;
+        double t = W_dbl + y;
+        kc = (t - W_dbl) - y;
+        W_dbl = t;
+    }
+
+    if (W_dbl > 1e-12) {
+        float delta_per_W = static_cast<float>(static_cast<double>(delta_m) / W_dbl);
+        applyFluxWeightedMassCorrectionKernel<<<gridSize, blockSize>>>(
+            d_fill_level_, d_vx, d_vy, d_vz, sign_dm, delta_per_W,
+            dx_, nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i, num_cells_,
+            laser_x_lu, trailing_margin_lu, z_substrate_lu, z_offset_lu);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+        return;
+    }
+
+    // Fallback: uniform additive over all interface cells (gates don't apply here —
+    // this is the safety net for the degenerate case W=0, not a physics path).
+    if (d_interface_partial_counts_size_ < gridSize) {
+        if (d_interface_partial_counts_) cudaFree(d_interface_partial_counts_);
+        CUDA_CHECK(cudaMalloc(&d_interface_partial_counts_, gridSize * sizeof(int)));
+        d_interface_partial_counts_size_ = gridSize;
+    }
+    countInterfaceCellsKernel<<<gridSize, blockSize>>>(
+        d_fill_level_, d_interface_partial_counts_, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    std::vector<int> h_counts(gridSize);
+    CUDA_CHECK(cudaMemcpy(h_counts.data(), d_interface_partial_counts_,
+                          gridSize * sizeof(int), cudaMemcpyDeviceToHost));
+    long long n_int = 0;
+    for (int c : h_counts) n_int += c;
+    if (n_int > 0) {
+        dim3 mc_block(8, 8, 8);
+        dim3 mc_grid((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
+        applyMassCorrectionKernel<<<mc_grid, mc_block>>>(
+            d_fill_level_, delta_m, nx_, ny_, nz_,
+            static_cast<int>(n_int), 1.0f);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
 }
 
 void VOFSolver::enforceGlobalMassConservation(float target_mass,

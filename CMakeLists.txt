@@ -180,6 +180,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_linescan_phase2 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_linescan_phase2 lbm_physics lbm_io CUDA::cudart)
 
+    # Mini Phase-2 — fast Track-C iteration (≤2h on RTX 3050)
+    add_executable(sim_linescan_phase2_mini apps/sim_linescan_phase2_mini.cu)
+    set_target_properties(sim_linescan_phase2_mini PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_phase2_mini lbm_physics lbm_io CUDA::cudart)
+
     # Night-protocol Phase-3 (Phase-1 + lower viscosity τ→0.55)
     add_executable(sim_linescan_phase3 apps/sim_linescan_phase3.cu)
     set_target_properties(sim_linescan_phase3 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

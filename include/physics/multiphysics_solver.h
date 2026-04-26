@@ -231,6 +231,10 @@ struct MultiphysicsConfig {
         bool  enable_vof_mass_correction = true; ///< Global VOF mass correction
         bool  vof_mass_correction_use_flux_weight = false; ///< Track-B: w = max(-∇f·v, 0) inline gradient. false → Track-A (legacy v_z weight)
         float vof_mass_correction_damping = 0.7f; ///< Damping factor [0.1-1.0] applied to per-step Δm; lower = softer correction
+        // Track-C geometric gates (active only when use_flux_weight=true)
+        bool  mass_correction_use_track_c        = false;  ///< Enable Track-C gates on top of Track-B weight
+        float mass_correction_trailing_margin_lu = 25.0f;  ///< Gate 1: x-exclusion half-width [lu] (50 μm at dx=2 μm)
+        float mass_correction_z_substrate_lu     = -1.0f;  ///< Gate 2: substrate top index [lu]; <0 = disabled
         float cfl_limit              = 0.5f;    ///< Advisory only -- used in validate() warning, not in actual CFL limiter.
                                                    ///< Actual limiting uses cfl_velocity_target and cfl_force_ramp_factor.
         float cfl_velocity_target    = 0.15f;   ///< Target max lattice velocity
@@ -330,6 +334,9 @@ struct MultiphysicsConfig {
     bool&  enable_vof_mass_correction = numerics.enable_vof_mass_correction;
     bool&  vof_mass_correction_use_flux_weight = numerics.vof_mass_correction_use_flux_weight;
     float& vof_mass_correction_damping = numerics.vof_mass_correction_damping;
+    bool&  mass_correction_use_track_c        = numerics.mass_correction_use_track_c;
+    float& mass_correction_trailing_margin_lu = numerics.mass_correction_trailing_margin_lu;
+    float& mass_correction_z_substrate_lu     = numerics.mass_correction_z_substrate_lu;
     float& cfl_limit                = numerics.cfl_limit;
     float& cfl_velocity_target      = numerics.cfl_velocity_target;
     bool&  cfl_use_gradual_scaling  = numerics.cfl_use_gradual_scaling;
@@ -430,6 +437,9 @@ struct MultiphysicsConfig {
           enable_vof_mass_correction(numerics.enable_vof_mass_correction),
           vof_mass_correction_use_flux_weight(numerics.vof_mass_correction_use_flux_weight),
           vof_mass_correction_damping(numerics.vof_mass_correction_damping),
+          mass_correction_use_track_c(numerics.mass_correction_use_track_c),
+          mass_correction_trailing_margin_lu(numerics.mass_correction_trailing_margin_lu),
+          mass_correction_z_substrate_lu(numerics.mass_correction_z_substrate_lu),
           cfl_limit(numerics.cfl_limit),
           cfl_velocity_target(numerics.cfl_velocity_target),
           cfl_use_gradual_scaling(numerics.cfl_use_gradual_scaling),

@@ -259,6 +259,35 @@ public:
                                        const float* d_vz);
 
     /**
+     * @brief Track-C public entry: Track-B + geometric gate arguments.
+     *
+     * Intended for unit tests that need to exercise the Track-C gates with
+     * synthetic inputs, without going through advectFillLevel().  Production
+     * code uses the member setters (setMassCorrectionLaserX /
+     * setMassCorrectionZSubstrate) and lets advectFillLevel() pick them up.
+     *
+     * @param target_mass  Target Σf to conserve.
+     * @param d_vx/vy/vz   Device velocity arrays [m/s].
+     * @param laser_x_lu   Current laser x in lattice units; negative = gate off.
+     * @param trailing_margin_lu  Exclusion half-width [lu] behind laser front.
+     *                    Cells with i > laser_x_lu - margin are skipped.
+     *                    Typical: 25 lu (= 50 μm at dx=2 μm).
+     * @param z_substrate_lu  Substrate top index [lu]; negative = gate off.
+     * @param z_offset_lu  Allowance above substrate before exclusion [lu].
+     *                    Typical: 2 lu.
+     *
+     * Falls back to uniform additive over interface cells when W ≈ 0.
+     */
+    void enforceMassConservationFlux(float target_mass,
+                                     const float* d_vx,
+                                     const float* d_vy,
+                                     const float* d_vz,
+                                     float laser_x_lu        = -1.0f,
+                                     float trailing_margin_lu = 25.0f,
+                                     float z_substrate_lu    = -1.0f,
+                                     float z_offset_lu       =  2.0f);
+
+    /**
      * @brief Apply evaporation mass loss to fill level
      * @param J_evap Device array of evaporation mass flux [kg/(m^2*s)]
      * @param rho Material density [kg/m^3]
@@ -343,6 +372,43 @@ public:
     }
 
     /**
+     * @brief Track-C Gate 1 setter: update the laser x position used by the
+     *        trailing-band exclusion mask inside the flux-weight kernels.
+     *
+     * Call once per simulation step, BEFORE advectFillLevel(), so the new
+     * position is picked up in applyMassCorrectionInline().
+     *
+     * @param laser_x_lu  Current laser x in lattice units.
+     *                    Pass a negative value to disable Gate 1.
+     * @param margin_lu   Exclusion half-width [lu]; cells with
+     *                    i > laser_x_lu - margin_lu are skipped.
+     *                    Default 25 lu (= 50 μm at dx=2 μm).
+     */
+    void setMassCorrectionLaserX(float laser_x_lu, float margin_lu = 25.0f) {
+        mass_correction_laser_x_lu_       = laser_x_lu;
+        mass_correction_trailing_margin_lu_ = margin_lu;
+    }
+
+    /**
+     * @brief Track-C Gate 2 setter: set substrate top index for the z-floor gate.
+     *
+     * Call once after initialization (the substrate height is fixed for the
+     * duration of a single-layer simulation).
+     *
+     * @param z_substrate_lu  Substrate top cell index in lattice units.
+     *                        Pass a negative value to disable Gate 2.
+     * @param z_offset_lu     Extra cells of allowance above substrate before
+     *                        exclusion fires.  Default 2 lu.
+     */
+    void setMassCorrectionZSubstrate(float z_substrate_lu, float z_offset_lu = 2.0f) {
+        mass_correction_z_substrate_lu_ = z_substrate_lu;
+        mass_correction_z_offset_lu_    = z_offset_lu;
+    }
+
+    float getMassCorrectionLaserX()      const { return mass_correction_laser_x_lu_; }
+    float getMassCorrectionZSubstrate()  const { return mass_correction_z_substrate_lu_; }
+
+    /**
      * @brief Set reference mass for conservation tracking
      * @param mass_ref Reference mass (typically computed at t=0)
      * @note Call this after initialization to establish baseline
@@ -380,7 +446,14 @@ private:
     bool mass_correction_enabled_;         ///< Enable global mass correction (default: false)
     float mass_correction_damping_;        ///< Damping factor for redistribution (default: 0.7)
     float mass_reference_;                 ///< Reference mass for conservation tracking
-    bool mass_correction_use_flux_weight_ = false; ///< Track-B (inline-∇f flux); false = Track-A (v_z)
+    bool mass_correction_use_flux_weight_ = false; ///< Track-B/C (inline-∇f flux); false = Track-A (v_z)
+
+    // Track-C geometric gate parameters (defaults: all gates disabled).
+    // Updated each step by MultiphysicsSolver via setMassCorrectionLaserX().
+    float mass_correction_laser_x_lu_        = -1.0f; ///< Gate 1: laser x [lu]; <0 = off
+    float mass_correction_trailing_margin_lu_ = 25.0f; ///< Gate 1: exclusion half-width [lu]
+    float mass_correction_z_substrate_lu_    = -1.0f; ///< Gate 2: substrate top [lu]; <0 = off
+    float mass_correction_z_offset_lu_       =  2.0f; ///< Gate 2: allowance above substrate [lu]
 
     // Interface compression settings
     bool interface_compression_enabled_ = false;  ///< Enable Olsson-Kreiss compression (default: OFF)
