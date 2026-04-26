@@ -115,6 +115,7 @@ add_cuda_test(test_vof_marangoni unit/vof/test_vof_marangoni.cu)
 add_cuda_test(test_vof_contact_angle unit/vof/test_vof_contact_angle.cu)
 add_cuda_test(test_vof_mass_conservation unit/vof/test_vof_mass_conservation.cu)
 add_cuda_test(test_vof_interface_compression unit/vof/test_vof_interface_compression.cu)
+add_cuda_test(test_vof_mass_correction_weighted unit/vof/test_vof_mass_correction_weighted.cu)
 
 # ============================================================================
 # COMPREHENSIVE VOF TEST SUITE (80% → 95% coverage target)

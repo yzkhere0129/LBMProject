@@ -220,13 +220,28 @@ public:
     float computeTotalMass() const;
 
     /**
-     * @brief Enforce global mass conservation by scaling fill levels
-     * @param target_mass Target total mass to conserve
-     * @note Scales all fill levels uniformly: f_new = f_old * (target_mass / current_mass)
-     * @note Should be called after advection to correct accumulated mass errors
-     * @note Only applies correction if mass error > 0.1% to avoid unnecessary rescaling
+     * @brief Enforce global mass conservation
+     * @param target_mass Target total mass Σf to conserve.
+     * @param d_vz Optional device pointer to vertical velocity field [m/s].
+     *             When non-null, switches to A1 v_z-weighted additive
+     *             correction: redistribute mass deficit preferentially to
+     *             interface cells with upward flow (capillary back-flow zone)
+     *             and away from over-deposited stagnant regions.
+     *             When null (default), falls back to the legacy uniform
+     *             multiplicative scaling for backward compatibility.
+     *
+     * Algorithm A1 (when d_vz != nullptr):
+     *   w_i = max(sign(Δm) * v_z[i], 0)  for interface cells (0<f<1), else 0
+     *   W = Σ w_i
+     *   f_new[i] = clamp(f[i] + (Δm/W) * w_i, 0, 1)
+     *
+     * Falls back to uniform additive correction over interface cells if
+     * W ≈ 0 (no cells with the right flow direction).
+     *
+     * @note Only applies correction if relative mass error > 0.1%.
      */
-    void enforceGlobalMassConservation(float target_mass);
+    void enforceGlobalMassConservation(float target_mass,
+                                       const float* d_vz = nullptr);
 
     /**
      * @brief Apply evaporation mass loss to fill level
@@ -349,6 +364,14 @@ private:
     // Temporary storage for advection
     float* d_fill_level_tmp_;       ///< Temporary fill level for advection
 
+    // Cached scratch buffers (lazy-allocated, reused across calls).
+    // Bug-3 fix (2026-04-26): previously cudaMalloc'd inside computeTotalMass()
+    // and the correction path on every invocation — 3× per advection step.
+    mutable float* d_mass_partial_sums_ = nullptr;
+    mutable int d_mass_partial_sums_size_ = 0;
+    int* d_interface_partial_counts_ = nullptr;
+    int d_interface_partial_counts_size_ = 0;
+
     // ---- PLIC geometric advection buffers (lazy-allocated) ----
     lbm::utils::CudaBuffer<float> plic_nx_;
     lbm::utils::CudaBuffer<float> plic_ny_;
@@ -363,6 +386,16 @@ private:
     void freeMemory();
     void advectFillLevelPLIC(const float* d_ux, const float* d_uy, const float* d_uz, float dt);
     void plicAllocateIfNeeded();
+
+    /// A1 helper: post-advection global-mass correction shared by TVD and
+    /// PLIC paths. Uses v_z-weighted additive redistribution when d_vz is
+    /// non-null and there are interface cells with the right flow direction;
+    /// otherwise falls back to uniform additive redistribution over interface
+    /// cells. Mass deficit is computed against mass_reference_ (initialised
+    /// to current_mass on first call). Emits diagnostic output every 500 calls.
+    void applyMassCorrectionInline(const float* d_vz);
+
+    int mass_correction_call_count_ = 0;
 };
 
 // CUDA kernels for VOF solver
