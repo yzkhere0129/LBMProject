@@ -994,8 +994,13 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
         // Enable mass conservation correction to prevent 90% mass loss
         // This redistributes numerical mass loss back to interface cells
         if (config_.enable_vof_mass_correction) {
-            vof_->setMassConservationCorrection(true, 0.7f);  // damping=0.7 (moderate)
-            std::cout << "  VOF mass correction: ENABLED (damping=0.7)" << std::endl;
+            vof_->setMassConservationCorrection(true, config_.vof_mass_correction_damping);
+            vof_->setMassCorrectionUseFluxWeight(config_.vof_mass_correction_use_flux_weight);
+            std::cout << "  VOF mass correction: ENABLED (damping="
+                      << config_.vof_mass_correction_damping
+                      << ", track="
+                      << (config_.vof_mass_correction_use_flux_weight ? "B-flux" : "A-vz")
+                      << ")" << std::endl;
         }
     }
 

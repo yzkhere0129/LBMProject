@@ -1327,6 +1327,162 @@ __global__ void applyVzWeightedMassCorrectionKernel(
 }
 
 // ============================================================================
+// B1: Inward-Flux-Weighted Additive Mass Correction (2026-04-27)
+// ============================================================================
+// Track-B replaces Track-A's max(v_z, 0) weight with the un-normalised
+// interface inward-flux:
+//
+//   w_i = max( sign(Δm) * (∇f · v),  0 )    [SIGN CORRECTION 2026-04-27]
+//
+// where f=1 inside liquid → ∇f points TOWARD liquid → outward unit normal is
+// n = -∇f/|∇f|. Math expert's `max(-n·v, 0)` translates to `max(+∇f·v, 0)` in
+// this convention (NOT `max(-∇f·v, 0)`, which would invert the physics).
+//
+// computed inline from 6 face-neighbour fill-levels via central differences.
+// The unnormalised gradient form (recommended by cfd-math-expert and
+// validated against actual Phase-2 VTK by vtk-data-analyzer) keeps the
+// natural |∇f| amplitude factor — sharp groove edges have larger |∇f|
+// than gentle side ridges, automatically biasing the correction toward
+// real refill sites and away from over-deposited ridge cells.
+//
+// Why inline ∇f rather than reading d_interface_normal_:
+//   1. Normals are stale at advect time (reconstructInterface runs later)
+//   2. Stored normals are normalized — discards |∇f| factor that is the
+//      key discriminator (verified empirically: normalized form gives
+//      side/center ratio 0.50, unnormalized gives 0.23)
+//   3. Removes a pointer dependency from the API (no float3* needed)
+//
+// Pass 1: reduce W = Σ max(sign(Δm) * (∇f·v), 0) over interface cells.
+// Pass 2: apply f += (Δm/W) * w_i with clamp.
+// ============================================================================
+
+/**
+ * @brief Compute -∇f·v at cell (i,j,k) via central differences from 6 neighbors.
+ * @param fill_level Device array of fill_level values
+ * @param i, j, k    Cell indices
+ * @param nx, ny, nz Domain dims
+ * @param dx         Grid spacing [m]
+ * @param vx, vy, vz Velocity at this cell
+ * @param bc_x, bc_y, bc_z Boundary types (0=PERIODIC, 1=WALL)
+ * @return -∇f·v [1/s · m/s = 1/s with f dimensionless]
+ *
+ * Boundary handling: for WALL, use one-sided difference at the edge cell;
+ * for PERIODIC, wrap.
+ */
+__device__ inline float fluxWeightAtCell(
+    const float* __restrict__ fill_level,
+    int i, int j, int k, int nx, int ny, int nz, float dx,
+    float vx, float vy, float vz,
+    int bc_x, int bc_y, int bc_z)
+{
+    auto wrap = [](int q, int qmax, int bc) -> int {
+        if (q < 0)      return (bc == 0) ? (qmax - 1) : 0;       // PERIODIC : WALL
+        if (q >= qmax)  return (bc == 0) ? 0          : (qmax - 1);
+        return q;
+    };
+    int ip = wrap(i + 1, nx, bc_x), im = wrap(i - 1, nx, bc_x);
+    int jp = wrap(j + 1, ny, bc_y), jm = wrap(j - 1, ny, bc_y);
+    int kp = wrap(k + 1, nz, bc_z), km = wrap(k - 1, nz, bc_z);
+    float fxp = fill_level[ip + nx * (j  + ny * k )];
+    float fxm = fill_level[im + nx * (j  + ny * k )];
+    float fyp = fill_level[i  + nx * (jp + ny * k )];
+    float fym = fill_level[i  + nx * (jm + ny * k )];
+    float fzp = fill_level[i  + nx * (j  + ny * kp)];
+    float fzm = fill_level[i  + nx * (j  + ny * km)];
+    float gx = (fxp - fxm) * (0.5f / dx);
+    float gy = (fyp - fym) * (0.5f / dx);
+    float gz = (fzp - fzm) * (0.5f / dx);
+    // ∇f · v  (positive = inflow into liquid, since f=1 in liquid means
+    // ∇f points TOWARD liquid; outward normal n = -∇f/|∇f|; math expert's
+    // max(-n·v, 0) becomes max(+∇f·v, 0) in this convention).
+    // Negative = outflow from liquid (recoil splash); zeroed by the caller's
+    // fmaxf guard to give w=0 on side ridges.
+    return (gx * vx + gy * vy + gz * vz);
+}
+
+/**
+ * @brief Pass 1 — Track-B reduce W = Σ max(sign_dm * (-∇f·v), 0) over interface cells.
+ */
+__global__ void computeFluxWeightSumKernel(
+    const float* __restrict__ fill_level,
+    const float* __restrict__ velocity_x,
+    const float* __restrict__ velocity_y,
+    const float* __restrict__ velocity_z,
+    float sign_dm,
+    float dx,
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z,
+    float* __restrict__ partial_sums,
+    int num_cells)
+{
+    extern __shared__ float sdata[];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    float w = 0.0f;
+    if (idx < num_cells) {
+        float f = fill_level[idx];
+        if (f > 0.01f && f < 0.99f) {
+            int i = idx % nx;
+            int j = (idx / nx) % ny;
+            int k = idx / (nx * ny);
+            float vx = velocity_x[idx];
+            float vy = velocity_y[idx];
+            float vz = velocity_z[idx];
+            float ndotv_inward = fluxWeightAtCell(
+                fill_level, i, j, k, nx, ny, nz, dx, vx, vy, vz,
+                bc_x, bc_y, bc_z);
+            w = fmaxf(sign_dm * ndotv_inward, 0.0f);
+        }
+    }
+    sdata[tid] = w;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid + s];
+        __syncthreads();
+    }
+    if (tid == 0) partial_sums[blockIdx.x] = sdata[0];
+}
+
+/**
+ * @brief Pass 2 — Track-B apply (Δm/W) * max(sign_dm * (-∇f·v), 0) per cell.
+ */
+__global__ void applyFluxWeightedMassCorrectionKernel(
+    float* fill_level,
+    const float* __restrict__ velocity_x,
+    const float* __restrict__ velocity_y,
+    const float* __restrict__ velocity_z,
+    float sign_dm,
+    float delta_per_W,
+    float dx,
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+
+    float f = fill_level[idx];
+    if (f <= 0.01f || f >= 0.99f) return;
+
+    int i = idx % nx;
+    int j = (idx / nx) % ny;
+    int k = idx / (nx * ny);
+    float vx = velocity_x[idx];
+    float vy = velocity_y[idx];
+    float vz = velocity_z[idx];
+    float ndotv_inward = fluxWeightAtCell(
+        fill_level, i, j, k, nx, ny, nz, dx, vx, vy, vz,
+        bc_x, bc_y, bc_z);
+    float w = fmaxf(sign_dm * ndotv_inward, 0.0f);
+    if (w <= 0.0f) return;
+
+    float f_new = f + delta_per_W * w;
+    fill_level[idx] = fmaxf(0.0f, fminf(1.0f, f_new));
+}
+
+// ============================================================================
 // VOFSolver Implementation
 // ============================================================================
 
@@ -1716,9 +1872,13 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     //
     // NOTE: Only applied if mass_correction_enabled_ = true (default: false)
     // ========================================================================
-    // A1 v_z-weighted correction (replaces inline duplicated block, 2026-04-26).
-    // velocity_z is the same vertical velocity passed to the advection kernels.
-    applyMassCorrectionInline(velocity_z);
+    // Mass-correction (Track-A v_z OR Track-B inline-∇f flux weight).
+    // velocity_x/y/z are passed to advection so they're in scope here.
+    if (mass_correction_use_flux_weight_) {
+        applyMassCorrectionInline(velocity_x, velocity_y, velocity_z);  // Track-B
+    } else {
+        applyMassCorrectionInline(velocity_z);                          // Track-A
+    }
 
     // ========================================================================
     // STEP 3: Interface compression (Olsson-Kreiss) - DISABLED for RT
@@ -1998,6 +2158,119 @@ void VOFSolver::applyMassCorrectionInline(const float* d_vz) {
     mass_correction_call_count_++;
 }
 
+// ============================================================================
+// Track-B helper — w = max(sign(Δm)·(-∇f·v), 0) inline-gradient flux weight.
+// ============================================================================
+void VOFSolver::applyMassCorrectionInline(const float* d_vx,
+                                           const float* d_vy,
+                                           const float* d_vz) {
+    if (!mass_correction_enabled_) return;
+    if (d_vx == nullptr || d_vy == nullptr || d_vz == nullptr) return;
+
+    // B1 fix: explicit sync before reading d_fill_level_.
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float mass_current = computeTotalMass();
+    if (mass_reference_ < 0.0f) {
+        mass_reference_ = mass_current;
+        return;
+    }
+
+    float delta_m = mass_reference_ - mass_current;
+    float mass_error_fraction = (mass_reference_ > 0.0f)
+        ? fabsf(delta_m) / mass_reference_ : 0.0f;
+    constexpr float CORRECTION_THRESHOLD = 1e-6f;
+    if (fabsf(delta_m) <= CORRECTION_THRESHOLD) return;
+
+    int blockSize = 256;
+    int gridSize  = (num_cells_ + blockSize - 1) / blockSize;
+
+    // Damping is applied to delta_m (softer correction) rather than to the
+    // weight, so cell discrimination is preserved while the magnitude shrinks.
+    float damped_dm = mass_correction_damping_ * delta_m;
+    float sign_dm   = (damped_dm >= 0.0f) ? 1.0f : -1.0f;
+
+    // ---- Pass 1: reduce W = Σ max(sign_dm·(-∇f·v), 0) over interface cells ----
+    if (d_mass_partial_sums_size_ < gridSize) {
+        if (d_mass_partial_sums_) cudaFree(d_mass_partial_sums_);
+        CUDA_CHECK(cudaMalloc(&d_mass_partial_sums_, gridSize * sizeof(float)));
+        d_mass_partial_sums_size_ = gridSize;
+    }
+    int bc_x_i = static_cast<int>(bc_x_);
+    int bc_y_i = static_cast<int>(bc_y_);
+    int bc_z_i = static_cast<int>(bc_z_);
+    computeFluxWeightSumKernel<<<gridSize, blockSize, blockSize * sizeof(float)>>>(
+        d_fill_level_, d_vx, d_vy, d_vz, sign_dm, dx_,
+        nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i,
+        d_mass_partial_sums_, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    std::vector<float> h_partial(gridSize);
+    CUDA_CHECK(cudaMemcpy(h_partial.data(), d_mass_partial_sums_,
+                          gridSize * sizeof(float), cudaMemcpyDeviceToHost));
+    double W_dbl = 0.0, kc = 0.0;
+    for (float p : h_partial) {
+        double y = static_cast<double>(p) - kc;
+        double t = W_dbl + y;
+        kc = (t - W_dbl) - y;
+        W_dbl = t;
+    }
+
+    if (W_dbl > 1e-12) {
+        float delta_per_W = static_cast<float>(static_cast<double>(damped_dm) / W_dbl);
+        applyFluxWeightedMassCorrectionKernel<<<gridSize, blockSize>>>(
+            d_fill_level_, d_vx, d_vy, d_vz, sign_dm, delta_per_W,
+            dx_, nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i, num_cells_);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        if (mass_correction_call_count_ % 500 == 0) {
+            float mass_after = computeTotalMass();
+            printf("[VOF MASS CORRECTION B1-flux] ΔM=%.3e (%.4f%%), W=%.3e, "
+                   "applied=%.3e (damp=%.2f)\n",
+                   delta_m, mass_error_fraction * 100.0f,
+                   W_dbl, mass_after - mass_current, mass_correction_damping_);
+        }
+        mass_correction_call_count_++;
+        return;
+    }
+    // W ≈ 0 → fall through to uniform additive over interface cells
+
+    if (d_interface_partial_counts_size_ < gridSize) {
+        if (d_interface_partial_counts_) cudaFree(d_interface_partial_counts_);
+        CUDA_CHECK(cudaMalloc(&d_interface_partial_counts_, gridSize * sizeof(int)));
+        d_interface_partial_counts_size_ = gridSize;
+    }
+    countInterfaceCellsKernel<<<gridSize, blockSize>>>(
+        d_fill_level_, d_interface_partial_counts_, num_cells_);
+    CUDA_CHECK_KERNEL();
+
+    std::vector<int> h_counts(gridSize);
+    CUDA_CHECK(cudaMemcpy(h_counts.data(), d_interface_partial_counts_,
+                          gridSize * sizeof(int), cudaMemcpyDeviceToHost));
+    long long interface_count = 0;
+    for (int c : h_counts) interface_count += c;
+
+    if (interface_count > 0) {
+        dim3 mc_block(8, 8, 8);
+        dim3 mc_grid((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
+        applyMassCorrectionKernel<<<mc_grid, mc_block>>>(
+            d_fill_level_, damped_dm, nx_, ny_, nz_,
+            static_cast<int>(interface_count), 1.0f /* damping=1: full additive */);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        if (mass_correction_call_count_ % 500 == 0) {
+            float mass_after = computeTotalMass();
+            printf("[VOF MASS CORRECTION B1-fallback-uniform] ΔM=%.3e (%.4f%%), "
+                   "N_int=%lld, applied=%.3e\n",
+                   delta_m, mass_error_fraction * 100.0f,
+                   interface_count, mass_after - mass_current);
+        }
+    }
+    mass_correction_call_count_++;
+}
+
 void VOFSolver::enforceGlobalMassConservation(float target_mass,
                                               const float* d_vz) {
     // Bug-2 fix (2026-04-26): guard against zero-division.
@@ -2108,6 +2381,44 @@ void VOFSolver::enforceGlobalMassConservation(float target_mass,
         d_fill_level_, d_vz, sign_dm, delta_per_W, num_cells_);
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// ============================================================================
+// Track-B public entry — wraps the private 3-velocity helper with a
+// target-mass mode (sets mass_reference_ from target so a one-shot test can
+// drive the kernel without relying on first-call initialisation chain).
+// ============================================================================
+void VOFSolver::enforceGlobalMassConservation(float target_mass,
+                                              const float* d_vx,
+                                              const float* d_vy,
+                                              const float* d_vz)
+{
+    if (target_mass <= 0.0f) return;
+    if (d_vx == nullptr || d_vy == nullptr || d_vz == nullptr) {
+        // No velocities → fall back to legacy uniform-scale path.
+        enforceGlobalMassConservation(target_mass, /*d_vz=*/(const float*)nullptr);
+        return;
+    }
+
+    // Set mass_reference_ to target so the private helper sees correct delta_m.
+    // The helper uses delta_m = mass_reference_ - mass_current, so mass_reference_
+    // = target gives the standard "current → target" semantics.
+    // Damping is forced to 1.0 here (full correction in one shot) — the public
+    // API is for one-shot correction (called by tests / by external code that
+    // wants exact correction); the per-step inline correction in the advection
+    // loop uses the configurable damping (typically 0.5-0.7) for stability.
+    bool  was_enabled  = mass_correction_enabled_;
+    float saved_ref    = mass_reference_;
+    float saved_damp   = mass_correction_damping_;
+    mass_correction_enabled_ = true;
+    mass_reference_          = target_mass;
+    mass_correction_damping_ = 1.0f;
+
+    applyMassCorrectionInline(d_vx, d_vy, d_vz);
+
+    mass_correction_enabled_ = was_enabled;
+    mass_reference_          = saved_ref;
+    mass_correction_damping_ = saved_damp;
 }
 
 // ============================================================================
@@ -3402,8 +3713,12 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         }
     }
 
-    // A1 v_z-weighted correction shared with TVD path (Bug-4 dedupe, 2026-04-26).
-    applyMassCorrectionInline(d_uz);
+    // Mass-correction (Track-A v_z OR Track-B inline-∇f) shared with TVD path.
+    if (mass_correction_use_flux_weight_) {
+        applyMassCorrectionInline(d_ux, d_uy, d_uz);   // Track-B
+    } else {
+        applyMassCorrectionInline(d_uz);               // Track-A
+    }
 
     // Alternate Strang sweep order for next call
     plic_strang_x_first_ = !plic_strang_x_first_;

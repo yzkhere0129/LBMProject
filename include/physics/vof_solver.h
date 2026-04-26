@@ -244,6 +244,21 @@ public:
                                        const float* d_vz = nullptr);
 
     /**
+     * @brief Track-B public entry: w = max(sign(Δm)·(-∇f·v), 0).
+     * @param target_mass Target Σf to conserve.
+     * @param d_vx, d_vy, d_vz Device velocity ptrs [m/s].
+     *
+     * Computes the inward-flux weight inline from 6-neighbour fill_level
+     * gradients. Falls back to uniform additive over interface cells if W ≈ 0.
+     * Used by unit tests that need to drive the Track-B kernels with synthetic
+     * fields (matching Track-A's 2-arg testing pattern).
+     */
+    void enforceGlobalMassConservation(float target_mass,
+                                       const float* d_vx,
+                                       const float* d_vy,
+                                       const float* d_vz);
+
+    /**
      * @brief Apply evaporation mass loss to fill level
      * @param J_evap Device array of evaporation mass flux [kg/(m^2*s)]
      * @param rho Material density [kg/m^3]
@@ -313,6 +328,21 @@ public:
     }
 
     /**
+     * @brief Toggle Track-B (inline-∇f flux weight) on the mass-correction helper.
+     * @param use true → w = max(-∇f·v, 0) using inline central-diff gradient
+     *            false → w = max(v_z, 0) Track-A (default, legacy)
+     * @note When enabled, the TVD and PLIC advection paths call the new
+     *       applyMassCorrectionInline(vx,vy,vz) overload instead of the
+     *       single-vz one. Both forms guard on mass_correction_enabled_.
+     */
+    void setMassCorrectionUseFluxWeight(bool use) {
+        mass_correction_use_flux_weight_ = use;
+    }
+    bool getMassCorrectionUseFluxWeight() const {
+        return mass_correction_use_flux_weight_;
+    }
+
+    /**
      * @brief Set reference mass for conservation tracking
      * @param mass_ref Reference mass (typically computed at t=0)
      * @note Call this after initialization to establish baseline
@@ -350,6 +380,7 @@ private:
     bool mass_correction_enabled_;         ///< Enable global mass correction (default: false)
     float mass_correction_damping_;        ///< Damping factor for redistribution (default: 0.7)
     float mass_reference_;                 ///< Reference mass for conservation tracking
+    bool mass_correction_use_flux_weight_ = false; ///< Track-B (inline-∇f flux); false = Track-A (v_z)
 
     // Interface compression settings
     bool interface_compression_enabled_ = false;  ///< Enable Olsson-Kreiss compression (default: OFF)
@@ -393,13 +424,18 @@ private:
     void advectFillLevelPLIC(const float* d_ux, const float* d_uy, const float* d_uz, float dt);
     void plicAllocateIfNeeded();
 
-    /// A1 helper: post-advection global-mass correction shared by TVD and
-    /// PLIC paths. Uses v_z-weighted additive redistribution when d_vz is
-    /// non-null and there are interface cells with the right flow direction;
-    /// otherwise falls back to uniform additive redistribution over interface
-    /// cells. Mass deficit is computed against mass_reference_ (initialised
-    /// to current_mass on first call). Emits diagnostic output every 500 calls.
+    /// A1 (Track-A) helper: post-advection global-mass correction with
+    /// w = max(sign(Δm)·v_z, 0) weight. Single-velocity, fast.
     void applyMassCorrectionInline(const float* d_vz);
+
+    /// B1 (Track-B) helper: post-advection global-mass correction with
+    /// w = max(sign(Δm)·(-∇f·v), 0) weight. ∇f is computed inline via
+    /// central differences from 6 neighbour fill_levels — no normal field
+    /// needed. Better at distinguishing capillary back-fill (toward groove)
+    /// from recoil-driven outward jet (away from liquid surface).
+    /// Falls back to uniform-additive when W ≈ 0.
+    void applyMassCorrectionInline(const float* d_vx, const float* d_vy,
+                                    const float* d_vz);
 
     int mass_correction_call_count_ = 0;
 };
