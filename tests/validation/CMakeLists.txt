@@ -1143,6 +1143,42 @@ set_tests_properties(TRTCouettePoiseuilleFlow PROPERTIES
     LABELS "validation;fluid;couette_poiseuille;trt;analytical;critical"
 )
 
+# Test 6b: TRT-degenerate (ω⁻ = ω⁺) ≡ BGK anchor test
+add_executable(test_trt_degenerate_to_bgk
+    test_trt_degenerate_to_bgk.cu
+)
+
+set_target_properties(test_trt_degenerate_to_bgk PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES "86"
+)
+
+target_include_directories(test_trt_degenerate_to_bgk PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_trt_degenerate_to_bgk
+    lbm_physics
+    lbm_core
+    lbm_io
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME TRTDegenerateToBGK
+    COMMAND test_trt_degenerate_to_bgk
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(TRTDegenerateToBGK PROPERTIES
+    TIMEOUT 60
+    LABELS "validation;fluid;trt;bgk;anchor;critical"
+)
+
 # ========================================
 # VOF VALIDATION TESTS
 # ========================================
