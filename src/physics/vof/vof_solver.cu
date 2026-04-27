@@ -1599,6 +1599,18 @@ void VOFSolver::freeMemory() {
         d_interface_partial_counts_ = nullptr;
         d_interface_partial_counts_size_ = 0;
     }
+    // F3-02 fix (audit pass 3, 2026-04-27): free hoisted PLIC/TVD reduction
+    // buffers (formerly function-local statics — see header).
+    if (d_block_max_advect_) {
+        cudaFree(d_block_max_advect_);
+        d_block_max_advect_ = nullptr;
+        d_block_max_advect_size_ = 0;
+    }
+    if (d_block_max_advectTVD_) {
+        cudaFree(d_block_max_advectTVD_);
+        d_block_max_advectTVD_ = nullptr;
+        d_block_max_advectTVD_size_ = 0;
+    }
 }
 
 void VOFSolver::initialize(const float* fill_level) {
@@ -1687,13 +1699,13 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
         const int rt = 256;
         const int rb = (num_cells_ + rt - 1) / rt;
 
-        static float* d_block_max = nullptr;
-        static int d_block_max_size = 0;
-        if (d_block_max_size < rb) {
-            if (d_block_max) cudaFree(d_block_max);
-            CUDA_CHECK(cudaMalloc(&d_block_max, rb * sizeof(float)));
-            d_block_max_size = rb;
+        // F3-02 fix: use class member instead of function-local static
+        if (d_block_max_advect_size_ < rb) {
+            if (d_block_max_advect_) cudaFree(d_block_max_advect_);
+            CUDA_CHECK(cudaMalloc(&d_block_max_advect_, rb * sizeof(float)));
+            d_block_max_advect_size_ = rb;
         }
+        float* d_block_max = d_block_max_advect_;  // Local alias for kernel call
 
         maxVelocityMagnitudeKernel<<<rb, rt, rt * sizeof(float)>>>(
             velocity_x, velocity_y, velocity_z, d_block_max, num_cells_);
@@ -1741,14 +1753,14 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     const int reduction_threads = 256;
     const int reduction_blocks = (num_cells_ + reduction_threads - 1) / reduction_threads;
 
-    // Lazy-allocate reduction buffer (persists across calls)
-    static float* d_block_max = nullptr;
-    static int d_block_max_size = 0;
-    if (d_block_max_size < reduction_blocks) {
-        if (d_block_max) cudaFree(d_block_max);
-        CUDA_CHECK(cudaMalloc(&d_block_max, reduction_blocks * sizeof(float)));
-        d_block_max_size = reduction_blocks;
+    // F3-02 fix: class member instead of function-local static (was causing
+    // dangling GPU pointer on second VOFSolver construction)
+    if (d_block_max_advectTVD_size_ < reduction_blocks) {
+        if (d_block_max_advectTVD_) cudaFree(d_block_max_advectTVD_);
+        CUDA_CHECK(cudaMalloc(&d_block_max_advectTVD_, reduction_blocks * sizeof(float)));
+        d_block_max_advectTVD_size_ = reduction_blocks;
     }
+    float* d_block_max = d_block_max_advectTVD_;  // Local alias for kernel call
 
     maxVelocityMagnitudeKernel<<<reduction_blocks, reduction_threads,
                                   reduction_threads * sizeof(float)>>>(
