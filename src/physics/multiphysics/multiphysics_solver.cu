@@ -2800,10 +2800,13 @@ float MultiphysicsSolver::getMaxMetalVelocity() const {
     int num_cells = config_.nx * config_.ny * config_.nz;
 
     std::vector<float> h_vx(num_cells), h_vy(num_cells), h_vz(num_cells), h_f(num_cells);
-    cudaMemcpy(h_vx.data(), fluid_->getVelocityX(), num_cells*sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_vy.data(), fluid_->getVelocityY(), num_cells*sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_vz.data(), fluid_->getVelocityZ(), num_cells*sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_f.data(), vof_->getFillLevel(), num_cells*sizeof(float), cudaMemcpyDeviceToHost);
+    // F-08 (code-audit pass 1): wrap with CUDA_CHECK so silent device-side
+    // failures (OOM, invalid pointer) surface immediately instead of
+    // returning zero-initialized buffers and producing v_max = 0 m/s.
+    CUDA_CHECK(cudaMemcpy(h_vx.data(), fluid_->getVelocityX(), num_cells*sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_vy.data(), fluid_->getVelocityY(), num_cells*sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_vz.data(), fluid_->getVelocityZ(), num_cells*sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_f.data(), vof_->getFillLevel(), num_cells*sizeof(float), cudaMemcpyDeviceToHost));
 
     float max_v = 0;
     for (int i = 0; i < num_cells; i++) {
@@ -2823,8 +2826,10 @@ float MultiphysicsSolver::getMaxTemperature() const {
 
     int num_cells = config_.nx * config_.ny * config_.nz;
     std::vector<float> h_temp(num_cells);
-    cudaMemcpy(h_temp.data(), d_temp, num_cells * sizeof(float),
-              cudaMemcpyDeviceToHost);
+    // F-08 (code-audit pass 1): same as getMaxMetalVelocity — surface CUDA
+    // errors instead of silently returning 0 K.
+    CUDA_CHECK(cudaMemcpy(h_temp.data(), d_temp, num_cells * sizeof(float),
+                          cudaMemcpyDeviceToHost));
 
     return *std::max_element(h_temp.begin(), h_temp.end());
 }
