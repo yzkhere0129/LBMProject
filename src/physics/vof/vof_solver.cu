@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 #include <cmath>
 #include <algorithm>
+#include <iostream>
 #include <stdexcept>
 #include <vector>
 
@@ -1644,6 +1645,26 @@ void VOFSolver::initializeDroplet(float center_x, float center_y,
 void VOFSolver::setInterfaceCompression(bool enabled, float coefficient) {
     interface_compression_enabled_ = enabled;
     C_compress_coeff_ = coefficient;
+
+    // F-13 (code-audit pass 1, 2026-04-27): warn callers that
+    // applyInterfaceCompressionKernel uses periodic-only neighbor indexing
+    // (i_m = (i>0)?i-1:nx-1, etc.). Enabling on non-periodic BCs reads
+    // wrong data at boundary cells — wraps to opposite face instead of
+    // respecting WALL/SYMMETRY. Currently no production caller enables
+    // compression (only Zalesak/RT tests, which are periodic), so the bug
+    // is dormant. If production ever enables this with WALL BCs, the kernel
+    // must be rewritten to take bc_x_/bc_y_/bc_z_ as parameters.
+    if (enabled && (bc_x_ != BoundaryType::PERIODIC ||
+                    bc_y_ != BoundaryType::PERIODIC ||
+                    bc_z_ != BoundaryType::PERIODIC)) {
+        std::cerr << "[VOFSolver WARNING] interface compression enabled with "
+                  << "non-periodic BC (bc_x=" << static_cast<int>(bc_x_)
+                  << ", bc_y=" << static_cast<int>(bc_y_)
+                  << ", bc_z=" << static_cast<int>(bc_z_) << "). "
+                  << "applyInterfaceCompressionKernel uses periodic-only "
+                  << "indexing — boundary cells will read wrong data. "
+                  << "Disable compression or use periodic BCs.\n";
+    }
 }
 
 void VOFSolver::advectFillLevel(const float* velocity_x,
