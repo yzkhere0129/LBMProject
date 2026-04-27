@@ -244,6 +244,16 @@ int main() {
     // If trailing-zone mass deficit comes from -1.84%/400μs numerical leakage,
     // enabling this should bring back the missing metal.
     config.enable_vof_mass_correction  = true;
+    // ----- Track-C (B1 flux + x-mask + z-floor) — replaces broken Track-A -----
+    // Track-A (max(v_z,0)) verified to fail: side ridges grew to +28μm (over the
+    // +15μm reject line) and rolling melt pool reversed direction. Track-C
+    // mini-Phase-2 (iter-1 t=400μs) restored correct rolling +0.40 m/s and
+    // brought ridges to +10μm, centerline to -8μm — strong improvement.
+    config.vof_mass_correction_use_flux_weight = true;
+    config.vof_mass_correction_damping = 0.7f;
+    config.mass_correction_use_track_c = true;
+    config.mass_correction_trailing_margin_lu = 25.0f;   // 50 μm past laser
+    config.mass_correction_z_substrate_lu     = 80.0f;   // matches interface_z=80
 
     // --- Timing: Phase-1 SHORT test (Night Protocol) ---
     // 800 μs = 10000 steps. VTK every 100 μs (8 frames + initial).

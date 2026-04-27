@@ -117,7 +117,7 @@ int main() {
     // MINI (2026-04-27): nx 650→500 (1000μm; scan 500→820μm + 180μm buffer),
     // ny 125→64, nz 100 kept. Total 8.13M → 3.20M cells (~2.5× smaller).
     config.nx = 500;
-    config.ny = 64;
+    config.ny = 80;     // Iter-2: 64→80 (160μm transverse) eliminates y-wall artifact
     config.nz = 100;
     config.dx = 2.0e-6f;
     config.dt = 8.0e-8f;
@@ -253,12 +253,18 @@ int main() {
     config.mass_correction_trailing_margin_lu = 25.0f;   // 50 μm past laser
     config.mass_correction_z_substrate_lu     = 80.0f;   // matches interface_z=80
 
-    // --- MINI Timing: 400 μs = 5000 steps. VTK every 25 μs (16 frames + initial). ---
-    // Halved from phase2's 800 μs to fit ≤2h budget. 400 μs is enough to develop
-    // the trailing zone (Phase-1 first measurable centerline at t=400μs).
-    const float t_total  = 400.0e-6f;
+    // --- ITER-2: t=600μs, ny=80 (eliminate y-wall artifact in mini-config) ---
+    // Iter-1 (t=400μs, ny=64) gave clean PASS on centerline (-8μm) and ridges
+    // (+10μm at -100/-200), but max trailing showed +20μm spike at the y-wall
+    // (4 cells at y=120-126, |y-mid|=56-62μm). Widening to ny=80 (160μm) gives
+    // |y-wall|=80μm from centerline (vs Phase-2 full's 125μm), matching the
+    // physical melt-pool width budget.
+    // Running to 600μs captures more trailing-zone development (Phase-1 closes
+    // its centerline trajectory by t=800μs at -14μm; Track-C at t=400μs is -8,
+    // so we expect t=600μs around -5 to -3 if the trajectory continues).
+    const float t_total  = 600.0e-6f;
     const int num_steps  = static_cast<int>(t_total / config.dt);
-    const int vtk_every  = static_cast<int>(25.0e-6f / config.dt);  // 25 μs cadence (4× denser)
+    const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);  // 50 μs cadence (12 frames + initial)
     const int diag_every = 500;
     // Substrate top at z = 160 μm (k=80). LBM domain z∈[0,200]μm:
     // metal [0,160] (80 cells), gas [160,200] (20 cells). Keyhole 80μm深 → 离底
