@@ -106,6 +106,12 @@ public:
      */
     ~VOFSolver();
 
+    // F-04 (code-audit pass 1, 2026-04-27): rule of five — own raw cudaMalloc'd
+    // device pointers, so default copy/assign would shallow-copy them and
+    // double-free at destruction.
+    VOFSolver(const VOFSolver&)            = delete;
+    VOFSolver& operator=(const VOFSolver&) = delete;
+
     /**
      * @brief Initialize fill level field
      * @param fill_level Host array of initial fill level values (size nx*ny*nz)

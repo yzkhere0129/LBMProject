@@ -78,6 +78,12 @@ public:
      */
     ~FluidLBM();
 
+    // F-04 (code-audit pass 1, 2026-04-27): rule of five — own raw cudaMalloc'd
+    // device pointers, so default copy/assign would shallow-copy them and
+    // double-free at destruction. Move semantics deferred until needed.
+    FluidLBM(const FluidLBM&)            = delete;
+    FluidLBM& operator=(const FluidLBM&) = delete;
+
     /**
      * @brief Initialize flow field
      * @param initial_density Uniform initial density
