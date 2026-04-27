@@ -392,7 +392,8 @@ RayTracingLaser::RayTracingLaser(const RayTracingConfig& config,
     : config_(config), nx_(nx), ny_(ny), nz_(nz), dx_(dx),
       d_rays_(config.num_rays),
       d_deposited_(config.num_rays),
-      d_escaped_(config.num_rays)
+      d_escaped_(config.num_rays),
+      d_reduce_result_(1)   // F-16: 1-element scratch, avoids per-call malloc/free
 {
     if (config_.normal_smoothing > 0) {
         d_smoothed_fill_.reset(nx * ny * nz);
@@ -497,9 +498,10 @@ __global__ void reduceSumKernel(const float* input, float* output, int n) {
     }
 }
 
+// F-16: reuses d_reduce_result_ (allocated once in constructor) instead of
+// per-call cudaMalloc/cudaFree.  Method is now non-static.
 float RayTracingLaser::reduceSum(const float* d_array, int n) {
-    float* d_result;
-    CUDA_CHECK(cudaMalloc(&d_result, sizeof(float)));
+    float* d_result = d_reduce_result_.get();
     CUDA_CHECK(cudaMemset(d_result, 0, sizeof(float)));
 
     int blockSize = 256;
@@ -510,7 +512,6 @@ float RayTracingLaser::reduceSum(const float* d_array, int n) {
 
     float result;
     CUDA_CHECK(cudaMemcpy(&result, d_result, sizeof(float), cudaMemcpyDeviceToHost));
-    cudaFree(d_result);
     return result;
 }
 

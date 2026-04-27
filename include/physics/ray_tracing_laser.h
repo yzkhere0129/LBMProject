@@ -127,8 +127,12 @@ private:
     float escaped_power_   = 0.0f;
     float input_power_     = 0.0f;
 
-    /// Sum a device array of n floats (CUB or fallback reduction)
-    static float reduceSum(const float* d_array, int n);
+    // F-16: pre-allocated 1-element reduction scratch — avoids per-call
+    // cudaMalloc/cudaFree (reduceSum is called twice per traceAndDeposit()).
+    lbm::utils::CudaBuffer<float> d_reduce_result_;
+
+    /// Sum a device array of n floats into the pre-allocated d_reduce_result_ buffer.
+    float reduceSum(const float* d_array, int n);
 };
 
 // ============================================================================
