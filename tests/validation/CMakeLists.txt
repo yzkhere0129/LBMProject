@@ -1178,6 +1178,84 @@ set_tests_properties(TRTDegenerateToBGK PROPERTIES
     LABELS "validation;fluid;trt;bgk;anchor;critical"
 )
 
+# Test 6c: TRT ω⁻ arithmetic regression — Poiseuille with production Λ=3/16
+# Closes the gap that the smoke test (6b) cannot cover: with ω⁻=ω⁺ (degenerate)
+# the symmetric and anti-symmetric channels are arithmetically indistinguishable.
+# This test uses τ=0.7, Λ=3/16 giving ω⁺≈1.4286, ω⁻≈0.6957 (clearly asymmetric)
+# and asserts L2 error < 5% against the exact TRT Poiseuille formula.
+add_executable(test_trt_omega_minus_arithmetic
+    test_trt_omega_minus_arithmetic.cu
+)
+
+set_target_properties(test_trt_omega_minus_arithmetic PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+target_include_directories(test_trt_omega_minus_arithmetic PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_trt_omega_minus_arithmetic
+    lbm_physics
+    lbm_core
+    lbm_io
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME TRTOmegaMinusArithmetic
+    COMMAND test_trt_omega_minus_arithmetic
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(TRTOmegaMinusArithmetic PROPERTIES
+    TIMEOUT 120
+    LABELS "validation;fluid;trt;omega_minus;poiseuille;analytical;critical"
+)
+
+# Test 6d: Low-τ collision sweep — TRT and Regularized at τ ∈ {0.51..0.70}
+# Permanent regression guard for Track-A dt/4 operating point (τ≈0.54).
+# Supersedes apps/sanity_trt_low_tau.cu and apps/sanity_reg_low_tau.cu
+# (those apps are kept for ad-hoc CLI runs but are not authoritative tests).
+add_executable(test_low_tau_collision_sweep
+    test_low_tau_collision_sweep.cu
+)
+
+set_target_properties(test_low_tau_collision_sweep PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+target_include_directories(test_low_tau_collision_sweep PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_low_tau_collision_sweep
+    lbm_physics
+    lbm_core
+    lbm_io
+    lbm_diagnostics
+    gtest
+    gtest_main
+    CUDA::cudart
+    CUDA::cuda_driver
+)
+
+add_test(NAME LowTauCollisionSweep
+    COMMAND test_low_tau_collision_sweep
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+set_tests_properties(LowTauCollisionSweep PROPERTIES
+    TIMEOUT 720
+    LABELS "validation;fluid;trt;regularized;low_tau;couette_poiseuille;critical"
+)
+
 # ========================================
 # VOF VALIDATION TESTS
 # ========================================

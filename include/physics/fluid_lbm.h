@@ -471,11 +471,26 @@ public:
     int getNz() const { return nz_; }
 
     /**
+     * @brief Access the active distribution buffer (d_f_src).
+     * @note Returned pointer has SoA layout: f[q * N + idx], N = nx*ny*nz, 19 planes.
+     *       Intended for advanced users implementing custom BCs (e.g., weir inlets,
+     *       free-slip walls, obstacle bounce-back) in external kernels.
+     *       Valid between collision and streaming, and after streaming.
+     */
+    float* getDistributionBuffer() { return d_f_src; }
+
+    /**
      * @brief Get flow parameters
      */
     float getOmega() const { return omega_; }
     void setSmagorinskyCs(float cs) { cs_smag_ = cs; }
     float getSmagorinskyCs() const { return cs_smag_; }
+
+    /// R6 Audit 1: swap EDM force injection for Guo-2002 scheme (τ→0.5 safe).
+    /// When true, collisionBGKwithEDM dispatches to fluidRegularizedCollisionGuoKernel
+    /// (only active when use_regularized_ is also true).
+    void setUseGuoForcing(bool enable) { use_guo_forcing_ = enable; }
+    bool getUseGuoForcing() const { return use_guo_forcing_; }
     float getTau() const { return tau_; }
     float getViscosity() const { return nu_physical_; }
     float getReferenceDensity() const { return rho0_; }
@@ -534,7 +549,7 @@ private:
     float tau_;             ///< BGK relaxation time
     float omega_minus_;     ///< TRT anti-symmetric relaxation (0 = BGK mode)
     bool use_regularized_ = false;  ///< Use Regularized collision instead of TRT
-    bool use_guo_forcing_ = false;  ///< In Regularized path: true→Guo, false→EDM (default)
+    bool use_guo_forcing_ = false;  ///< R6 Audit 1: Guo-2002 forcing in Regularized path; default false=EDM
 
     // Boundary configuration
     BoundaryType boundary_x_;  ///< Boundary type in x-direction
