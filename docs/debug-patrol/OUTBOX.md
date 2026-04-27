@@ -139,3 +139,34 @@ See §7 "Suggested fix" in the audit doc for sketch.
 The two confirmed bugs are *coupling* errors — each individual kernel is
 correct in isolation, but the handoff between them is inconsistent. This
 pattern slips through unit tests because each kernel passes its own.
+
+---
+
+## 🚨 N-1.2 PRODUCTION-IMPACT BUG FIXED
+
+Commit `a210acf` on patrol, cherry-picked as `9195c60` on
+`benchmark/conduction-316L`. Pushed to origin.
+
+### Why this matters NOW for 5060 work
+
+The macro kernel's u_phys mismatch corrupts Marangoni/recoil/Darcy force
+builds in the **mushy zone** every step. Track-C iter-4 result on Phase-2
+(centerline -6μm) was achieved DESPITE this bug. Phase-4 result
+(centerline -4μm at t=2ms) was DESPITE this bug.
+
+After fix, the trailing-zone mass balance gets correct velocity input.
+Predict: another 1-3 μm centerline improvement and possibly clean
+ridge/groove sign (the bug systematically biased trailing flow).
+
+### Decision for 5060 currently running Phase-4-corrected
+
+| 5060 status | Recommendation |
+|---|---|
+| Already mid-run | Let finish; the result is the "buggy + ny=110" baseline; rerun on fixed version for comparison |
+| Not yet started | `git pull && rebuild`; tonight's runs use the fixed kernel |
+| Already finished | Compare output to fixed-rerun |
+
+The fix is one-line in `src/physics/fluid/fluid_lbm.cu` line 2060
+(inv_rho → inv_denom). Build is identical structure; full rebuild needed
+because of inline functions but only ~1 file dirty.
+
