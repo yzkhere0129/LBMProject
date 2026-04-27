@@ -37,7 +37,7 @@ __global__ void enthalpySourceTermKernel(float* g, float* temperature,
                                           const float* liquid_fraction_prev,
                                           const float* fill_level,
                                           MaterialProperties material, int num_cells);
-__global__ void computeTemperatureKernel(const float* g, float* temperature,
+__global__ void computeTemperatureKernel(float* g, float* temperature,  // F-02: was const
                                           int num_cells, const float* fill_level,
                                           float T_boil_clamp, int nx, int ny, int nz);
 __global__ void thermalBGKCollisionKernel(float* g_src, const float* temperature,
@@ -686,7 +686,7 @@ __global__ void applyEvaporationCoolingKernel(
         if (T <= T_boil) return;
 
         // Clausius-Clapeyron evaporation rate (Anisimov 1995)
-        const float alpha_evap = 0.18f;
+        const float alpha_evap = 0.82f;  // R6 OpenFOAM laserMeltFoam alignment
         const float M_molar = mat.molar_mass;
         const float R_gas = 8.314f;
         const float P_ref = 101325.0f;
@@ -1146,8 +1146,14 @@ __global__ void thermalStreamingKernel(
     }
 }
 
+// F-02 fix (2026-04-27 overnight code-audit pass 1): kernel writes through
+// `g` in the gas-wipe code path (line ~1190 of original code). Parameter
+// must be `float*` not `const float*` — the previous const-cast was UB.
+// See docs/overnight-2026-04-27/audit-verification-notes.md for the
+// verification trail showing the writes are intentional (gas-wipe at
+// fill < 0.01).
 __global__ void computeTemperatureKernel(
-    const float* g,
+    float* g,                 // F-02: was const, kernel writes via gas-wipe
     float* temperature,
     int num_cells,
     const float* fill_level,  // nullable: nullptr → no gas clamp
@@ -1496,7 +1502,7 @@ __global__ void applyRadiationBoundaryCondition(
     // Physical constants for Ti6Al4V evaporation
     // CRITICAL FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
     // Calibrated alpha_evap = 0.18 (Anisimov 1995)
-    const float alpha_evap = 0.18f;
+    const float alpha_evap = 0.82f;  // R6 OpenFOAM laserMeltFoam alignment
     const float M_molar = material.molar_mass; // Molar mass [kg/mol]
     const float R_gas = 8.314f;               // Universal gas constant [J/(mol·K)]
     const float P_ref = 101325.0f;            // Reference pressure at boiling point [Pa]
@@ -1882,7 +1888,7 @@ __global__ void computeEvaporationPowerKernel(
 
     // Compute evaporation mass flux using Hertz-Knudsen equation
     // Calibrated alpha_evap = 0.18 (Anisimov 1995)
-    const float alpha_evap = 0.18f;
+    const float alpha_evap = 0.82f;  // R6 OpenFOAM laserMeltFoam alignment
     const float M = material.molar_mass;  // kg/mol
     const float R = 8.314f;   // J/(mol·K)
     const float P_ref = 101325.0f;  // Pa
@@ -2271,7 +2277,7 @@ __global__ void computeEvaporationMassFluxKernel(
     // Physical constants for Ti6Al4V evaporation
     // CRITICAL FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
     // Calibrated alpha_evap = 0.18 (Anisimov 1995)
-    const float alpha_evap = 0.18f;
+    const float alpha_evap = 0.82f;  // R6 OpenFOAM laserMeltFoam alignment
     const float M_molar = material.molar_mass; // Molar mass [kg/mol]
     const float R_gas = 8.314f;               // Universal gas constant [J/(mol·K)]
     const float P_ref = 101325.0f;            // Reference pressure at boiling point [Pa]

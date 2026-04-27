@@ -195,8 +195,13 @@ int main(int argc, char** argv) {
     // 1. 热求解器（总是需要）
     std::unique_ptr<physics::ThermalLBM> thermal;
     if (cfg.physics.thermal_enabled) {
+        // BUG-3 fix (2026-04-27 overnight audit, code-audit pass 2 F-01):
+        // Pass dt and dx explicitly. The 6-arg constructor uses defaults
+        // (dt=1e-7, dx=2e-6) which silently mismap the lattice viscosity for
+        // any non-default config. See docs/overnight-2026-04-27/CRITICAL-BUGS-FOUND.md.
         thermal = std::make_unique<physics::ThermalLBM>(
-            nx, ny, nz, mat, cfg.physics.thermal_alpha, cfg.physics.phase_change_enabled
+            nx, ny, nz, mat, cfg.physics.thermal_alpha, cfg.physics.phase_change_enabled,
+            static_cast<float>(dt), static_cast<float>(dx)
         );
         thermal->initialize(cfg.initial.temperature);
         std::cout << "  ✓ 热传导模块\n";
