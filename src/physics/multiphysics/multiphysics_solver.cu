@@ -123,6 +123,73 @@ static __global__ void maskForceByLiquidFractionKernel(
 }
 
 /**
+ * @brief Reduce max of 3-component vector magnitude.
+ *
+ * result must be initialised to __int_as_float(0) (i.e. 0.0f bit-pattern)
+ * before launch.  Uses the same atomicMax(int*) trick as findMaxKernel.
+ */
+__global__ void findMaxVecMagnitudeKernel(
+    const float* __restrict__ ax,
+    const float* __restrict__ ay,
+    const float* __restrict__ az,
+    float* result, int n)
+{
+    extern __shared__ float sdata[];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+    float val = 0.0f;
+    if (idx < n) {
+        float a = ax[idx], b = ay[idx], c = az[idx];
+        val = sqrtf(a*a + b*b + c*c);
+    }
+    sdata[tid] = val;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] = fmaxf(sdata[tid], sdata[tid + s]);
+        __syncthreads();
+    }
+    if (tid == 0) atomicMax((int*)result, __float_as_int(sdata[0]));
+}
+
+/**
+ * @brief Reduce max of |az[i]| (z-component absolute value).
+ */
+__global__ void findMaxAbsZKernel(
+    const float* __restrict__ az,
+    float* result, int n)
+{
+    extern __shared__ float sdata[];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+    sdata[tid] = (idx < n) ? fabsf(az[idx]) : 0.0f;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] = fmaxf(sdata[tid], sdata[tid + s]);
+        __syncthreads();
+    }
+    if (tid == 0) atomicMax((int*)result, __float_as_int(sdata[0]));
+}
+
+/**
+ * @brief Find the index of the cell with the maximum force magnitude.
+ * Writes the FIRST occurrence (races ok for diagnostic use).
+ */
+__global__ void findMaxVecMagnitudeIdxKernel(
+    const float* __restrict__ ax,
+    const float* __restrict__ ay,
+    const float* __restrict__ az,
+    float max_mag, int* result_idx, int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    float a = ax[idx], b = ay[idx], c = az[idx];
+    float mag = sqrtf(a*a + b*b + c*c);
+    if (fabsf(mag - max_mag) < 1e-7f * max_mag + 1e-30f) {
+        atomicMin(result_idx, idx);
+    }
+}
+
+/**
  * @brief Convert velocity from lattice units to physical units [m/s]
  *
  * LBM velocity is dimensionless (lattice units), typically O(0.01-0.1)
@@ -2234,43 +2301,64 @@ void MultiphysicsSolver::fluidStep(float dt) {
     float max_v_before = 0.0f;
 
     if (enable_cfl_diag) {
-        // Sample force magnitude from FULL domain (not just first 1000 cells)
-        std::vector<float> h_fx_temp(num_cells);
-        std::vector<float> h_fy_temp(num_cells);
-        std::vector<float> h_fz_temp(num_cells);
-        CUDA_CHECK(cudaMemcpy(h_fx_temp.data(), d_force_x_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_fy_temp.data(), d_force_y_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_fz_temp.data(), d_force_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+        // F-07: GPU reductions replace 6 full-domain D→H transfers (~198 MB total).
+        // Uses findMaxVecMagnitudeKernel / findMaxAbsZKernel already in this file.
+        // Only a single float is copied to host per reduction.
+        int diag_threads = 256;
+        int diag_blocks  = (num_cells + diag_threads - 1) / diag_threads;
+        size_t smem = diag_threads * sizeof(float);
 
-        float max_f_z = 0.0f;  // Track z-component separately for recoil
+        // -- Force magnitude before CFL --
+        float h_result = 0.0f;
+        CUDA_CHECK(cudaMemset(d_energy_temp_, 0, sizeof(float)));  // reuse 1-element scratch
+        float* d_scalar = reinterpret_cast<float*>(d_energy_temp_);
+        findMaxVecMagnitudeKernel<<<diag_blocks, diag_threads, smem>>>(
+            d_force_x_, d_force_y_, d_force_z_, d_scalar, num_cells);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaMemcpy(&max_f_before_cfl, d_scalar, sizeof(float), cudaMemcpyDeviceToHost));
+
+        // -- Max |F_z| --
+        float max_f_z = 0.0f;
+        CUDA_CHECK(cudaMemset(d_scalar, 0, sizeof(float)));
+        findMaxAbsZKernel<<<diag_blocks, diag_threads, smem>>>(
+            d_force_z_, d_scalar, num_cells);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaMemcpy(&max_f_z, d_scalar, sizeof(float), cudaMemcpyDeviceToHost));
+
+        // -- Index of max-force cell (needed for the per-component printout) --
+        // Transfer only 3 floats for that one cell rather than the whole domain.
         int max_f_idx = 0;
-        for (int i = 0; i < num_cells; ++i) {
-            float f_mag = std::sqrt(h_fx_temp[i]*h_fx_temp[i] + h_fy_temp[i]*h_fy_temp[i] + h_fz_temp[i]*h_fz_temp[i]);
-            if (f_mag > max_f_before_cfl) {
-                max_f_before_cfl = f_mag;
-                max_f_idx = i;
-            }
-            max_f_z = std::max(max_f_z, std::abs(h_fz_temp[i]));
+        {
+            int* d_idx;
+            CUDA_CHECK(cudaMalloc(&d_idx, sizeof(int)));
+            int init_idx = num_cells - 1;
+            CUDA_CHECK(cudaMemcpy(d_idx, &init_idx, sizeof(int), cudaMemcpyHostToDevice));
+            findMaxVecMagnitudeIdxKernel<<<diag_blocks, diag_threads>>>(
+                d_force_x_, d_force_y_, d_force_z_, max_f_before_cfl, d_idx, num_cells);
+            CUDA_CHECK_KERNEL();
+            CUDA_CHECK(cudaMemcpy(&max_f_idx, d_idx, sizeof(int), cudaMemcpyDeviceToHost));
+            cudaFree(d_idx);
         }
+        // Read only the 3 components at the located cell (3 × 4 bytes)
+        float fx_at_max, fy_at_max, fz_at_max;
+        CUDA_CHECK(cudaMemcpy(&fx_at_max, d_force_x_ + max_f_idx, sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&fy_at_max, d_force_y_ + max_f_idx, sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&fz_at_max, d_force_z_ + max_f_idx, sizeof(float), cudaMemcpyDeviceToHost));
 
-        // Sample current velocity from full domain
-        std::vector<float> h_vx(num_cells);
-        std::vector<float> h_vy(num_cells);
-        std::vector<float> h_vz(num_cells);
-        CUDA_CHECK(cudaMemcpy(h_vx.data(), fluid_->getVelocityX(), num_cells * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_vy.data(), fluid_->getVelocityY(), num_cells * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_vz.data(), fluid_->getVelocityZ(), num_cells * sizeof(float), cudaMemcpyDeviceToHost));
-        for (int i = 0; i < num_cells; ++i) {
-            float v_mag = std::sqrt(h_vx[i]*h_vx[i] + h_vy[i]*h_vy[i] + h_vz[i]*h_vz[i]);
-            max_v_before = std::max(max_v_before, v_mag);
-        }
+        // -- Max velocity magnitude --
+        CUDA_CHECK(cudaMemset(d_scalar, 0, sizeof(float)));
+        findMaxVecMagnitudeKernel<<<diag_blocks, diag_threads, smem>>>(
+            fluid_->getVelocityX(), fluid_->getVelocityY(), fluid_->getVelocityZ(),
+            d_scalar, num_cells);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaMemcpy(&max_v_before, d_scalar, sizeof(float), cudaMemcpyDeviceToHost));
 
         std::cout << "\n=== CFL LIMITER DIAGNOSTIC (Step " << current_step_ << ") ===\n";
         std::cout << std::scientific << std::setprecision(3);
         std::cout << "  Force BEFORE CFL: " << max_f_before_cfl << " (lattice units)\n";
         std::cout << "  Max F_z (recoil): " << max_f_z << " (lattice units)\n";
-        std::cout << "  F at max idx " << max_f_idx << ": (" << h_fx_temp[max_f_idx]
-                  << ", " << h_fy_temp[max_f_idx] << ", " << h_fz_temp[max_f_idx] << ")\n";
+        std::cout << "  F at max idx " << max_f_idx << ": ("
+                  << fx_at_max << ", " << fy_at_max << ", " << fz_at_max << ")\n";
         std::cout << std::fixed << std::setprecision(3);
         std::cout << "  Current max velocity (all): " << max_v_before << " (lattice units)\n";
         std::cout << "  Current max velocity (all): " << (max_v_before * config_.dx / config_.dt) << " m/s (physical)\n";
@@ -2294,24 +2382,25 @@ void MultiphysicsSolver::fluidStep(float dt) {
     if (enable_cfl_diag) {
         // CFL limiting was already applied in computeTotalForce()
         // Report final force magnitudes (after CFL limiting in ForceAccumulator)
-        std::vector<float> h_fx_final(num_cells);
-        std::vector<float> h_fy_final(num_cells);
-        std::vector<float> h_fz_final(num_cells);
-        CUDA_CHECK(cudaMemcpy(h_fx_final.data(), d_force_x_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_fy_final.data(), d_force_y_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_fz_final.data(), d_force_z_, num_cells * sizeof(float), cudaMemcpyDeviceToHost));
+        // F-07: GPU reductions — no full-domain D→H transfer needed.
+        int diag_threads_f = 256;
+        int diag_blocks_f  = (num_cells + diag_threads_f - 1) / diag_threads_f;
+        size_t smem_f = diag_threads_f * sizeof(float);
+        float* d_scalar_f = reinterpret_cast<float*>(d_energy_temp_);
 
         float max_f_final = 0.0f;
+        CUDA_CHECK(cudaMemset(d_scalar_f, 0, sizeof(float)));
+        findMaxVecMagnitudeKernel<<<diag_blocks_f, diag_threads_f, smem_f>>>(
+            d_force_x_, d_force_y_, d_force_z_, d_scalar_f, num_cells);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaMemcpy(&max_f_final, d_scalar_f, sizeof(float), cudaMemcpyDeviceToHost));
+
         float max_f_z_final = 0.0f;
-        int max_f_final_idx = 0;
-        for (int i = 0; i < num_cells; ++i) {
-            float f_mag = std::sqrt(h_fx_final[i]*h_fx_final[i] + h_fy_final[i]*h_fy_final[i] + h_fz_final[i]*h_fz_final[i]);
-            if (f_mag > max_f_final) {
-                max_f_final = f_mag;
-                max_f_final_idx = i;
-            }
-            max_f_z_final = std::max(max_f_z_final, std::abs(h_fz_final[i]));
-        }
+        CUDA_CHECK(cudaMemset(d_scalar_f, 0, sizeof(float)));
+        findMaxAbsZKernel<<<diag_blocks_f, diag_threads_f, smem_f>>>(
+            d_force_z_, d_scalar_f, num_cells);
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaMemcpy(&max_f_z_final, d_scalar_f, sizeof(float), cudaMemcpyDeviceToHost));
 
         float reduction = (max_f_before_cfl > 0) ?
             ((max_f_before_cfl - max_f_final) / max_f_before_cfl * 100.0f) : 0.0f;
