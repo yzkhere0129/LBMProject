@@ -486,10 +486,8 @@ public:
     void setSmagorinskyCs(float cs) { cs_smag_ = cs; }
     float getSmagorinskyCs() const { return cs_smag_; }
 
-    /// R6 Audit 1: swap EDM force injection for Guo-2002 scheme (τ→0.5 safe).
-    /// When true, collisionBGKwithEDM dispatches to fluidRegularizedCollisionGuoKernel
-    /// (only active when use_regularized_ is also true).
-    void setUseGuoForcing(bool enable) { use_guo_forcing_ = enable; }
+    /// R6 Audit 1: setter for use_guo_forcing_ is at line ~178 (with setRegularized);
+    /// only the getter lives here near the other state inspectors.
     bool getUseGuoForcing() const { return use_guo_forcing_; }
     float getTau() const { return tau_; }
     float getViscosity() const { return nu_physical_; }
