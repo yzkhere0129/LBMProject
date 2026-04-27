@@ -1,118 +1,77 @@
 /**
  * @file test_high_power_laser.cu
- * @brief 500W laser doesn't crash
+ * @brief High-power laser (1 kW) on small domain — robustness test.
  *
- * Success Criteria:
- * - TODO: Define specific success criteria
- * - No NaN
- * - Numerical stability
- * - Physical correctness
+ * Strategy: Apply 1 kW laser (extreme for this domain size) and verify:
+ *   1. Solver remains stable (no NaN)
+ *   2. Temperature rises significantly above ambient
+ *   3. CFL limiter prevents velocity explosion even under extreme Marangoni
  *
- * Test Category: robustness, laser
- *
- * Physics:
- * - TODO: Describe physics configuration for this test
+ * This tests the high-end of the operating envelope — parameters that
+ * would correspond to deep keyhole mode. The solver should degrade
+ * gracefully (clip forces, not crash) rather than diverge.
  */
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
 
 #include "physics/multiphysics_solver.h"
 
 using namespace lbm::physics;
 
 TEST(MultiphysicsRobustnessTest, HighPowerLaser) {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "TEST: 500W laser doesn't crash" << std::endl;
-    std::cout << "========================================\n" << std::endl;
-
-    // Configuration
     MultiphysicsConfig config;
-    config.nx = 50;
-    config.ny = 50;
-    config.nz = 25;
-    config.dx = 2e-6f;  // 2 μm
-    config.dt = 1e-8f;  // 10 ns
+    config.nx = 20;
+    config.ny = 20;
+    config.nz = 15;
+    config.dx = 3e-6f;
+    config.dt = 1e-8f;
+    config.enable_thermal      = true;
+    config.enable_fluid        = true;
+    config.enable_vof          = false;
+    config.enable_marangoni    = true;
+    config.enable_laser        = true;
+    config.enable_buoyancy     = false;
+    config.enable_darcy        = true;    // Darcy needed for partially-liquid domain
+    config.enable_phase_change = true;
+    // Extreme laser: 1 kW (far above typical 150-200 W LPBF)
+    config.laser_power         = 1000.0f;
+    config.laser_spot_radius   = 15e-6f;
+    config.laser_absorptivity  = 0.35f;
+    config.laser_scan_vx       = 0.0f;
+    config.dsigma_dT           = -0.26e-3f;
+    config.marangoni_csf_multiplier = 1.0f;
+    // CFL limiter must be active to survive this
+    config.cfl_velocity_target     = 0.15f;
+    config.cfl_use_gradual_scaling = true;
+    config.boundaries.setUniform(lbm::physics::BoundaryType::WALL, ThermalBCType::ADIABATIC);
 
-    // TODO: Configure physics modules for this specific test
-    config.enable_thermal = true;
-    config.enable_fluid = true;
-    config.enable_vof = false;
-    config.enable_marangoni = false;
-    config.enable_laser = false;
-    config.enable_buoyancy = false;
-
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  Domain: " << config.nx << "×" << config.ny << "×" << config.nz << std::endl;
-    std::cout << "  dx = " << config.dx * 1e6 << " μm" << std::endl;
-    std::cout << "  dt = " << config.dt * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
-
-    // Create solver
     MultiphysicsSolver solver(config);
+    solver.initialize(300.0f, 0.5f);
 
-    // Initialize
-    const float T_init = 300.0f;  // K
-    solver.initialize(T_init, 0.5f);
-
-    std::cout << "Initial conditions:" << std::endl;
-    std::cout << "  T_init = " << T_init << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Time integration
-    const int n_steps = 200;
-    const int check_interval = 40;
-
-    std::cout << "Time integration (" << n_steps << " steps):" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
-
-    for (int step = 0; step < n_steps; ++step) {
+    const int n_steps = 60;
+    for (int i = 0; i < n_steps; ++i) {
         solver.step();
-
-        if ((step + 1) % check_interval == 0) {
-            float v_max = solver.getMaxVelocity();
-            float T_max = solver.getMaxTemperature();
-
-            std::cout << "Step " << std::setw(4) << step + 1
-                      << " | t = " << std::fixed << std::setprecision(2)
-                      << (step + 1) * config.dt * 1e6 << " μs"
-                      << " | v_max = " << std::setprecision(4) << v_max << " m/s"
-                      << " | T_max = " << std::setprecision(1) << T_max << " K"
-                      << std::endl;
-
-            // Check for NaN
-            ASSERT_FALSE(solver.checkNaN()) << "NaN detected at step " << step + 1;
+        if (solver.checkNaN()) {
+            FAIL() << "NaN detected at step " << i + 1
+                   << " under 1 kW laser (high-power robustness test)";
         }
     }
 
-    std::cout << std::string(60, '-') << std::endl;
+    float T_max = solver.getMaxTemperature();
+    float v_max = solver.getMaxVelocity();
 
-    // TODO: Add test-specific validation
-    float v_final = solver.getMaxVelocity();
-    float T_final = solver.getMaxTemperature();
+    // High power laser must raise T significantly
+    EXPECT_GT(T_max, 1000.0f)
+        << "1 kW laser should raise T well above ambient. T_max=" << T_max;
 
-    std::cout << "\nFinal Results:" << std::endl;
-    std::cout << "  Max velocity: " << v_final << " m/s" << std::endl;
-    std::cout << "  Max temperature: " << T_final << " K" << std::endl;
-    std::cout << std::endl;
+    // CFL limiter must prevent velocity explosion
+    EXPECT_LT(v_max, 500.0f)
+        << "CFL limiter should cap v_max even at 1 kW. Got " << v_max;
 
-    // Success criteria
-    std::cout << "Validation Checks:" << std::endl;
-    std::cout << "  TODO: Implement test-specific validation" << std::endl;
-    std::cout << std::endl;
-
-    // Assertions
-    EXPECT_FALSE(solver.checkNaN()) << "NaN detected in final state";
-
-    // TODO: Add test-specific assertions
-    EXPECT_TRUE(true) << "TODO: Implement validation logic";
-
-    std::cout << "========================================" << std::endl;
-    std::cout << "TEST PASSED ✓" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // T must not be negative or zero (sanity)
+    EXPECT_GT(T_max, 0.0f) << "T_max non-positive: " << T_max;
 }
 
 int main(int argc, char** argv) {

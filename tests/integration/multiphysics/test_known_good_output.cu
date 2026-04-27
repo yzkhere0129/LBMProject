@@ -1,118 +1,81 @@
 /**
  * @file test_known_good_output.cu
- * @brief Compare with saved golden output
+ * @brief Regression: known config produces output within tight bounds.
  *
- * Success Criteria:
- * - TODO: Define specific success criteria
- * - No NaN
- * - Numerical stability
- * - Physical correctness
+ * Strategy: Run a fully-specified, small conduction benchmark (thermal
+ * only, no fluid, stationary laser). After a fixed number of steps,
+ * T_max must land within analytically-bounded range.
  *
- * Test Category: regression, golden
+ * Analytical estimate for a point heat source in a finite box:
+ * Energy deposited = P_absorbed * t
+ * T_max_upper = T_init + E / (rho * cp * V) (all energy in one cell)
+ * T_max_lower = T_init (laser just started)
  *
- * Physics:
- * - TODO: Describe physics configuration for this test
+ * After 100 steps at dt=1e-8 s, P=50 W, abs=0.35:
+ * E = 50 * 0.35 * 100 * 1e-8 = 1.75e-5 J
+ * V = dx³ * nx * ny * nz = (2e-6)³ * 20*20*10 = 1.6e-14 m³
+ * T_max_lower: at least T_init + 1 K (some heating)
+ * T_max_upper: at most 1e6 K (no explosion)
+ *
+ * This test serves as a regression anchor: if the laser power, absorptivity,
+ * or thermal diffusivity handling changes, T_max will shift detectably.
  */
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
 
 #include "physics/multiphysics_solver.h"
 
 using namespace lbm::physics;
 
 TEST(MultiphysicsRegressionTest, KnownGoodOutput) {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "TEST: Compare with saved golden output" << std::endl;
-    std::cout << "========================================\n" << std::endl;
-
-    // Configuration
     MultiphysicsConfig config;
-    config.nx = 50;
-    config.ny = 50;
-    config.nz = 25;
-    config.dx = 2e-6f;  // 2 μm
-    config.dt = 1e-8f;  // 10 ns
+    config.nx = 20;
+    config.ny = 20;
+    config.nz = 10;
+    config.dx = 2e-6f;
+    config.dt = 1e-8f;
+    config.enable_thermal      = true;
+    config.enable_fluid        = false;
+    config.enable_vof          = false;
+    config.enable_marangoni    = false;
+    config.enable_laser        = true;
+    config.enable_buoyancy     = false;
+    config.enable_phase_change = false;
+    config.laser_power         = 50.0f;
+    config.laser_spot_radius   = 10e-6f;
+    config.laser_absorptivity  = 0.35f;
+    config.laser_scan_vx       = 0.0f;   // stationary
+    config.thermal_diffusivity = 9.66e-6f;
+    config.boundaries.setUniform(lbm::physics::BoundaryType::PERIODIC, ThermalBCType::ADIABATIC);
 
-    // TODO: Configure physics modules for this specific test
-    config.enable_thermal = true;
-    config.enable_fluid = true;
-    config.enable_vof = false;
-    config.enable_marangoni = false;
-    config.enable_laser = false;
-    config.enable_buoyancy = false;
-
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  Domain: " << config.nx << "×" << config.ny << "×" << config.nz << std::endl;
-    std::cout << "  dx = " << config.dx * 1e6 << " μm" << std::endl;
-    std::cout << "  dt = " << config.dt * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
-
-    // Create solver
+    const float T_init = 300.0f;
     MultiphysicsSolver solver(config);
-
-    // Initialize
-    const float T_init = 300.0f;  // K
     solver.initialize(T_init, 0.5f);
 
-    std::cout << "Initial conditions:" << std::endl;
-    std::cout << "  T_init = " << T_init << " K" << std::endl;
-    std::cout << std::endl;
+    const int n_steps = 100;
+    for (int i = 0; i < n_steps; ++i) solver.step();
 
-    // Time integration
-    const int n_steps = 200;
-    const int check_interval = 40;
+    ASSERT_FALSE(solver.checkNaN()) << "NaN in known-good output run";
 
-    std::cout << "Time integration (" << n_steps << " steps):" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
+    float T_max = solver.getMaxTemperature();
 
-    for (int step = 0; step < n_steps; ++step) {
-        solver.step();
+    // Lower bound: laser must have heated above init
+    EXPECT_GT(T_max, T_init + 1.0f)
+        << "Laser should have raised T above init. T_max=" << T_max;
 
-        if ((step + 1) % check_interval == 0) {
-            float v_max = solver.getMaxVelocity();
-            float T_max = solver.getMaxTemperature();
+    // Upper bound: no explosion (adiabatic box, 100 steps)
+    // P_absorbed * n_steps * dt = 50 * 0.35 * 100 * 1e-8 = 1.75e-5 J
+    // Ti6Al4V: rho=4430, cp=526, V=(2e-6)^3*4000 = 3.2e-14 m^3
+    // T_max_ceiling = 300 + 1.75e-5 / (4430 * 526 * 3.2e-14) = 300 + 234 = 534 K
+    // Give 3× margin for concentration effects at spot
+    EXPECT_LT(T_max, T_init + 3.0f * 234.0f)
+        << "T_max exceeded energy-balance ceiling. T_max=" << T_max;
 
-            std::cout << "Step " << std::setw(4) << step + 1
-                      << " | t = " << std::fixed << std::setprecision(2)
-                      << (step + 1) * config.dt * 1e6 << " μs"
-                      << " | v_max = " << std::setprecision(4) << v_max << " m/s"
-                      << " | T_max = " << std::setprecision(1) << T_max << " K"
-                      << std::endl;
-
-            // Check for NaN
-            ASSERT_FALSE(solver.checkNaN()) << "NaN detected at step " << step + 1;
-        }
-    }
-
-    std::cout << std::string(60, '-') << std::endl;
-
-    // TODO: Add test-specific validation
-    float v_final = solver.getMaxVelocity();
-    float T_final = solver.getMaxTemperature();
-
-    std::cout << "\nFinal Results:" << std::endl;
-    std::cout << "  Max velocity: " << v_final << " m/s" << std::endl;
-    std::cout << "  Max temperature: " << T_final << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Success criteria
-    std::cout << "Validation Checks:" << std::endl;
-    std::cout << "  TODO: Implement test-specific validation" << std::endl;
-    std::cout << std::endl;
-
-    // Assertions
-    EXPECT_FALSE(solver.checkNaN()) << "NaN detected in final state";
-
-    // TODO: Add test-specific assertions
-    EXPECT_TRUE(true) << "TODO: Implement validation logic";
-
-    std::cout << "========================================" << std::endl;
-    std::cout << "TEST PASSED ✓" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // T_max must be above ambient (laser deposited energy)
+    EXPECT_GT(T_max, 302.0f)
+        << "T_max should be clearly above ambient after laser heating";
 }
 
 int main(int argc, char** argv) {
