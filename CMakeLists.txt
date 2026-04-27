@@ -205,6 +205,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_linescan_phase4 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_linescan_phase4 lbm_physics lbm_io CUDA::cudart)
 
+    # Phase-5 integration: Track-C iter-4 + emissivity 0.55 + ray bounces=5
+    add_executable(sim_linescan_phase5 apps/sim_linescan_phase5.cu)
+    set_target_properties(sim_linescan_phase5 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_phase5 lbm_physics lbm_io CUDA::cudart)
+
     # Sprint-3 perturbative tests
     add_executable(sim_linescan_S3A1 apps/sim_linescan_S3A1.cu)
     set_target_properties(sim_linescan_S3A1 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
