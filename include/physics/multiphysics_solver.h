@@ -847,6 +847,10 @@ private:
     float* d_T_smoothed_;       ///< 27-point smoothed temperature (for Marangoni ∇T)
     float* d_darcy_K_prev_;     ///< Previous Darcy coefficient (for under-relaxation)
 
+    // F-05: VOF smoothing scratch buffers — allocated once, reused every vofStep()
+    float* d_vof_fill_raw_;     ///< Saves raw fill_level before 2-pass smoothing
+    float* d_vof_fill_tmp_;     ///< Intermediate buffer for smoothField27 pass 1→2
+
     // Current simulation time
     float current_time_;
 
