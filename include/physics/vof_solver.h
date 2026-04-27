@@ -491,6 +491,17 @@ private:
     int* d_interface_partial_counts_ = nullptr;
     int d_interface_partial_counts_size_ = 0;
 
+    // F3-02 fix (audit pass 3, 2026-04-27): hoist former function-local
+    // static d_block_max from advectFillLevel*() into class members so they're
+    // freed in ~VOFSolver(). The static-local pattern caused dangling-pointer
+    // hazards when a second VOFSolver was constructed after the first was
+    // destroyed (the new instance saw the static still set, skipped re-alloc,
+    // and wrote into freed GPU memory).
+    mutable float* d_block_max_advect_ = nullptr;
+    mutable int d_block_max_advect_size_ = 0;
+    mutable float* d_block_max_advectTVD_ = nullptr;
+    mutable int d_block_max_advectTVD_size_ = 0;
+
     // ---- PLIC geometric advection buffers (lazy-allocated) ----
     lbm::utils::CudaBuffer<float> plic_nx_;
     lbm::utils::CudaBuffer<float> plic_ny_;
