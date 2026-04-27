@@ -1,118 +1,86 @@
 /**
  * @file test_force_magnitude_ordering.cu
- * @brief Verify force magnitudes are physical
+ * @brief Stronger buoyancy force → larger steady-state velocity.
  *
- * Success Criteria:
- * - TODO: Define specific success criteria
- * - No NaN
- * - Numerical stability
- * - Physical correctness
+ * Strategy: Run two solvers identical except for gravity magnitude:
+ *   g1 = 9.81 m/s²  (Earth gravity)
+ *   g2 = 49.05 m/s² (5× Earth)
+ * With a temperature gradient (laser), buoyancy drives flow.
+ * After the same number of steps: v_max(g2) > v_max(g1).
  *
- * Test Category: forces, validation
- *
- * Physics:
- * - TODO: Describe physics configuration for this test
+ * A bug that ignores gravity magnitude (e.g., always uses hardcoded g=9.81)
+ * would make the two runs identical, failing this ordering check.
  */
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
 
 #include "physics/multiphysics_solver.h"
 
 using namespace lbm::physics;
 
+static MultiphysicsConfig makeConfig(float gravity_z) {
+    MultiphysicsConfig cfg;
+    cfg.nx = 20;
+    cfg.ny = 20;
+    cfg.nz = 20;
+    cfg.dx = 5e-6f;
+    cfg.dt = 2e-8f;
+    cfg.enable_thermal      = true;
+    cfg.enable_fluid        = true;
+    cfg.enable_vof          = false;
+    cfg.enable_marangoni    = false;
+    cfg.enable_laser        = true;
+    cfg.enable_buoyancy     = true;
+    cfg.enable_darcy        = false;
+    cfg.enable_phase_change = false;
+    cfg.laser_power         = 30.0f;
+    cfg.laser_spot_radius   = 15e-6f;
+    cfg.laser_scan_vx       = 0.0f;
+    cfg.laser_absorptivity  = 0.35f;
+    cfg.gravity_x           = 0.0f;
+    cfg.gravity_y           = 0.0f;
+    cfg.gravity_z           = gravity_z;
+    cfg.thermal_expansion_coeff = 1.5e-5f;
+    cfg.reference_temperature   = 300.0f;
+    cfg.boundaries.setUniform(lbm::physics::BoundaryType::WALL, ThermalBCType::ADIABATIC);
+    return cfg;
+}
+
 TEST(MultiphysicsForcesTest, ForceMagnitudeOrdering) {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "TEST: Verify force magnitudes are physical" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    const int n_steps = 80;
 
-    // Configuration
-    MultiphysicsConfig config;
-    config.nx = 50;
-    config.ny = 50;
-    config.nz = 25;
-    config.dx = 2e-6f;  // 2 μm
-    config.dt = 1e-8f;  // 10 ns
-
-    // TODO: Configure physics modules for this specific test
-    config.enable_thermal = true;
-    config.enable_fluid = true;
-    config.enable_vof = false;
-    config.enable_marangoni = false;
-    config.enable_laser = false;
-    config.enable_buoyancy = false;
-
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  Domain: " << config.nx << "×" << config.ny << "×" << config.nz << std::endl;
-    std::cout << "  dx = " << config.dx * 1e6 << " μm" << std::endl;
-    std::cout << "  dt = " << config.dt * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
-
-    // Create solver
-    MultiphysicsSolver solver(config);
-
-    // Initialize
-    const float T_init = 300.0f;  // K
-    solver.initialize(T_init, 0.5f);
-
-    std::cout << "Initial conditions:" << std::endl;
-    std::cout << "  T_init = " << T_init << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Time integration
-    const int n_steps = 200;
-    const int check_interval = 40;
-
-    std::cout << "Time integration (" << n_steps << " steps):" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
-
-    for (int step = 0; step < n_steps; ++step) {
-        solver.step();
-
-        if ((step + 1) % check_interval == 0) {
-            float v_max = solver.getMaxVelocity();
-            float T_max = solver.getMaxTemperature();
-
-            std::cout << "Step " << std::setw(4) << step + 1
-                      << " | t = " << std::fixed << std::setprecision(2)
-                      << (step + 1) * config.dt * 1e6 << " μs"
-                      << " | v_max = " << std::setprecision(4) << v_max << " m/s"
-                      << " | T_max = " << std::setprecision(1) << T_max << " K"
-                      << std::endl;
-
-            // Check for NaN
-            ASSERT_FALSE(solver.checkNaN()) << "NaN detected at step " << step + 1;
-        }
+    float v_g1 = 0.0f;
+    {
+        auto cfg = makeConfig(-9.81f);
+        MultiphysicsSolver solver(cfg);
+        solver.initialize(300.0f, 0.5f);
+        for (int i = 0; i < n_steps; ++i) solver.step();
+        ASSERT_FALSE(solver.checkNaN()) << "NaN with g1=9.81";
+        v_g1 = solver.getMaxVelocity();
     }
 
-    std::cout << std::string(60, '-') << std::endl;
+    float v_g5 = 0.0f;
+    {
+        auto cfg = makeConfig(-49.05f);   // 5× gravity
+        MultiphysicsSolver solver(cfg);
+        solver.initialize(300.0f, 0.5f);
+        for (int i = 0; i < n_steps; ++i) solver.step();
+        ASSERT_FALSE(solver.checkNaN()) << "NaN with g2=49.05";
+        v_g5 = solver.getMaxVelocity();
+    }
 
-    // TODO: Add test-specific validation
-    float v_final = solver.getMaxVelocity();
-    float T_final = solver.getMaxTemperature();
+    // Key assertion: 5× gravity must drive more flow than 1× gravity
+    EXPECT_GT(v_g5, v_g1)
+        << "5× gravity should produce higher v_max. "
+        << "v_g1=" << v_g1 << " v_g5=" << v_g5;
 
-    std::cout << "\nFinal Results:" << std::endl;
-    std::cout << "  Max velocity: " << v_final << " m/s" << std::endl;
-    std::cout << "  Max temperature: " << T_final << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Success criteria
-    std::cout << "Validation Checks:" << std::endl;
-    std::cout << "  TODO: Implement test-specific validation" << std::endl;
-    std::cout << std::endl;
-
-    // Assertions
-    EXPECT_FALSE(solver.checkNaN()) << "NaN detected in final state";
-
-    // TODO: Add test-specific assertions
-    EXPECT_TRUE(true) << "TODO: Implement validation logic";
-
-    std::cout << "========================================" << std::endl;
-    std::cout << "TEST PASSED ✓" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // Reasonable upper bound on ratio (shouldn't be wildly >5× due to
+    // viscous drag, but must be clearly > 1)
+    float ratio = v_g5 / (v_g1 + 1e-10f);
+    EXPECT_GT(ratio, 1.5f)
+        << "5× gravity should produce clearly more flow (ratio > 1.5×). Got " << ratio;
 }
 
 int main(int argc, char** argv) {
