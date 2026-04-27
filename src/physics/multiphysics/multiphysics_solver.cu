@@ -1001,7 +1001,8 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
             // Gate 1 (laser x) is updated per-step in step() via setMassCorrectionLaserX().
             if (config_.mass_correction_use_track_c &&
                 config_.mass_correction_z_substrate_lu >= 0.0f) {
-                vof_->setMassCorrectionZSubstrate(config_.mass_correction_z_substrate_lu);
+                vof_->setMassCorrectionZSubstrate(config_.mass_correction_z_substrate_lu,
+                                                  config_.mass_correction_z_offset_lu);
             }
 
             const char* track_name = "A-vz";

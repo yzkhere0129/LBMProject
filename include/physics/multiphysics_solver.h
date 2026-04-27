@@ -235,6 +235,7 @@ struct MultiphysicsConfig {
         bool  mass_correction_use_track_c        = false;  ///< Enable Track-C gates on top of Track-B weight
         float mass_correction_trailing_margin_lu = 25.0f;  ///< Gate 1: x-exclusion half-width [lu] (50 μm at dx=2 μm)
         float mass_correction_z_substrate_lu     = -1.0f;  ///< Gate 2: substrate top index [lu]; <0 = disabled
+        float mass_correction_z_offset_lu        = 2.0f;   ///< Gate 2 tolerance: cells above (z_substrate+offset) excluded
         float cfl_limit              = 0.5f;    ///< Advisory only -- used in validate() warning, not in actual CFL limiter.
                                                    ///< Actual limiting uses cfl_velocity_target and cfl_force_ramp_factor.
         float cfl_velocity_target    = 0.15f;   ///< Target max lattice velocity
@@ -337,6 +338,7 @@ struct MultiphysicsConfig {
     bool&  mass_correction_use_track_c        = numerics.mass_correction_use_track_c;
     float& mass_correction_trailing_margin_lu = numerics.mass_correction_trailing_margin_lu;
     float& mass_correction_z_substrate_lu     = numerics.mass_correction_z_substrate_lu;
+    float& mass_correction_z_offset_lu        = numerics.mass_correction_z_offset_lu;
     float& cfl_limit                = numerics.cfl_limit;
     float& cfl_velocity_target      = numerics.cfl_velocity_target;
     bool&  cfl_use_gradual_scaling  = numerics.cfl_use_gradual_scaling;
@@ -439,6 +441,7 @@ struct MultiphysicsConfig {
           vof_mass_correction_damping(numerics.vof_mass_correction_damping),
           mass_correction_use_track_c(numerics.mass_correction_use_track_c),
           mass_correction_trailing_margin_lu(numerics.mass_correction_trailing_margin_lu),
+          mass_correction_z_offset_lu(numerics.mass_correction_z_offset_lu),
           mass_correction_z_substrate_lu(numerics.mass_correction_z_substrate_lu),
           cfl_limit(numerics.cfl_limit),
           cfl_velocity_target(numerics.cfl_velocity_target),

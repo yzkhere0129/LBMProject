@@ -400,6 +400,9 @@ public:
      * @param z_offset_lu     Extra cells of allowance above substrate before
      *                        exclusion fires.  Default 2 lu.
      */
+    /// Note: z_offset_lu=0 → strict (cells above substrate top fully excluded).
+    /// z_offset_lu=2 → tolerant (allow 2 cells of growth before exclusion).
+    /// For F3D match try 0 first; relax if W collapses too often.
     void setMassCorrectionZSubstrate(float z_substrate_lu, float z_offset_lu = 2.0f) {
         mass_correction_z_substrate_lu_ = z_substrate_lu;
         mass_correction_z_offset_lu_    = z_offset_lu;
