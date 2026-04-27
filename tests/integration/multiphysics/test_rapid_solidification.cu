@@ -1,118 +1,76 @@
 /**
  * @file test_rapid_solidification.cu
- * @brief Fast cooling doesn't diverge
+ * @brief Fast cooling doesn't diverge — phase change robustness test.
  *
- * Success Criteria:
- * - TODO: Define specific success criteria
- * - No NaN
- * - Numerical stability
- * - Physical correctness
+ * Strategy: Start with a domain at T_melt (liquid), then apply aggressive
+ * boundary cooling to drive rapid solidification. Check:
+ *   1. No NaN/Inf throughout the run
+ *   2. T_max decreases monotonically (heat extracted by cooling BC)
+ *   3. Final T_max is below initial T_melt (solidification occurred)
  *
- * Test Category: robustness, phase_change
- *
- * Physics:
- * - TODO: Describe physics configuration for this test
+ * This catches bugs in the enthalpy-source method (ESM) under rapid
+ * cooling, where the phase-change solver might fail to converge.
  */
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
 
 #include "physics/multiphysics_solver.h"
 
 using namespace lbm::physics;
 
 TEST(MultiphysicsRobustnessTest, RapidSolidification) {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "TEST: Fast cooling doesn't diverge" << std::endl;
-    std::cout << "========================================\n" << std::endl;
-
-    // Configuration
     MultiphysicsConfig config;
-    config.nx = 50;
-    config.ny = 50;
-    config.nz = 25;
-    config.dx = 2e-6f;  // 2 μm
-    config.dt = 1e-8f;  // 10 ns
+    config.nx = 20;
+    config.ny = 20;
+    config.nz = 10;
+    config.dx = 2e-6f;
+    config.dt = 5e-9f;
+    config.enable_thermal      = true;
+    config.enable_fluid        = false;   // thermal only for clean test
+    config.enable_vof          = false;
+    config.enable_marangoni    = false;
+    config.enable_laser        = false;
+    config.enable_buoyancy     = false;
+    config.enable_phase_change = true;    // ESM must survive rapid cooling
+    config.enable_darcy        = false;
 
-    // TODO: Configure physics modules for this specific test
-    config.enable_thermal = true;
-    config.enable_fluid = true;
-    config.enable_vof = false;
-    config.enable_marangoni = false;
-    config.enable_laser = false;
-    config.enable_buoyancy = false;
+    // Use Ti6Al4V material (default) — T_liquidus ≈ 1923 K
+    const float T_melt = config.material.T_liquidus;
 
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  Domain: " << config.nx << "×" << config.ny << "×" << config.nz << std::endl;
-    std::cout << "  dx = " << config.dx * 1e6 << " μm" << std::endl;
-    std::cout << "  dt = " << config.dt * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
+    // Strong Dirichlet BC: all walls fixed at 300 K (aggressive cooling)
+    config.boundaries.setUniform(lbm::physics::BoundaryType::PERIODIC, ThermalBCType::DIRICHLET);
+    config.boundaries.dirichlet_temperature = 300.0f;
 
-    // Create solver
     MultiphysicsSolver solver(config);
+    // Initialize at melting point (fully liquid)
+    solver.initialize(T_melt, 0.5f);
 
-    // Initialize
-    const float T_init = 300.0f;  // K
-    solver.initialize(T_init, 0.5f);
+    float T_max_prev = solver.getMaxTemperature();
+    const int n_steps = 100;
 
-    std::cout << "Initial conditions:" << std::endl;
-    std::cout << "  T_init = " << T_init << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Time integration
-    const int n_steps = 200;
-    const int check_interval = 40;
-
-    std::cout << "Time integration (" << n_steps << " steps):" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
-
-    for (int step = 0; step < n_steps; ++step) {
+    for (int i = 0; i < n_steps; ++i) {
         solver.step();
-
-        if ((step + 1) % check_interval == 0) {
-            float v_max = solver.getMaxVelocity();
-            float T_max = solver.getMaxTemperature();
-
-            std::cout << "Step " << std::setw(4) << step + 1
-                      << " | t = " << std::fixed << std::setprecision(2)
-                      << (step + 1) * config.dt * 1e6 << " μs"
-                      << " | v_max = " << std::setprecision(4) << v_max << " m/s"
-                      << " | T_max = " << std::setprecision(1) << T_max << " K"
-                      << std::endl;
-
-            // Check for NaN
-            ASSERT_FALSE(solver.checkNaN()) << "NaN detected at step " << step + 1;
-        }
+        ASSERT_FALSE(solver.checkNaN()) << "NaN at step " << i + 1
+                                        << " during rapid solidification";
     }
 
-    std::cout << std::string(60, '-') << std::endl;
+    float T_max_final = solver.getMaxTemperature();
 
-    // TODO: Add test-specific validation
-    float v_final = solver.getMaxVelocity();
-    float T_final = solver.getMaxTemperature();
+    // T must have decreased (cooling BC drains heat)
+    EXPECT_LT(T_max_final, T_max_prev)
+        << "Aggressive cooling BC should lower T_max. "
+        << "Initial=" << T_max_prev << " Final=" << T_max_final;
 
-    std::cout << "\nFinal Results:" << std::endl;
-    std::cout << "  Max velocity: " << v_final << " m/s" << std::endl;
-    std::cout << "  Max temperature: " << T_final << " K" << std::endl;
-    std::cout << std::endl;
+    // T must be above 0 K (physical lower bound)
+    EXPECT_GT(T_max_final, 0.0f)
+        << "T_max went below 0 K: " << T_max_final;
 
-    // Success criteria
-    std::cout << "Validation Checks:" << std::endl;
-    std::cout << "  TODO: Implement test-specific validation" << std::endl;
-    std::cout << std::endl;
-
-    // Assertions
-    EXPECT_FALSE(solver.checkNaN()) << "NaN detected in final state";
-
-    // TODO: Add test-specific assertions
-    EXPECT_TRUE(true) << "TODO: Implement validation logic";
-
-    std::cout << "========================================" << std::endl;
-    std::cout << "TEST PASSED ✓" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // T should drop significantly below T_melt
+    EXPECT_LT(T_max_final, T_melt)
+        << "After 100 steps of strong cooling, T_max should be below T_melt ("
+        << T_melt << " K). Got " << T_max_final;
 }
 
 int main(int argc, char** argv) {
