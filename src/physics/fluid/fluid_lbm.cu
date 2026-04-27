@@ -2055,11 +2055,15 @@ __global__ void computeMacroscopicSemiImplicitDarcyEDMKernel(
         float u_bare_y = my * inv_denom;
         float u_bare_z = mz * inv_denom;
 
-        // Physical velocity = u_bare + F/(2ρ) for output
-        float inv_rho = 1.0f / m_rho;
-        u_x = u_bare_x + 0.5f * force_x[id] * inv_rho;
-        u_y = u_bare_y + 0.5f * force_y[id] * inv_rho;
-        u_z = u_bare_z + 0.5f * force_z[id] * inv_rho;
+        // N-1.2 fix (audit pass 3, 2026-04-27): use inv_denom (= 1/(ρ+0.5K))
+        // for the F/(2ρ) term so this matches the collision kernel's
+        // u_phys formula. Previously the macro used 1/m_rho (raw ρ) here,
+        // creating ~40% relative discrepancy in the mushy zone (K_LU ~ 10).
+        // Pure-liquid case (K=0) unchanged: inv_denom = 1/m_rho.
+        // See docs/debug-patrol/numerical-audit-collision-kernels.md §1.2.
+        u_x = u_bare_x + 0.5f * force_x[id] * inv_denom;
+        u_y = u_bare_y + 0.5f * force_y[id] * inv_denom;
+        u_z = u_bare_z + 0.5f * force_z[id] * inv_denom;
 
         // Velocity clamping for safety
         const float U_MAX = 0.25f;  // Ma < 0.43, LES-protected
