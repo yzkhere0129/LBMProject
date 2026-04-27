@@ -57,4 +57,27 @@ Plus separately:
 
 (filled as launched)
 
-EOF
+---
+
+## Audit Pass 3 — Completed 2026-04-27
+
+**File**: `docs/debug-patrol/audit-pass3-findings.md`  
+**Total findings**: 37 (3 CRITICAL, 8 HIGH, 15 MEDIUM, 11 LOW)
+
+**Scope covered**:
+1. vof_solver.cu Track-C additions (~900 new lines) — 9 findings
+2. sprint-history overnight_audit test files — 3 findings  
+3. apps/sim_linescan_phase1-5 + S3A1/S3A3/dawn3 — 7 findings
+4. include/utils/cuda_memory.h CudaBuffer<T> — 3 findings
+5. include/core/unit_converter.h — 2 findings
+6. src/config/simulation_config.cpp — 2 findings
+7. MultiphysicsSolver BC ordering — 3 findings
+8. Cross-cutting — 8 findings
+
+**New critical items for immediate attention**:
+- F3-02: Static local GPU pointers in advectFillLevel() — survive VOFSolver destruction
+- F3-15: Phase-3 kinematic_viscosity=0.0167 likely unit mismatch (τ→freeze instead of τ→0.55)
+- F3-36: applyMassCorrectionInline casts long long interface_count to int — wraps for large domains
+
+**Pass 3 adds 37 new findings to the triage queue.**  
+Running total: 90 (pass1+2) + 37 (pass3) = 127 findings cataloged.
