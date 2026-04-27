@@ -27,12 +27,12 @@ Plus separately:
 
 ## Open audit findings (not yet patched)
 
-### HIGH (from pass 1)
-- F-05: cudaMalloc/Free in vofStep every timestep (perf, ~ms cost per step)
-- F-07: 198MB diagnostic copy DeviceToHost every 100 steps (perf)
+### HIGH (from pass 1) — PATCHED
+- **F-05 DONE** (commit cbfb0a2): d_fill_raw + d_fill_tmp hoisted to class members
+- **F-07 DONE** (commit 7fbdfd7): 198 MB D→H replaced with GPU reductions (3 new kernels)
+- **F-16 DONE** (commit f09aa55): reduceSum result buffer pre-allocated in RayTracingLaser
 - F-10: zeroForceKernelLocal duplicate of force_accumulator.cu kernel
 - F-11: D3Q7 lattice weights {0.25f, 0.125f, ...} duplicated in 8 kernels
-- F-16: ray_tracing_laser reduceSum allocates per call
 
 ### HIGH (from pass 2)
 - F-03: 19/28 multiphysics integration tests are EXPECT_TRUE(true) stubs
@@ -46,12 +46,48 @@ Plus separately:
 
 ## Patrol queue (priority order)
 
-1. ⏳ Replace 19 stub tests with real assertions (F-03 from pass 2)
-2. ⏳ Fix F-04 add_test missing for vof_mass_correction
-3. ⏳ Apply F-05 cudaMalloc move out of hot path
-4. ⏳ Fresh audit pass on areas not previously covered
-5. ⏳ Numerical-accuracy spot checks on collision kernels
-6. ⏳ MEDIUM cleanups (F-08+ from pass 2)
+1. DONE — F-05, F-07, F-16 perf fixes (this session)
+2. DONE — F3-02 d_block_max statics hoisted (previous session, commit 9a6061b)
+3. DONE — 12 stub tests replaced (previous session)
+4. ⏳ Fix F-04 add_test missing for vof_mass_correction
+5. ⏳ MEDIUM cleanups (F-10 zeroForceKernelLocal dedupe, etc.)
+
+---
+
+## F-05 / F-07 / F-16 Perf Fixes — 2026-04-27
+
+### Timing baseline (benchmark_keyhole_316L, 100 steps, full multiphysics)
+- **BEFORE** (main repo @ benchmark/conduction-316L): 147.8 s
+- **AFTER** (patrol branch, F-05 + F-07 + F-16 + prior F3-02): 97.7 s
+- **Speedup**: 34% on this benchmark (ray_tracing disabled, so F-16 not exercised)
+
+### F-05: vofStep malloc/free
+- Files: `include/physics/multiphysics_solver.h`, `src/physics/multiphysics/multiphysics_solver.cu`
+- Added `d_vof_fill_raw_` + `d_vof_fill_tmp_` as class members (nullptr in ctor init list)
+- Allocated in `allocateMemory()`, freed in `freeMemory()`
+- Per-step block in `vofStep()` removed 2 × cudaMalloc/Free calls
+- Commit: cbfb0a2
+
+### F-07: 198 MB D→H diagnostic copies
+- File: `src/physics/multiphysics/multiphysics_solver.cu`
+- Added 3 new kernels: `findMaxVecMagnitudeKernel`, `findMaxAbsZKernel`, `findMaxVecMagnitudeIdxKernel`
+- Both `if (enable_cfl_diag)` blocks (before + after CFL) now use GPU reductions
+- Single `sizeof(float)` copy per reduction; 3-component index transfer is 3×4 bytes
+- Reuses existing `d_energy_temp_` (double-size scratch) as float reduction target
+- Diagnostic output (values + format) is identical to before
+- Commit: 7fbdfd7
+
+### F-16: reduceSum per-call malloc
+- Files: `include/physics/ray_tracing_laser.h`, `src/physics/laser/ray_tracing_laser.cu`
+- Added `d_reduce_result_ (CudaBuffer<float>, size 1)` to class private members
+- Initialised in constructor member-init list
+- `reduceSum()` changed from `static` to non-static; uses `d_reduce_result_.get()`
+- Removes 2 × cudaMalloc/cudaFree per `traceAndDeposit()` call
+- Commit: f09aa55
+
+### Test results
+- `test_vof_mass_correction_flux`: 9/9 PASS
+- `test_thermal_lbm`: 8/8 PASS (1 disabled)
 
 ## Currently active subagents
 

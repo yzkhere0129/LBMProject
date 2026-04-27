@@ -2,6 +2,29 @@
 
 Items the patrol has fixed/found that main should consider for production.
 
+## Performance fixes F-05 / F-07 / F-16 — 2026-04-27
+
+Three cherry-pick-ready commits. Each is independent and safe to apply.
+
+| Fix | Commit | Files changed | Speedup |
+|-----|--------|---------------|---------|
+| F-05 hoist vofStep buffers | cbfb0a2 | multiphysics_solver.h + .cu | ~2 malloc/free per step |
+| F-07 GPU reductions in CFL diag | 7fbdfd7 | multiphysics_solver.cu | ~198 MB D→H per diag → ~12 bytes |
+| F-16 pre-alloc reduceSum scratch | f09aa55 | ray_tracing_laser.h + .cu | ~2 malloc/free per laser step |
+
+**Measured combined impact** (benchmark_keyhole_316L, 100 steps, full multiphysics, ray-tracing OFF):
+- Before: 147.8 s → After: 97.7 s — **34% speedup**
+- Note: F-16 not exercised (ray_tracing disabled in this config). F3-02 (prior commit 9a6061b) also contributed.
+
+Tests passing on patrol branch: `test_vof_mass_correction_flux` 9/9, `test_thermal_lbm` 8/8.
+
+Cherry-pick commands:
+```bash
+git cherry-pick cbfb0a2  # F-05
+git cherry-pick 7fbdfd7  # F-07
+git cherry-pick f09aa55  # F-16
+```
+
 ## Audit Pass 3 — 2026-04-27
 
 **37 findings** in `docs/debug-patrol/audit-pass3-findings.md`.
