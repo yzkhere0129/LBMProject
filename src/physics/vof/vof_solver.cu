@@ -1527,7 +1527,7 @@ __global__ void applyFluxWeightedMassCorrectionKernel(
 
 VOFSolver::VOFSolver(int nx, int ny, int nz, float dx,
                      BoundaryType bc_x, BoundaryType bc_y, BoundaryType bc_z)
-    : nx_(nx), ny_(ny), nz_(nz), num_cells_(nx * ny * nz), dx_(dx),
+    : nx_(nx), ny_(ny), nz_(nz), num_cells_(static_cast<long long>(nx) * ny * nz), dx_(dx),  // F-12 (audit pass 1)
       bc_x_(bc_x), bc_y_(bc_y), bc_z_(bc_z),
       advection_scheme_(VOFAdvectionScheme::UPWIND),  // Default: first-order upwind
       tvd_limiter_(TVDLimiter::VAN_LEER),             // Default: van Leer limiter

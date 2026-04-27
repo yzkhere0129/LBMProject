@@ -55,7 +55,10 @@ FluidLBM::FluidLBM(int nx, int ny, int nz,
                    BoundaryType boundary_z,
                    float dt, float dx)
     : nx_(nx), ny_(ny), nz_(nz),
-      num_cells_(nx * ny * nz),
+      // F-12 (code-audit pass 1): widen to long long before multiply to avoid
+      // int overflow at >536M cells (e.g., AMR/multi-GPU domains). num_cells_
+      // is still int — assignment narrows but the multiply itself is safe.
+      num_cells_(static_cast<long long>(nx) * ny * nz),
       dt_(dt), dx_(dx),
       nu_physical_(kinematic_viscosity),
       rho0_(density),
