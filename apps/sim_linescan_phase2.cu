@@ -172,7 +172,16 @@ int main() {
     config.ray_tracing.fresnel_n_refract  = 2.9613f;   // 316L @ 1064 nm Mills
     config.ray_tracing.fresnel_k_extinct  = 4.0133f;
     config.ray_tracing.num_rays           = 4096;       // dense enough for 50 μm spot
-    config.ray_tracing.max_bounces        = 5;          // ~70 % effective absorption
+    // ITER-6 (2026-04-27): max_bounces 5 → 3.
+    // Hypothesis: 5 bounces over-traps light deep inside the keyhole, depositing
+    // more energy than F3D's keyhole physics. Our LBM keyhole at t=800μs is
+    // ~98 μm deep at offset -50μm vs F3D's mere -5μm — 20× too deep.
+    // Reducing to 3 bounces should let more rays escape, lowering effective
+    // absorption from ~70% to ~50%, weakening recoil → shallower keyhole.
+    // If keyhole comes within F3D ballpark (-5 to -20 μm at offset -50),
+    // Track-C + iter-6 is the merge candidate. If still too deep, the issue
+    // is in recoil pressure scaling, not RT.
+    config.ray_tracing.max_bounces        = 3;          // 5 → 3 (test keyhole depth)
     config.ray_tracing.max_dda_steps      = 1500;       // domain ~1.2 mm / dx 2 μm → 600 cells, +slack
     config.ray_tracing.energy_cutoff      = 0.01f;
     config.ray_tracing.absorptivity       = 0.40f;      // unused when use_fresnel=true
