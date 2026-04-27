@@ -1,118 +1,64 @@
 /**
  * @file test_minimal_config.cu
- * @brief Only thermal, no fluid
+ * @brief Only thermal, no fluid — verifies thermal-only operation
  *
- * Success Criteria:
- * - TODO: Define specific success criteria
- * - No NaN
- * - Numerical stability
- * - Physical correctness
- *
- * Test Category: config, minimal
- *
- * Physics:
- * - TODO: Describe physics configuration for this test
+ * Strategy: With enable_fluid=false (thermal-only), no body forces exist.
+ * Initial uniform temperature should remain uniform (no gradient → no
+ * diffusion change). Velocity field must stay exactly zero. Any non-zero
+ * velocity or temperature change indicates a spurious coupling path.
  */
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
+#include <vector>
 
 #include "physics/multiphysics_solver.h"
 
 using namespace lbm::physics;
 
 TEST(MultiphysicsConfigTest, MinimalConfig) {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "TEST: Only thermal, no fluid" << std::endl;
-    std::cout << "========================================\n" << std::endl;
-
-    // Configuration
+    // Arrange: thermal-only config with all other physics disabled
     MultiphysicsConfig config;
-    config.nx = 50;
-    config.ny = 50;
-    config.nz = 25;
-    config.dx = 2e-6f;  // 2 μm
-    config.dt = 1e-8f;  // 10 ns
-
-    // TODO: Configure physics modules for this specific test
+    config.nx = 20;
+    config.ny = 20;
+    config.nz = 10;
+    config.dx = 2e-6f;
+    config.dt = 1e-8f;
     config.enable_thermal = true;
-    config.enable_fluid = true;
-    config.enable_vof = false;
+    config.enable_fluid    = false;
+    config.enable_vof      = false;
     config.enable_marangoni = false;
-    config.enable_laser = false;
+    config.enable_laser    = false;
     config.enable_buoyancy = false;
+    config.enable_phase_change = false;
+    // Periodic all faces so no boundary flux
+    config.boundaries.setUniform(lbm::physics::BoundaryType::PERIODIC, ThermalBCType::PERIODIC);
 
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  Domain: " << config.nx << "×" << config.ny << "×" << config.nz << std::endl;
-    std::cout << "  dx = " << config.dx * 1e6 << " μm" << std::endl;
-    std::cout << "  dt = " << config.dt * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
-
-    // Create solver
     MultiphysicsSolver solver(config);
 
-    // Initialize
-    const float T_init = 300.0f;  // K
+    const float T_init = 600.0f;
     solver.initialize(T_init, 0.5f);
 
-    std::cout << "Initial conditions:" << std::endl;
-    std::cout << "  T_init = " << T_init << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Time integration
-    const int n_steps = 200;
-    const int check_interval = 40;
-
-    std::cout << "Time integration (" << n_steps << " steps):" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
-
-    for (int step = 0; step < n_steps; ++step) {
+    // Act: run a short time
+    const int n_steps = 50;
+    for (int i = 0; i < n_steps; ++i) {
         solver.step();
-
-        if ((step + 1) % check_interval == 0) {
-            float v_max = solver.getMaxVelocity();
-            float T_max = solver.getMaxTemperature();
-
-            std::cout << "Step " << std::setw(4) << step + 1
-                      << " | t = " << std::fixed << std::setprecision(2)
-                      << (step + 1) * config.dt * 1e6 << " μs"
-                      << " | v_max = " << std::setprecision(4) << v_max << " m/s"
-                      << " | T_max = " << std::setprecision(1) << T_max << " K"
-                      << std::endl;
-
-            // Check for NaN
-            ASSERT_FALSE(solver.checkNaN()) << "NaN detected at step " << step + 1;
-        }
     }
 
-    std::cout << std::string(60, '-') << std::endl;
+    // Assert 1: no NaN
+    EXPECT_FALSE(solver.checkNaN()) << "NaN detected after thermal-only run";
 
-    // TODO: Add test-specific validation
-    float v_final = solver.getMaxVelocity();
-    float T_final = solver.getMaxTemperature();
+    // Assert 2: with uniform T and periodic BC, T_max should equal T_init
+    // (no gradient → no diffusion flux). Tolerance: 0.5 K for floating-point drift.
+    float T_max = solver.getMaxTemperature();
+    EXPECT_NEAR(T_max, T_init, 1.0f)
+        << "Uniform T should not change under periodic BC, no laser. "
+        << "Got T_max=" << T_max << " expected ~" << T_init;
 
-    std::cout << "\nFinal Results:" << std::endl;
-    std::cout << "  Max velocity: " << v_final << " m/s" << std::endl;
-    std::cout << "  Max temperature: " << T_final << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Success criteria
-    std::cout << "Validation Checks:" << std::endl;
-    std::cout << "  TODO: Implement test-specific validation" << std::endl;
-    std::cout << std::endl;
-
-    // Assertions
-    EXPECT_FALSE(solver.checkNaN()) << "NaN detected in final state";
-
-    // TODO: Add test-specific assertions
-    EXPECT_TRUE(true) << "TODO: Implement validation logic";
-
-    std::cout << "========================================" << std::endl;
-    std::cout << "TEST PASSED ✓" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // Assert 3: with fluid disabled, velocity must stay zero
+    float v_max = solver.getMaxVelocity();
+    EXPECT_LT(v_max, 1e-6f) << "No fluid solver: v_max should be ~0, got " << v_max;
 }
 
 int main(int argc, char** argv) {

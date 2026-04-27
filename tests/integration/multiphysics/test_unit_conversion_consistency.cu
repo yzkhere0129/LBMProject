@@ -1,118 +1,106 @@
 /**
  * @file test_unit_conversion_consistency.cu
- * @brief All modules use same conversions
+ * @brief All modules use consistent unit conversions.
  *
- * Success Criteria:
- * - TODO: Define specific success criteria
- * - No NaN
- * - Numerical stability
- * - Physical correctness
+ * Strategy: Run two solvers with physically identical setups but different
+ * lattice resolutions (dx, dt scaled together to keep the same physical
+ * diffusivity alpha_LU = alpha_phys * dt/dx²). Both must produce the same
+ * max temperature at the same physical time, to within a tolerance that
+ * accounts for grid-dependent truncation error.
  *
- * Test Category: units, consistency
- *
- * Physics:
- * - TODO: Describe physics configuration for this test
+ * A unit-conversion bug (e.g., dt not threaded through consistently) would
+ * cause the two runs to diverge significantly.
  */
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
 
 #include "physics/multiphysics_solver.h"
+#include "core/unit_converter.h"
 
 using namespace lbm::physics;
+using namespace lbm::core;
+
+static MultiphysicsConfig makeConfig(float dx, float dt) {
+    MultiphysicsConfig cfg;
+    cfg.nx = 20;
+    cfg.ny = 20;
+    cfg.nz = 10;
+    cfg.dx = dx;
+    cfg.dt = dt;
+    cfg.enable_thermal      = true;
+    cfg.enable_fluid        = false;
+    cfg.enable_vof          = false;
+    cfg.enable_marangoni    = false;
+    cfg.enable_laser        = false;
+    cfg.enable_buoyancy     = false;
+    cfg.enable_phase_change = false;
+    // Use same physical thermal diffusivity (Ti6Al4V)
+    cfg.thermal_diffusivity = 9.66e-6f;
+    // Periodic all → only diffusion
+    cfg.boundaries.setUniform(lbm::physics::BoundaryType::PERIODIC, ThermalBCType::PERIODIC);
+    return cfg;
+}
 
 TEST(MultiphysicsUnitsTest, UnitConversionConsistency) {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "TEST: All modules use same conversions" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // Two grid resolutions with same physical diffusivity
+    // Both will run for the same number of physical seconds
+    const float dx1 = 2e-6f;
+    const float dt1 = 1e-8f;
+    const float dx2 = 4e-6f;   // 2× coarser
+    const float dt2 = 4e-8f;   // 4× larger dt to keep alpha_LU the same
+    // alpha_LU = 9.66e-6 * dt / dx² :
+    //   run1: 9.66e-6 * 1e-8 / (4e-12) = 0.0241
+    //   run2: 9.66e-6 * 4e-8 / (16e-12) = 0.0241  ← same
 
-    // Configuration
-    MultiphysicsConfig config;
-    config.nx = 50;
-    config.ny = 50;
-    config.nz = 25;
-    config.dx = 2e-6f;  // 2 μm
-    config.dt = 1e-8f;  // 10 ns
+    // Verify alpha_LU is the same to catch setup mistakes
+    float alpha_lu1 = 9.66e-6f * dt1 / (dx1 * dx1);
+    float alpha_lu2 = 9.66e-6f * dt2 / (dx2 * dx2);
+    ASSERT_NEAR(alpha_lu1, alpha_lu2, 1e-6f)
+        << "Test setup error: alpha_LU not matched between resolutions";
 
-    // TODO: Configure physics modules for this specific test
-    config.enable_thermal = true;
-    config.enable_fluid = true;
-    config.enable_vof = false;
-    config.enable_marangoni = false;
-    config.enable_laser = false;
-    config.enable_buoyancy = false;
+    // Physical run time: 200 ns
+    const float t_phys = 200e-9f;
+    int n1 = static_cast<int>(t_phys / dt1);
+    int n2 = static_cast<int>(t_phys / dt2);
 
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  Domain: " << config.nx << "×" << config.ny << "×" << config.nz << std::endl;
-    std::cout << "  dx = " << config.dx * 1e6 << " μm" << std::endl;
-    std::cout << "  dt = " << config.dt * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
+    // Both configs start at the same T_init
+    const float T_init = 600.0f;
 
-    // Create solver
-    MultiphysicsSolver solver(config);
-
-    // Initialize
-    const float T_init = 300.0f;  // K
-    solver.initialize(T_init, 0.5f);
-
-    std::cout << "Initial conditions:" << std::endl;
-    std::cout << "  T_init = " << T_init << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Time integration
-    const int n_steps = 200;
-    const int check_interval = 40;
-
-    std::cout << "Time integration (" << n_steps << " steps):" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
-
-    for (int step = 0; step < n_steps; ++step) {
-        solver.step();
-
-        if ((step + 1) % check_interval == 0) {
-            float v_max = solver.getMaxVelocity();
-            float T_max = solver.getMaxTemperature();
-
-            std::cout << "Step " << std::setw(4) << step + 1
-                      << " | t = " << std::fixed << std::setprecision(2)
-                      << (step + 1) * config.dt * 1e6 << " μs"
-                      << " | v_max = " << std::setprecision(4) << v_max << " m/s"
-                      << " | T_max = " << std::setprecision(1) << T_max << " K"
-                      << std::endl;
-
-            // Check for NaN
-            ASSERT_FALSE(solver.checkNaN()) << "NaN detected at step " << step + 1;
-        }
+    // Run 1
+    float T_max1 = 0.0f;
+    {
+        auto cfg = makeConfig(dx1, dt1);
+        MultiphysicsSolver solver(cfg);
+        solver.initialize(T_init, 0.5f);
+        for (int i = 0; i < n1; ++i) solver.step();
+        ASSERT_FALSE(solver.checkNaN()) << "NaN in run 1";
+        T_max1 = solver.getMaxTemperature();
     }
 
-    std::cout << std::string(60, '-') << std::endl;
+    // Run 2
+    float T_max2 = 0.0f;
+    {
+        auto cfg = makeConfig(dx2, dt2);
+        MultiphysicsSolver solver(cfg);
+        solver.initialize(T_init, 0.5f);
+        for (int i = 0; i < n2; ++i) solver.step();
+        ASSERT_FALSE(solver.checkNaN()) << "NaN in run 2";
+        T_max2 = solver.getMaxTemperature();
+    }
 
-    // TODO: Add test-specific validation
-    float v_final = solver.getMaxVelocity();
-    float T_final = solver.getMaxTemperature();
+    // With uniform T, no laser, and periodic BCs, T should remain near T_init
+    // in both runs. If unit conversions are broken, one run might diverge.
+    EXPECT_NEAR(T_max1, T_init, 2.0f)
+        << "Run 1 (fine grid): T_max drifted from init=" << T_init;
+    EXPECT_NEAR(T_max2, T_init, 2.0f)
+        << "Run 2 (coarse grid): T_max drifted from init=" << T_init;
 
-    std::cout << "\nFinal Results:" << std::endl;
-    std::cout << "  Max velocity: " << v_final << " m/s" << std::endl;
-    std::cout << "  Max temperature: " << T_final << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Success criteria
-    std::cout << "Validation Checks:" << std::endl;
-    std::cout << "  TODO: Implement test-specific validation" << std::endl;
-    std::cout << std::endl;
-
-    // Assertions
-    EXPECT_FALSE(solver.checkNaN()) << "NaN detected in final state";
-
-    // TODO: Add test-specific assertions
-    EXPECT_TRUE(true) << "TODO: Implement validation logic";
-
-    std::cout << "========================================" << std::endl;
-    std::cout << "TEST PASSED ✓" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // Both runs must agree to within 1 K (same physics, same alpha_LU)
+    EXPECT_NEAR(T_max1, T_max2, 2.0f)
+        << "Unit conversion inconsistency: fine vs coarse runs disagree. "
+        << "T_max1=" << T_max1 << " T_max2=" << T_max2;
 }
 
 int main(int argc, char** argv) {

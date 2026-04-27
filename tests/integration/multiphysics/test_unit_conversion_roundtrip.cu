@@ -1,118 +1,83 @@
 /**
  * @file test_unit_conversion_roundtrip.cu
- * @brief lattice->physical->lattice is identity
+ * @brief lattice->physical->lattice is identity.
  *
- * Success Criteria:
- * - TODO: Define specific success criteria
- * - No NaN
- * - Numerical stability
- * - Physical correctness
- *
- * Test Category: units, conversion
- *
- * Physics:
- * - TODO: Describe physics configuration for this test
+ * Strategy: Test UnitConverter directly (no solver needed).
+ * For every conversion pair (velocity, force, pressure, diffusivity,
+ * viscosity, time), round-tripping must recover the original value
+ * to within FP32 tolerance. Also verify that two configs with different
+ * dx/dt but the same physical domain produce the same physical velocity
+ * after conversion.
  */
 
 #include <gtest/gtest.h>
-#include <cuda_runtime.h>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
+#include <vector>
 
-#include "physics/multiphysics_solver.h"
+#include "core/unit_converter.h"
 
-using namespace lbm::physics;
+using namespace lbm::core;
+
+static constexpr float REL_TOL = 1e-5f;  // FP32 round-trip tolerance
+
+static void checkRoundtrip(float val, float roundtripped, const char* label) {
+    float rel_err = std::abs(roundtripped - val) / (std::abs(val) + 1e-30f);
+    EXPECT_LT(rel_err, REL_TOL)
+        << label << " round-trip failed: original=" << val
+        << " recovered=" << roundtripped
+        << " rel_err=" << rel_err;
+}
 
 TEST(MultiphysicsUnitsTest, UnitConversionRoundtrip) {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "TEST: lattice->physical->lattice is identity" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // Test several dx/dt combinations
+    const float dx = 2e-6f;   // 2 μm
+    const float dt = 1e-8f;   // 10 ns
+    const float rho = 4110.0f; // Ti6Al4V [kg/m³]
 
-    // Configuration
-    MultiphysicsConfig config;
-    config.nx = 50;
-    config.ny = 50;
-    config.nz = 25;
-    config.dx = 2e-6f;  // 2 μm
-    config.dt = 1e-8f;  // 10 ns
+    UnitConverter uc(dx, dt, rho);
 
-    // TODO: Configure physics modules for this specific test
-    config.enable_thermal = true;
-    config.enable_fluid = true;
-    config.enable_vof = false;
-    config.enable_marangoni = false;
-    config.enable_laser = false;
-    config.enable_buoyancy = false;
+    // --- Velocity round-trip ---
+    const float v_phys_test = 1.5f;  // m/s
+    float v_lu = uc.velocityToLattice(v_phys_test);
+    float v_phys_back = uc.velocityToPhysical(v_lu);
+    checkRoundtrip(v_phys_test, v_phys_back, "velocity");
 
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  Domain: " << config.nx << "×" << config.ny << "×" << config.nz << std::endl;
-    std::cout << "  dx = " << config.dx * 1e6 << " μm" << std::endl;
-    std::cout << "  dt = " << config.dt * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
+    // --- Force round-trip ---
+    const float F_phys_test = 1e9f;  // N/m³ (typical Marangoni scale)
+    float F_lu = uc.forceToLattice(F_phys_test);
+    float F_phys_back = uc.forceToPhysical(F_lu);
+    checkRoundtrip(F_phys_test, F_phys_back, "force");
 
-    // Create solver
-    MultiphysicsSolver solver(config);
+    // --- Pressure round-trip ---
+    const float p_phys_test = 1e5f;  // Pa
+    float p_lu = uc.pressureToLattice(p_phys_test);
+    float p_phys_back = uc.pressureToPhysical(p_lu);
+    checkRoundtrip(p_phys_test, p_phys_back, "pressure");
 
-    // Initialize
-    const float T_init = 300.0f;  // K
-    solver.initialize(T_init, 0.5f);
+    // --- Diffusivity round-trip ---
+    const float alpha_phys_test = 9.66e-6f;  // m²/s (Ti6Al4V thermal diffusivity)
+    float alpha_lu = uc.diffusivityToLattice(alpha_phys_test);
+    float alpha_phys_back = uc.diffusivityToPhysical(alpha_lu);
+    checkRoundtrip(alpha_phys_test, alpha_phys_back, "diffusivity");
 
-    std::cout << "Initial conditions:" << std::endl;
-    std::cout << "  T_init = " << T_init << " K" << std::endl;
-    std::cout << std::endl;
+    // --- Viscosity round-trip ---
+    const float nu_phys_test = 1.217e-6f;  // m²/s
+    float nu_lu = uc.viscosityToLattice(nu_phys_test);
+    float nu_phys_back = uc.viscosityToPhysical(nu_lu);
+    checkRoundtrip(nu_phys_test, nu_phys_back, "viscosity");
 
-    // Time integration
-    const int n_steps = 200;
-    const int check_interval = 40;
-
-    std::cout << "Time integration (" << n_steps << " steps):" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
-
-    for (int step = 0; step < n_steps; ++step) {
-        solver.step();
-
-        if ((step + 1) % check_interval == 0) {
-            float v_max = solver.getMaxVelocity();
-            float T_max = solver.getMaxTemperature();
-
-            std::cout << "Step " << std::setw(4) << step + 1
-                      << " | t = " << std::fixed << std::setprecision(2)
-                      << (step + 1) * config.dt * 1e6 << " μs"
-                      << " | v_max = " << std::setprecision(4) << v_max << " m/s"
-                      << " | T_max = " << std::setprecision(1) << T_max << " K"
-                      << std::endl;
-
-            // Check for NaN
-            ASSERT_FALSE(solver.checkNaN()) << "NaN detected at step " << step + 1;
-        }
-    }
-
-    std::cout << std::string(60, '-') << std::endl;
-
-    // TODO: Add test-specific validation
-    float v_final = solver.getMaxVelocity();
-    float T_final = solver.getMaxTemperature();
-
-    std::cout << "\nFinal Results:" << std::endl;
-    std::cout << "  Max velocity: " << v_final << " m/s" << std::endl;
-    std::cout << "  Max temperature: " << T_final << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Success criteria
-    std::cout << "Validation Checks:" << std::endl;
-    std::cout << "  TODO: Implement test-specific validation" << std::endl;
-    std::cout << std::endl;
-
-    // Assertions
-    EXPECT_FALSE(solver.checkNaN()) << "NaN detected in final state";
-
-    // TODO: Add test-specific assertions
-    EXPECT_TRUE(true) << "TODO: Implement validation logic";
-
-    std::cout << "========================================" << std::endl;
-    std::cout << "TEST PASSED ✓" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // --- Scaling consistency: finer dx/dt should give same physical velocity ---
+    // If v_lattice is the same fraction of c_s, the physical velocity must scale with dx/dt.
+    UnitConverter uc2(dx * 0.5f, dt * 0.25f, rho);  // finer grid
+    const float v_lu_common = 0.1f;                    // same lattice Mach number
+    float v_phys1 = uc.velocityToPhysical(v_lu_common);
+    float v_phys2 = uc2.velocityToPhysical(v_lu_common);
+    // v_phys = v_lu * dx/dt → same v_lu but different dx/dt → different v_phys
+    float expected_ratio = (dx / dt) / (dx * 0.5f / (dt * 0.25f));
+    float actual_ratio = v_phys1 / v_phys2;
+    EXPECT_NEAR(actual_ratio, expected_ratio, REL_TOL)
+        << "Velocity scaling with dx/dt mismatch: expected ratio=" << expected_ratio
+        << " got=" << actual_ratio;
 }
 
 int main(int argc, char** argv) {

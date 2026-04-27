@@ -1,118 +1,87 @@
 /**
  * @file test_disable_marangoni.cu
- * @brief Works without Marangoni
+ * @brief Disabling Marangoni suppresses thermocapillary flow.
  *
- * Success Criteria:
- * - TODO: Define specific success criteria
- * - No NaN
- * - Numerical stability
- * - Physical correctness
+ * Strategy: Run two cases — one WITH Marangoni and one WITHOUT —
+ * under an imposed temperature gradient (laser on one side).
+ * With Marangoni enabled the temperature gradient drives surface flow;
+ * with it disabled no such forcing exists. Therefore:
+ *   v_max(marangoni=on) > v_max(marangoni=off)
  *
- * Test Category: config, modules
- *
- * Physics:
- * - TODO: Describe physics configuration for this test
+ * This directly catches a "Marangoni flag ignored" regression.
  */
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
 
 #include "physics/multiphysics_solver.h"
 
 using namespace lbm::physics;
 
+static MultiphysicsConfig makeConfig(bool enable_marangoni) {
+    MultiphysicsConfig cfg;
+    cfg.nx = 30;
+    cfg.ny = 30;
+    cfg.nz = 15;
+    cfg.dx = 2e-6f;
+    cfg.dt = 5e-9f;
+    cfg.enable_thermal      = true;
+    cfg.enable_fluid        = true;
+    cfg.enable_vof          = false;
+    cfg.enable_marangoni    = enable_marangoni;
+    cfg.enable_laser        = true;
+    cfg.enable_buoyancy     = false;
+    cfg.enable_phase_change = false;
+    cfg.enable_darcy        = false;
+    // Laser in centre to create a T gradient
+    cfg.laser_power         = 50.0f;
+    cfg.laser_spot_radius   = 10e-6f;
+    cfg.laser_absorptivity  = 0.35f;
+    cfg.laser_scan_vx       = 0.0f; // stationary
+    // Adiabatic walls so gradient can build
+    cfg.boundaries.setUniform(lbm::physics::BoundaryType::WALL, ThermalBCType::ADIABATIC);
+    // Marangoni params (only matter when enabled)
+    cfg.dsigma_dT = -0.26e-3f;
+    cfg.marangoni_csf_multiplier = 1.0f;
+    return cfg;
+}
+
 TEST(MultiphysicsConfigTest, DisableMarangoni) {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "TEST: Works without Marangoni" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    const int n_steps = 80;
 
-    // Configuration
-    MultiphysicsConfig config;
-    config.nx = 50;
-    config.ny = 50;
-    config.nz = 25;
-    config.dx = 2e-6f;  // 2 μm
-    config.dt = 1e-8f;  // 10 ns
-
-    // TODO: Configure physics modules for this specific test
-    config.enable_thermal = true;
-    config.enable_fluid = true;
-    config.enable_vof = false;
-    config.enable_marangoni = false;
-    config.enable_laser = false;
-    config.enable_buoyancy = false;
-
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  Domain: " << config.nx << "×" << config.ny << "×" << config.nz << std::endl;
-    std::cout << "  dx = " << config.dx * 1e6 << " μm" << std::endl;
-    std::cout << "  dt = " << config.dt * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
-
-    // Create solver
-    MultiphysicsSolver solver(config);
-
-    // Initialize
-    const float T_init = 300.0f;  // K
-    solver.initialize(T_init, 0.5f);
-
-    std::cout << "Initial conditions:" << std::endl;
-    std::cout << "  T_init = " << T_init << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Time integration
-    const int n_steps = 200;
-    const int check_interval = 40;
-
-    std::cout << "Time integration (" << n_steps << " steps):" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
-
-    for (int step = 0; step < n_steps; ++step) {
-        solver.step();
-
-        if ((step + 1) % check_interval == 0) {
-            float v_max = solver.getMaxVelocity();
-            float T_max = solver.getMaxTemperature();
-
-            std::cout << "Step " << std::setw(4) << step + 1
-                      << " | t = " << std::fixed << std::setprecision(2)
-                      << (step + 1) * config.dt * 1e6 << " μs"
-                      << " | v_max = " << std::setprecision(4) << v_max << " m/s"
-                      << " | T_max = " << std::setprecision(1) << T_max << " K"
-                      << std::endl;
-
-            // Check for NaN
-            ASSERT_FALSE(solver.checkNaN()) << "NaN detected at step " << step + 1;
-        }
+    // Run WITHOUT Marangoni
+    {
+        auto cfg = makeConfig(false);
+        MultiphysicsSolver solver(cfg);
+        solver.initialize(300.0f, 0.5f);
+        for (int i = 0; i < n_steps; ++i) solver.step();
+        ASSERT_FALSE(solver.checkNaN()) << "NaN in Marangoni-disabled run";
     }
 
-    std::cout << std::string(60, '-') << std::endl;
+    float v_no_marangoni;
+    {
+        auto cfg = makeConfig(false);
+        MultiphysicsSolver solver(cfg);
+        solver.initialize(300.0f, 0.5f);
+        for (int i = 0; i < n_steps; ++i) solver.step();
+        v_no_marangoni = solver.getMaxVelocity();
+    }
 
-    // TODO: Add test-specific validation
-    float v_final = solver.getMaxVelocity();
-    float T_final = solver.getMaxTemperature();
+    float v_with_marangoni;
+    {
+        auto cfg = makeConfig(true);
+        MultiphysicsSolver solver(cfg);
+        solver.initialize(300.0f, 0.5f);
+        for (int i = 0; i < n_steps; ++i) solver.step();
+        ASSERT_FALSE(solver.checkNaN()) << "NaN in Marangoni-enabled run";
+        v_with_marangoni = solver.getMaxVelocity();
+    }
 
-    std::cout << "\nFinal Results:" << std::endl;
-    std::cout << "  Max velocity: " << v_final << " m/s" << std::endl;
-    std::cout << "  Max temperature: " << T_final << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Success criteria
-    std::cout << "Validation Checks:" << std::endl;
-    std::cout << "  TODO: Implement test-specific validation" << std::endl;
-    std::cout << std::endl;
-
-    // Assertions
-    EXPECT_FALSE(solver.checkNaN()) << "NaN detected in final state";
-
-    // TODO: Add test-specific assertions
-    EXPECT_TRUE(true) << "TODO: Implement validation logic";
-
-    std::cout << "========================================" << std::endl;
-    std::cout << "TEST PASSED ✓" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // Key assertion: Marangoni force must produce measurably higher velocity
+    EXPECT_GT(v_with_marangoni, v_no_marangoni)
+        << "Marangoni ON should produce higher v_max than Marangoni OFF. "
+        << "v_with=" << v_with_marangoni << " v_without=" << v_no_marangoni;
 }
 
 int main(int argc, char** argv) {
