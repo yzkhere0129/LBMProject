@@ -2,6 +2,29 @@
 
 Items the patrol has fixed/found that main should consider for production.
 
+## Stub test replacement F-03 — 2026-04-27 (READY FOR CHERRY-PICK)
+
+19 stub integration tests converted to real assertions. All 19 build clean.
+0 EXPECT_TRUE(true) stubs remain in tests/integration/multiphysics/.
+
+**Coverage added**: minimal config (v=0 invariant), VOF disable, Marangoni
+disable comparison, UnitConverter round-trips, force balance/direction/magnitude,
+CFL conservation, determinism, steady-state T and flow, VOF subcycling mass,
+extreme gradients, rapid solidification, melt pool depth, high-power robustness.
+
+**Bug found**: `config.material.melting_point` does not exist; correct field is
+`material.T_liquidus`. Fixed in same commits.
+
+Cherry-pick (3 commits):
+```bash
+git cherry-pick a6248cd  # batch 1: 8 tests
+git cherry-pick 2b1d438  # batch 2: 4 tests
+git cherry-pick 6d052bd  # batch 3: 7 tests
+git cherry-pick <latest> # ceiling fix + LIVE_LOG update
+```
+
+---
+
 ## Performance fixes F-05 / F-07 / F-16 — 2026-04-27
 
 Three cherry-pick-ready commits. Each is independent and safe to apply.

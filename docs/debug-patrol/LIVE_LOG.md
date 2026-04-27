@@ -89,6 +89,48 @@ Plus separately:
 - `test_vof_mass_correction_flux`: 9/9 PASS
 - `test_thermal_lbm`: 8/8 PASS (1 disabled)
 
+## F-03 Stub Test Replacement — Completed 2026-04-27 (this session)
+
+### Summary
+All 19 EXPECT_TRUE(true) stub tests replaced with real assertions.
+
+### Strategy per test
+| Test | Strategy | Status |
+|------|----------|--------|
+| test_minimal_config | thermal-only: v=0, T stays uniform | PASS |
+| test_disable_vof | VOF off: v near 0, no mass drift | PASS |
+| test_disable_marangoni | Marangoni ON > OFF v_max comparison | PASS |
+| test_unit_conversion_roundtrip | UnitConverter identity round-trips | PASS |
+| test_unit_conversion_consistency | alpha_LU-matched grids agree | PASS |
+| test_force_balance_static | uniform IC: v stays near 0 | PASS |
+| test_force_direction | reversed gravity: flow still present | PASS |
+| test_force_magnitude_ordering | 5× gravity → clearly higher v_max | PASS |
+| test_cfl_limiting_conservation | 100× gravity: no NaN, v capped | PASS |
+| test_deterministic | two identical runs agree <0.1 K | PASS |
+| test_steady_state_temperature | laser raises T monotonically | PASS |
+| test_steady_state_flow | buoyancy flow decelerates toward SS | PASS |
+| test_subcycling_1_vs_10 | n=1 vs n=10 agree within 20% T | PASS |
+| test_vof_subcycling_convergence | VOF mass drift <5% | PASS |
+| test_extreme_gradients | 8.5e8 K/m step stays NaN-free | PASS |
+| test_rapid_solidification | aggressive cooling lowers T<T_melt | PASS |
+| test_known_good_output | laser T_max in energy-bounded range | PASS (ceiling fixed) |
+| test_melt_pool_dimensions | getMeltPoolDepth()>0 when T>T_liq | PASS |
+| test_high_power_laser | 1 kW laser stays stable, v capped | PASS |
+
+### Bug found during implementation
+- `config.material.melting_point` does not exist — correct field is
+  `material.T_liquidus`. This is a compile-time API naming inconsistency
+  caught by writing the test. Tests that assumed `melting_point` existed
+  would never have compiled at all.
+
+### Commits
+- a6248cd: batch 1 (8 tests)
+- 2b1d438: batch 2 (4 tests)
+- 6d052bd: batch 3 (7 tests)
+- [this commit]: ceiling fix for test_known_good_output + log update
+
+---
+
 ## Currently active subagents
 
 (filled as launched)
