@@ -59,3 +59,60 @@ git cherry-pick 9a6061b
   Currently latent (defaults match Sprint-1). Document as known limitation.
 - F3-25: ti6al4v_melting preset dt=5e-10 too small. Fix in `simulation_config.cpp`
   but path is `@deprecated` per its own header — cleanup only, not blocker.
+
+---
+
+## Numerical-accuracy audit on collision kernels — 2026-04-27
+
+**Doc**: `docs/debug-patrol/numerical-audit-collision-kernels.md`
+**Total**: 2 confirmed bugs, 3 potential, 5 style (across 7 audit areas)
+**State**: investigation only, NO code changes — fixes need design call by main.
+
+### 2 confirmed bugs ready for fix
+
+| ID | File | Issue |
+|---|---|---|
+| **N-1.2** | `src/physics/fluid/fluid_lbm.cu:2060-2062` vs `:1455` (and parallel sites in TRT-EDM, Reg-EDM, Reg-Guo kernels) | EDM collision and post-stream macroscopic kernels disagree on `u_phys` formula in mushy zone. Collision: `(m+0.5F)/(ρ+0.5K)`. Macro: `m/(ρ+0.5K) + 0.5F/ρ`. Algebraic difference `0.5·F·0.5K/(ρ(ρ+0.5K))` ≈ ~40% relative error at K_LU=10 with F_LU=1e-3. Each step the macro overwrites with the inconsistent value, feeding next-step force build. Likely contributor to Sprint-1 raised-track sign-flip (groove vs ridge). |
+| **N-7.1** | `src/physics/force_accumulator.cu:701-761` (gradual) and `:766-860` (adaptive) | CFL limiter is discontinuous at `v_new = v_target` boundary when `v_current > v_ramp` (~18% scale jump in test case `v_target=1, ramp=0.8, v_current=0.9, f_mag=0.1`). Contradicts comment claim of "smooth exponential damping ... avoids discontinuous force jump". Causes spatial force banding in v ~ v_target regime — concern for recoil hot spots and melt boil cells. |
+
+### Suggested patches (sketches in audit doc, NOT applied)
+
+**N-1.2 (option a — match collision)**:
+```c
+// fluid_lbm.cu:2060-2062, in computeMacroscopicSemiImplicitDarcyEDMKernel
+u_x = u_bare_x + 0.5f * force_x[id] * inv_denom;  // was: * inv_rho
+u_y = u_bare_y + 0.5f * force_y[id] * inv_denom;
+u_z = u_bare_z + 0.5f * force_z[id] * inv_denom;
+```
+**Verification test** to add: one-step mushy run (K_LU=1, F_LU=1e-3),
+assert `|u_collision - u_macro| < 1e-7` per component.
+
+**N-7.1**: switch regime decision to `v_current` instead of `v_new`.
+See §7 "Suggested fix" in the audit doc for sketch.
+
+### Potential bugs (P1) — main needs design call
+
+* **N-1.1**: Sprint-1 hybrid `Δu = F/(ρ+0.5K)` is not standard Kupershtokh
+  EDM. Internally consistent, limits OK, but in `K → ∞` overcompensates by
+  factor `ρ/(ρ+0.5K)` vs clean Crank-Nicolson Darcy. Decide whether to
+  keep + document or revise.
+* **N-2.2**: `m/(ρ+0.5K)` form ≠ clean CN Darcy; matches an ω-modulated
+  decay rate. Subtle calibration-coupled, not a bug.
+* **N-3.2**: TRT Λ-preserving LES drives ω⁻ → 1.85 with Λ=3/16 under
+  heavy turbulence (τ_eff=5). No instability but anti-symmetric mode
+  becomes ~over-relaxed; watch for boundary errors.
+
+### Verified-clean (NO bugs despite suspicion)
+
+* Equilibrium f_eq formula (constants 1, 3, 4.5, -1.5 all exact in FP32)
+* D3Q19 `opposite[]` self-inverse; weights sum to 1; 2nd-moment isotropy
+  `Σ w c c = cs² I` to FP32 precision
+* TRT neq-split formulation matches `f^+/f^-` decomposition exactly
+* Regularized 2nd-order Hermite projection round-trips Π exactly
+  (verified by python)
+* Hou 1996 algebraic Smagorinsky derivation matches code exactly
+* Guo 2002 source term S_q expansion in Reg-Guo kernel correct
+
+The two confirmed bugs are *coupling* errors — each individual kernel is
+correct in isolation, but the handoff between them is inconsistent. This
+pattern slips through unit tests because each kernel passes its own.

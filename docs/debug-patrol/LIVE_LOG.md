@@ -81,3 +81,50 @@ Plus separately:
 
 **Pass 3 adds 37 new findings to the triage queue.**  
 Running total: 90 (pass1+2) + 37 (pass3) = 127 findings cataloged.
+
+---
+
+## Numerical-accuracy audit on collision kernels — Completed 2026-04-27
+
+**File**: `docs/debug-patrol/numerical-audit-collision-kernels.md` (~660 lines)
+**Scope**: line-by-line vs textbook (Kupershtokh 2009, Latt 2006, Hou 1996,
+Ginzburg 2008, Guo 2002) review of 7 areas in `src/physics/fluid/fluid_lbm.cu`.
+
+**Verdict**: 2 confirmed bugs, 3 potential, 5 style. Codebase is mostly numerically
+sound — equilibrium, regularized projection, TRT decomposition, Smagorinsky algebraic
+formula, opposite table all verified correct by independent derivation.
+
+**Confirmed bugs (P0)**:
+- **N-1.2** [BUG]: `fluidBGKCollisionEDMKernel` (line 1455) and
+  `computeMacroscopicSemiImplicitDarcyEDMKernel` (line 2060) use
+  DIFFERENT formulas for `u_phys` in mushy zone. ~40% relative
+  discrepancy at typical K_LU. Each step's collision-time u write is
+  overwritten with the inconsistent post-stream value, then fed back to
+  next step's force build. Could explain Sprint-1 raised-track sign-flip.
+  Patch: `:2060-2062` use `inv_denom` not `inv_rho` for F half-shift.
+- **N-7.1** [BUG]: `applyCFLLimitingKernel` is discontinuous at
+  `v_new = v_target` boundary (~20% scale jump), contradicting its
+  comment claim "smooth exponential damping ... avoids discontinuous
+  force jump". Spatial banding likely in v ~ v_target regime.
+  Patch: switch regime decision to `v_current` instead of `v_new`.
+
+**Potential bugs (P1)**:
+- **N-1.1**: Sprint-1 hybrid `Δu = F/(ρ+0.5K)` deviates from textbook
+  Kupershtokh EDM. Internally consistent but compounds with semi-implicit
+  Darcy in a non-published way. Document or revert.
+- **N-2.2**: `m/(ρ+0.5K)` form ≠ clean Crank-Nicolson Darcy; matches an
+  ω-modulated decay rate. Subtle calibration concern, not a bug.
+- **N-3.2**: Λ-preserving LES drives ω⁻ → 1.85 under heavy turbulence
+  with Λ=3/16. No instability but anti-symmetric channel becomes
+  ~over-relaxed.
+
+**Verified clean (NOT bugs despite suspicion)**:
+- Equilibrium f_eq formula (constants 1, 3, 4.5, -1.5 all exact in FP32).
+- D3Q19 lattice tables (`opposite[]` self-inverse, weights sum to 1,
+  2nd-moment isotropy `Σ w c c = cs² I` to FP32 precision).
+- TRT neq-split formulation matches `f^+/f^-` decomposition exactly.
+- Regularized 2nd-order Hermite projection round-trips Π exactly.
+- Hou 1996 algebraic Smagorinsky derivation matches code exactly.
+- Guo source term S_q expansion (1986-1992) matches Guo 2002 Eq. 20.
+
+**Action**: 2 confirmed bugs ready for fix → see OUTBOX entry.
