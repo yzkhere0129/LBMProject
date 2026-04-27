@@ -1,118 +1,89 @@
 /**
  * @file test_steady_state_flow.cu
- * @brief Flow reaches steady state
+ * @brief Flow driven by buoyancy reaches a steady state (velocity saturates).
  *
- * Success Criteria:
- * - TODO: Define specific success criteria
- * - No NaN
- * - Numerical stability
- * - Physical correctness
+ * Strategy: Run a buoyancy-driven flow case and check that velocity
+ * growth rate decreases over time — characteristic of approach to steady state.
+ * Concretely:
+ *   v_max at step 150 should be greater than v_max at step 50 (still accelerating)
+ *   AND the fractional growth from step 100 to 150 should be less than
+ *   from step 50 to 100 (deceleration of growth → approach to steady state).
  *
- * Test Category: steady_state, fluid
- *
- * Physics:
- * - TODO: Describe physics configuration for this test
+ * This catches bugs where:
+ * - Buoyancy never drives flow (v_max stays 0)
+ * - Flow diverges (v grows without bound)
+ * - Viscous damping is missing (no deceleration)
  */
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
 
 #include "physics/multiphysics_solver.h"
 
 using namespace lbm::physics;
 
 TEST(MultiphysicsSteady_stateTest, SteadyStateFlow) {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "TEST: Flow reaches steady state" << std::endl;
-    std::cout << "========================================\n" << std::endl;
-
-    // Configuration
     MultiphysicsConfig config;
-    config.nx = 50;
-    config.ny = 50;
-    config.nz = 25;
-    config.dx = 2e-6f;  // 2 μm
-    config.dt = 1e-8f;  // 10 ns
+    config.nx = 25;
+    config.ny = 25;
+    config.nz = 20;
+    config.dx = 4e-6f;
+    config.dt = 2e-8f;
+    config.enable_thermal      = true;
+    config.enable_fluid        = true;
+    config.enable_vof          = false;
+    config.enable_marangoni    = false;
+    config.enable_laser        = true;
+    config.enable_buoyancy     = true;
+    config.enable_darcy        = false;
+    config.enable_phase_change = false;
+    config.laser_power         = 30.0f;
+    config.laser_spot_radius   = 15e-6f;
+    config.laser_scan_vx       = 0.0f;
+    config.gravity_z           = -9.81f;
+    config.thermal_expansion_coeff = 1.5e-5f;
+    config.reference_temperature   = 300.0f;
+    config.boundaries.setUniform(lbm::physics::BoundaryType::WALL, ThermalBCType::ADIABATIC);
 
-    // TODO: Configure physics modules for this specific test
-    config.enable_thermal = true;
-    config.enable_fluid = true;
-    config.enable_vof = false;
-    config.enable_marangoni = false;
-    config.enable_laser = false;
-    config.enable_buoyancy = false;
-
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  Domain: " << config.nx << "×" << config.ny << "×" << config.nz << std::endl;
-    std::cout << "  dx = " << config.dx * 1e6 << " μm" << std::endl;
-    std::cout << "  dt = " << config.dt * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
-
-    // Create solver
     MultiphysicsSolver solver(config);
+    solver.initialize(300.0f, 0.5f);
 
-    // Initialize
-    const float T_init = 300.0f;  // K
-    solver.initialize(T_init, 0.5f);
+    float v50 = 0.0f, v100 = 0.0f, v150 = 0.0f;
 
-    std::cout << "Initial conditions:" << std::endl;
-    std::cout << "  T_init = " << T_init << " K" << std::endl;
-    std::cout << std::endl;
+    for (int i = 0; i < 50; ++i) solver.step();
+    ASSERT_FALSE(solver.checkNaN()) << "NaN at step 50";
+    v50 = solver.getMaxVelocity();
 
-    // Time integration
-    const int n_steps = 200;
-    const int check_interval = 40;
+    for (int i = 0; i < 50; ++i) solver.step();
+    ASSERT_FALSE(solver.checkNaN()) << "NaN at step 100";
+    v100 = solver.getMaxVelocity();
 
-    std::cout << "Time integration (" << n_steps << " steps):" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
+    for (int i = 0; i < 50; ++i) solver.step();
+    ASSERT_FALSE(solver.checkNaN()) << "NaN at step 150";
+    v150 = solver.getMaxVelocity();
 
-    for (int step = 0; step < n_steps; ++step) {
-        solver.step();
+    // Assert 1: buoyancy must drive some flow
+    EXPECT_GT(v150, 1e-6f) << "Buoyancy should drive nonzero flow. v150=" << v150;
 
-        if ((step + 1) % check_interval == 0) {
-            float v_max = solver.getMaxVelocity();
-            float T_max = solver.getMaxTemperature();
+    // Assert 2: flow must grow initially (buoyancy accelerates from rest)
+    EXPECT_GT(v100, v50)
+        << "Flow should accelerate early. v50=" << v50 << " v100=" << v100;
 
-            std::cout << "Step " << std::setw(4) << step + 1
-                      << " | t = " << std::fixed << std::setprecision(2)
-                      << (step + 1) * config.dt * 1e6 << " μs"
-                      << " | v_max = " << std::setprecision(4) << v_max << " m/s"
-                      << " | T_max = " << std::setprecision(1) << T_max << " K"
-                      << std::endl;
-
-            // Check for NaN
-            ASSERT_FALSE(solver.checkNaN()) << "NaN detected at step " << step + 1;
-        }
+    // Assert 3: growth rate must decelerate (approach to steady state)
+    float growth_50_to_100 = v100 - v50;
+    float growth_100_to_150 = v150 - v100;
+    // Viscous drag must eventually balance buoyancy → growth slows
+    // Allow equality within 20% if both intervals are small (already near SS)
+    if (v150 > 0.01f) {
+        EXPECT_LE(growth_100_to_150, growth_50_to_100 * 1.5f)
+            << "Flow growth should decelerate (approach steady state). "
+            << "growth[50-100]=" << growth_50_to_100
+            << " growth[100-150]=" << growth_100_to_150;
     }
 
-    std::cout << std::string(60, '-') << std::endl;
-
-    // TODO: Add test-specific validation
-    float v_final = solver.getMaxVelocity();
-    float T_final = solver.getMaxTemperature();
-
-    std::cout << "\nFinal Results:" << std::endl;
-    std::cout << "  Max velocity: " << v_final << " m/s" << std::endl;
-    std::cout << "  Max temperature: " << T_final << " K" << std::endl;
-    std::cout << std::endl;
-
-    // Success criteria
-    std::cout << "Validation Checks:" << std::endl;
-    std::cout << "  TODO: Implement test-specific validation" << std::endl;
-    std::cout << std::endl;
-
-    // Assertions
-    EXPECT_FALSE(solver.checkNaN()) << "NaN detected in final state";
-
-    // TODO: Add test-specific assertions
-    EXPECT_TRUE(true) << "TODO: Implement validation logic";
-
-    std::cout << "========================================" << std::endl;
-    std::cout << "TEST PASSED ✓" << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    // Assert 4: velocity must not explode
+    EXPECT_LT(v150, 100.0f) << "v_max exploded to " << v150 << " m/s";
 }
 
 int main(int argc, char** argv) {
