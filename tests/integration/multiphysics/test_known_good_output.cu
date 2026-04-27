@@ -65,12 +65,13 @@ TEST(MultiphysicsRegressionTest, KnownGoodOutput) {
     EXPECT_GT(T_max, T_init + 1.0f)
         << "Laser should have raised T above init. T_max=" << T_max;
 
-    // Upper bound: no explosion (adiabatic box, 100 steps)
+    // Upper bound: energy ceiling concentrated in laser spot.
     // P_absorbed * n_steps * dt = 50 * 0.35 * 100 * 1e-8 = 1.75e-5 J
-    // Ti6Al4V: rho=4430, cp=526, V=(2e-6)^3*4000 = 3.2e-14 m^3
-    // T_max_ceiling = 300 + 1.75e-5 / (4430 * 526 * 3.2e-14) = 300 + 234 = 534 K
-    // Give 3× margin for concentration effects at spot
-    EXPECT_LT(T_max, T_init + 3.0f * 234.0f)
+    // All energy in spot vol: V_spot ~ pi*r^2*3*dx = pi*(10e-6)^2*6e-6 ≈ 1.9e-15 m³
+    // Ti6Al4V: rho=4430, cp=526
+    // T_spot_max ~ 300 + 1.75e-5/(4430*526*1.9e-15) ~ 4300 K
+    // 3× safety factor for numerical over-concentration
+    EXPECT_LT(T_max, T_init + 3.0f * 4300.0f)
         << "T_max exceeded energy-balance ceiling. T_max=" << T_max;
 
     // T_max must be above ambient (laser deposited energy)
