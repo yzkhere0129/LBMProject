@@ -856,6 +856,8 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
       d_velocity_physical_y_(nullptr),
       d_velocity_physical_z_(nullptr),
       d_evap_mass_flux_(nullptr),
+      d_vof_fill_raw_(nullptr),
+      d_vof_fill_tmp_(nullptr),
       current_time_(0.0f),
       interface_z_(static_cast<float>(config.nz - 1)),  // Default: surface at top
       initial_mass_(0.0f),
@@ -1180,6 +1182,11 @@ void MultiphysicsSolver::allocateMemory() {
     CUDA_CHECK(cudaMemset(d_T_smoothed_, 0, num_cells * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_darcy_K_prev_, 0, num_cells * sizeof(float)));
 
+    // F-05: VOF smoothing scratch buffers — one-time allocation avoids per-step
+    // cudaMalloc/cudaFree overhead (~ms per call × 25000 steps ≈ 25 s saved).
+    CUDA_CHECK(cudaMalloc(&d_vof_fill_raw_, num_cells * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_vof_fill_tmp_, num_cells * sizeof(float)));
+
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         throw std::runtime_error("Failed to allocate device memory: " +
@@ -1208,6 +1215,8 @@ void MultiphysicsSolver::freeMemory() {
     if (d_fl_smoothed_) cudaFree(d_fl_smoothed_);
     if (d_T_smoothed_) cudaFree(d_T_smoothed_);
     if (d_darcy_K_prev_) cudaFree(d_darcy_K_prev_);
+    if (d_vof_fill_raw_) cudaFree(d_vof_fill_raw_);
+    if (d_vof_fill_tmp_) cudaFree(d_vof_fill_tmp_);
 }
 
 // ============================================================================
@@ -2168,32 +2177,27 @@ void MultiphysicsSolver::vofStep(float dt) {
     //   4. Restore raw fill_level (advection needs the sharp interface)
     // ========================================================================
     {
+        // F-05: d_vof_fill_raw_ and d_vof_fill_tmp_ are class members allocated
+        // once in allocateMemory() — no per-step malloc/free overhead.
         int num_cells_local = config_.nx * config_.ny * config_.nz;
 
         // Save raw fill_level
-        float* d_fill_raw = nullptr;
-        CUDA_CHECK(cudaMalloc(&d_fill_raw, num_cells_local * sizeof(float)));
-        CUDA_CHECK(cudaMemcpy(d_fill_raw, vof_->getFillLevel(),
+        CUDA_CHECK(cudaMemcpy(d_vof_fill_raw_, vof_->getFillLevel(),
                               num_cells_local * sizeof(float), cudaMemcpyDeviceToDevice));
 
         // Smooth fill_level in-place (2 passes)
-        float* d_fill_tmp = nullptr;
-        CUDA_CHECK(cudaMalloc(&d_fill_tmp, num_cells_local * sizeof(float)));
-
         dim3 blk(8, 8, 8);
         dim3 grd((config_.nx + 7) / 8, (config_.ny + 7) / 8, (config_.nz + 7) / 8);
 
         // Pass 1: fill_level → tmp
-        smoothField27Kernel<<<grd, blk>>>(vof_->getFillLevel(), d_fill_tmp,
+        smoothField27Kernel<<<grd, blk>>>(vof_->getFillLevel(), d_vof_fill_tmp_,
                                           config_.nx, config_.ny, config_.nz);
         CUDA_CHECK_KERNEL();
         // Pass 2: tmp → fill_level (in-place overwrite)
-        smoothField27Kernel<<<grd, blk>>>(d_fill_tmp, vof_->getFillLevel(),
+        smoothField27Kernel<<<grd, blk>>>(d_vof_fill_tmp_, vof_->getFillLevel(),
                                           config_.nx, config_.ny, config_.nz);
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
-
-        cudaFree(d_fill_tmp);
 
         // Compute normals + curvature from smoothed field
         vof_->reconstructInterface();
@@ -2203,9 +2207,8 @@ void MultiphysicsSolver::vofStep(float dt) {
         }
 
         // Restore raw fill_level (sharp interface for advection + VOF transport)
-        CUDA_CHECK(cudaMemcpy(vof_->getFillLevel(), d_fill_raw,
+        CUDA_CHECK(cudaMemcpy(vof_->getFillLevel(), d_vof_fill_raw_,
                               num_cells_local * sizeof(float), cudaMemcpyDeviceToDevice));
-        cudaFree(d_fill_raw);
     }
 }
 
