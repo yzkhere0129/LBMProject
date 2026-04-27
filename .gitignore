@@ -120,3 +120,13 @@ Testing/
 build_test/
 benchmark/
 build_check/
+
+# Task-A: large artefacts that should not be in git
+phase2_results.tar.gz
+phase4_results.tar.gz
+output_phase1
+output_phase2
+output_phase4
+output_phase2_*
+output_phase4_*
+vtk-316L-150W-50um-V800mms

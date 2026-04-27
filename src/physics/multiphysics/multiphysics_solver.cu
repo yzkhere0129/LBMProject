@@ -994,8 +994,25 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
         // Enable mass conservation correction to prevent 90% mass loss
         // This redistributes numerical mass loss back to interface cells
         if (config_.enable_vof_mass_correction) {
-            vof_->setMassConservationCorrection(true, 0.7f);  // damping=0.7 (moderate)
-            std::cout << "  VOF mass correction: ENABLED (damping=0.7)" << std::endl;
+            vof_->setMassConservationCorrection(true, config_.vof_mass_correction_damping);
+            vof_->setMassCorrectionUseFluxWeight(config_.vof_mass_correction_use_flux_weight);
+
+            // Track-C Gate 2: set substrate height once at init (fixed geometry).
+            // Gate 1 (laser x) is updated per-step in step() via setMassCorrectionLaserX().
+            if (config_.mass_correction_use_track_c &&
+                config_.mass_correction_z_substrate_lu >= 0.0f) {
+                vof_->setMassCorrectionZSubstrate(config_.mass_correction_z_substrate_lu,
+                                                  config_.mass_correction_z_offset_lu);
+            }
+
+            const char* track_name = "A-vz";
+            if (config_.vof_mass_correction_use_flux_weight) {
+                track_name = config_.mass_correction_use_track_c ? "C-flux+gates" : "B-flux";
+            }
+            std::cout << "  VOF mass correction: ENABLED (damping="
+                      << config_.vof_mass_correction_damping
+                      << ", track=" << track_name
+                      << ")" << std::endl;
         }
     }
 
@@ -1441,6 +1458,15 @@ void MultiphysicsSolver::step(float dt) {
 
     // Step 4: VOF interface management
     if (vof_) {
+        // Track-C Gate 1: push current laser x position into VOF before advection.
+        // laser_->x0 is the physical x in [m] after updatePosition() ran in Step 1.
+        // Convert to lattice units: lu = x_m / dx.
+        if (laser_ && config_.mass_correction_use_track_c) {
+            float laser_x_lu = laser_->x0 / config_.dx;
+            vof_->setMassCorrectionLaserX(laser_x_lu,
+                                          config_.mass_correction_trailing_margin_lu);
+        }
+
         if (config_.enable_vof_advection) {
             // Full VOF with advection
             vofStep(dt);

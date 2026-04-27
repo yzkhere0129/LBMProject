@@ -12,8 +12,8 @@
  * Output: VTK every 50 μs, console metrics every 500 steps
  *
  * Usage:
- *   mkdir -p output_phase2 && ./sim_line_scan_316L
- *   ParaView: Open output_phase2/line_scan_*.vtk
+ *   mkdir -p output_phase2_mini && ./sim_line_scan_316L
+ *   ParaView: Open output_phase2_mini/line_scan_*.vtk
  */
 
 #include <iostream>
@@ -114,8 +114,10 @@ int main() {
     // to fully capture side ridges and let mass redistribute back to center.
     // nx=650 (1300 μm): laser at t=800μs reaches 1140 μm; +3·w₀=117 μm beam
     // tail needs to fit, so nx must extend ≥1257 μm — 1300 μm gives 43 μm buffer.
-    config.nx = 650;
-    config.ny = 125;
+    // MINI (2026-04-27): nx 650→500 (1000μm; scan 500→820μm + 180μm buffer),
+    // ny 125→64, nz 100 kept. Total 8.13M → 3.20M cells (~2.5× smaller).
+    config.nx = 500;
+    config.ny = 80;     // Iter-2: 64→80 (160μm transverse) eliminates y-wall artifact
     config.nz = 100;
     config.dx = 2.0e-6f;
     config.dt = 8.0e-8f;
@@ -171,18 +173,9 @@ int main() {
     config.ray_tracing.use_fresnel        = true;
     config.ray_tracing.fresnel_n_refract  = 2.9613f;   // 316L @ 1064 nm Mills
     config.ray_tracing.fresnel_k_extinct  = 4.0133f;
-    config.ray_tracing.num_rays           = 4096;       // dense enough for 50 μm spot
-    // ITER-6 (2026-04-27): max_bounces 5 → 3.
-    // Hypothesis: 5 bounces over-traps light deep inside the keyhole, depositing
-    // more energy than F3D's keyhole physics. Our LBM keyhole at t=800μs is
-    // ~98 μm deep at offset -50μm vs F3D's mere -5μm — 20× too deep.
-    // Reducing to 3 bounces should let more rays escape, lowering effective
-    // absorption from ~70% to ~50%, weakening recoil → shallower keyhole.
-    // If keyhole comes within F3D ballpark (-5 to -20 μm at offset -50),
-    // Track-C + iter-6 is the merge candidate. If still too deep, the issue
-    // is in recoil pressure scaling, not RT.
-    config.ray_tracing.max_bounces        = 3;          // 5 → 3 (test keyhole depth)
-    config.ray_tracing.max_dda_steps      = 1500;       // domain ~1.2 mm / dx 2 μm → 600 cells, +slack
+    config.ray_tracing.num_rays           = 1024;       // MINI: phase1 budget (4× fewer)
+    config.ray_tracing.max_bounces        = 3;          // MINI: 5→3
+    config.ray_tracing.max_dda_steps      = 600;        // MINI: 500 nx + 20% slack
     config.ray_tracing.energy_cutoff      = 0.01f;
     config.ray_tracing.absorptivity       = 0.40f;      // unused when use_fresnel=true
 
@@ -253,29 +246,25 @@ int main() {
     // If trailing-zone mass deficit comes from -1.84%/400μs numerical leakage,
     // enabling this should bring back the missing metal.
     config.enable_vof_mass_correction  = true;
-    // ----- Track-C (B1 flux + x-mask + z-floor) — replaces broken Track-A -----
-    // Track-A (max(v_z,0)) verified to fail: side ridges grew to +28μm (over the
-    // +15μm reject line) and rolling melt pool reversed direction. Track-C
-    // mini-Phase-2 (iter-1 t=400μs) restored correct rolling +0.40 m/s and
-    // brought ridges to +10μm, centerline to -8μm — strong improvement.
-    config.vof_mass_correction_use_flux_weight = true;
-    // FINAL (iter-4 winning config): damping=0.7 + z_offset_lu=0.
-    // iter-5 with damping=1.0 introduced +24μm reject spike; iter-3 with
-    // z_offset=2 had ridge-100=+12 (over band). iter-4 is 3 PASS + 1 marginal.
+    // ----- TRACK-C: B1 + x-mask + z-floor (the whole point of this app) -----
+    config.vof_mass_correction_use_flux_weight = true;   // B1 base
     config.vof_mass_correction_damping = 0.7f;
     config.mass_correction_use_track_c = true;
     config.mass_correction_trailing_margin_lu = 25.0f;   // 50 μm past laser
     config.mass_correction_z_substrate_lu     = 80.0f;   // matches interface_z=80
-    // ITER-4: tighten z-offset 2→0 to strictly exclude any cell above substrate
-    // (side ridges are by definition above z=80; they're now fully gated out).
-    // If W collapses too often (B1-fallback-uniform messages), relax to 1.
-    config.mass_correction_z_offset_lu = 0.0f;
 
-    // --- Timing: Phase-1 SHORT test (Night Protocol) ---
-    // 800 μs = 10000 steps. VTK every 100 μs (8 frames + initial).
-    const float t_total  = 800.0e-6f;
+    // --- ITER-2: t=600μs, ny=80 (eliminate y-wall artifact in mini-config) ---
+    // Iter-1 (t=400μs, ny=64) gave clean PASS on centerline (-8μm) and ridges
+    // (+10μm at -100/-200), but max trailing showed +20μm spike at the y-wall
+    // (4 cells at y=120-126, |y-mid|=56-62μm). Widening to ny=80 (160μm) gives
+    // |y-wall|=80μm from centerline (vs Phase-2 full's 125μm), matching the
+    // physical melt-pool width budget.
+    // Running to 600μs captures more trailing-zone development (Phase-1 closes
+    // its centerline trajectory by t=800μs at -14μm; Track-C at t=400μs is -8,
+    // so we expect t=600μs around -5 to -3 if the trajectory continues).
+    const float t_total  = 600.0e-6f;
     const int num_steps  = static_cast<int>(t_total / config.dt);
-    const int vtk_every  = static_cast<int>(100.0e-6f / config.dt);  // 100 μs cadence
+    const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);  // 50 μs cadence (12 frames + initial)
     const int diag_every = 500;
     // Substrate top at z = 160 μm (k=80). LBM domain z∈[0,200]μm:
     // metal [0,160] (80 cells), gas [160,200] (20 cells). Keyhole 80μm深 → 离底
@@ -317,7 +306,7 @@ int main() {
     // ==================================================================
     // Initialize
     // ==================================================================
-    mkdir("output_phase2", 0755);
+    mkdir("output_phase2_mini", 0755);
 
     MultiphysicsSolver solver(config);
     solver.initialize(300.0f, 0.80f);
@@ -386,7 +375,7 @@ int main() {
         if (step % vtk_every == 0) {
             char filename[256];
             snprintf(filename, sizeof(filename),
-                     "output_phase2/line_scan_%06d", step);
+                     "output_phase2_mini/line_scan_%06d", step);
             io::VTKWriter::writeFields(
                 std::string(filename), registry, {},
                 config.nx, config.ny, config.nz, config.dx);
@@ -434,7 +423,7 @@ int main() {
     printf("  Total updates: %.2e\n", (double)total_updates);
     printf("  Throughput: %.2f MLUPS (%.4f GLUPS)\n", MLUPS, GLUPS);
     printf("  Steps/sec: %.1f\n", num_steps / wall_seconds);
-    printf("\nOutput: output_phase2/line_scan_*.vtk\n");
+    printf("\nOutput: output_phase2_mini/line_scan_*.vtk\n");
     printf("============================================================\n\n");
 
     return 0;

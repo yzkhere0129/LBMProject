@@ -220,13 +220,72 @@ public:
     float computeTotalMass() const;
 
     /**
-     * @brief Enforce global mass conservation by scaling fill levels
-     * @param target_mass Target total mass to conserve
-     * @note Scales all fill levels uniformly: f_new = f_old * (target_mass / current_mass)
-     * @note Should be called after advection to correct accumulated mass errors
-     * @note Only applies correction if mass error > 0.1% to avoid unnecessary rescaling
+     * @brief Enforce global mass conservation
+     * @param target_mass Target total mass Σf to conserve.
+     * @param d_vz Optional device pointer to vertical velocity field [m/s].
+     *             When non-null, switches to A1 v_z-weighted additive
+     *             correction: redistribute mass deficit preferentially to
+     *             interface cells with upward flow (capillary back-flow zone)
+     *             and away from over-deposited stagnant regions.
+     *             When null (default), falls back to the legacy uniform
+     *             multiplicative scaling for backward compatibility.
+     *
+     * Algorithm A1 (when d_vz != nullptr):
+     *   w_i = max(sign(Δm) * v_z[i], 0)  for interface cells (0<f<1), else 0
+     *   W = Σ w_i
+     *   f_new[i] = clamp(f[i] + (Δm/W) * w_i, 0, 1)
+     *
+     * Falls back to uniform additive correction over interface cells if
+     * W ≈ 0 (no cells with the right flow direction).
+     *
+     * @note Only applies correction if relative mass error > 0.1%.
      */
-    void enforceGlobalMassConservation(float target_mass);
+    void enforceGlobalMassConservation(float target_mass,
+                                       const float* d_vz = nullptr);
+
+    /**
+     * @brief Track-B public entry: w = max(sign(Δm)·(-∇f·v), 0).
+     * @param target_mass Target Σf to conserve.
+     * @param d_vx, d_vy, d_vz Device velocity ptrs [m/s].
+     *
+     * Computes the inward-flux weight inline from 6-neighbour fill_level
+     * gradients. Falls back to uniform additive over interface cells if W ≈ 0.
+     * Used by unit tests that need to drive the Track-B kernels with synthetic
+     * fields (matching Track-A's 2-arg testing pattern).
+     */
+    void enforceGlobalMassConservation(float target_mass,
+                                       const float* d_vx,
+                                       const float* d_vy,
+                                       const float* d_vz);
+
+    /**
+     * @brief Track-C public entry: Track-B + geometric gate arguments.
+     *
+     * Intended for unit tests that need to exercise the Track-C gates with
+     * synthetic inputs, without going through advectFillLevel().  Production
+     * code uses the member setters (setMassCorrectionLaserX /
+     * setMassCorrectionZSubstrate) and lets advectFillLevel() pick them up.
+     *
+     * @param target_mass  Target Σf to conserve.
+     * @param d_vx/vy/vz   Device velocity arrays [m/s].
+     * @param laser_x_lu   Current laser x in lattice units; negative = gate off.
+     * @param trailing_margin_lu  Exclusion half-width [lu] behind laser front.
+     *                    Cells with i > laser_x_lu - margin are skipped.
+     *                    Typical: 25 lu (= 50 μm at dx=2 μm).
+     * @param z_substrate_lu  Substrate top index [lu]; negative = gate off.
+     * @param z_offset_lu  Allowance above substrate before exclusion [lu].
+     *                    Typical: 2 lu.
+     *
+     * Falls back to uniform additive over interface cells when W ≈ 0.
+     */
+    void enforceMassConservationFlux(float target_mass,
+                                     const float* d_vx,
+                                     const float* d_vy,
+                                     const float* d_vz,
+                                     float laser_x_lu        = -1.0f,
+                                     float trailing_margin_lu = 25.0f,
+                                     float z_substrate_lu    = -1.0f,
+                                     float z_offset_lu       =  2.0f);
 
     /**
      * @brief Apply evaporation mass loss to fill level
@@ -298,6 +357,61 @@ public:
     }
 
     /**
+     * @brief Toggle Track-B (inline-∇f flux weight) on the mass-correction helper.
+     * @param use true → w = max(-∇f·v, 0) using inline central-diff gradient
+     *            false → w = max(v_z, 0) Track-A (default, legacy)
+     * @note When enabled, the TVD and PLIC advection paths call the new
+     *       applyMassCorrectionInline(vx,vy,vz) overload instead of the
+     *       single-vz one. Both forms guard on mass_correction_enabled_.
+     */
+    void setMassCorrectionUseFluxWeight(bool use) {
+        mass_correction_use_flux_weight_ = use;
+    }
+    bool getMassCorrectionUseFluxWeight() const {
+        return mass_correction_use_flux_weight_;
+    }
+
+    /**
+     * @brief Track-C Gate 1 setter: update the laser x position used by the
+     *        trailing-band exclusion mask inside the flux-weight kernels.
+     *
+     * Call once per simulation step, BEFORE advectFillLevel(), so the new
+     * position is picked up in applyMassCorrectionInline().
+     *
+     * @param laser_x_lu  Current laser x in lattice units.
+     *                    Pass a negative value to disable Gate 1.
+     * @param margin_lu   Exclusion half-width [lu]; cells with
+     *                    i > laser_x_lu - margin_lu are skipped.
+     *                    Default 25 lu (= 50 μm at dx=2 μm).
+     */
+    void setMassCorrectionLaserX(float laser_x_lu, float margin_lu = 25.0f) {
+        mass_correction_laser_x_lu_       = laser_x_lu;
+        mass_correction_trailing_margin_lu_ = margin_lu;
+    }
+
+    /**
+     * @brief Track-C Gate 2 setter: set substrate top index for the z-floor gate.
+     *
+     * Call once after initialization (the substrate height is fixed for the
+     * duration of a single-layer simulation).
+     *
+     * @param z_substrate_lu  Substrate top cell index in lattice units.
+     *                        Pass a negative value to disable Gate 2.
+     * @param z_offset_lu     Extra cells of allowance above substrate before
+     *                        exclusion fires.  Default 2 lu.
+     */
+    /// Note: z_offset_lu=0 → strict (cells above substrate top fully excluded).
+    /// z_offset_lu=2 → tolerant (allow 2 cells of growth before exclusion).
+    /// For F3D match try 0 first; relax if W collapses too often.
+    void setMassCorrectionZSubstrate(float z_substrate_lu, float z_offset_lu = 2.0f) {
+        mass_correction_z_substrate_lu_ = z_substrate_lu;
+        mass_correction_z_offset_lu_    = z_offset_lu;
+    }
+
+    float getMassCorrectionLaserX()      const { return mass_correction_laser_x_lu_; }
+    float getMassCorrectionZSubstrate()  const { return mass_correction_z_substrate_lu_; }
+
+    /**
      * @brief Set reference mass for conservation tracking
      * @param mass_ref Reference mass (typically computed at t=0)
      * @note Call this after initialization to establish baseline
@@ -335,6 +449,14 @@ private:
     bool mass_correction_enabled_;         ///< Enable global mass correction (default: false)
     float mass_correction_damping_;        ///< Damping factor for redistribution (default: 0.7)
     float mass_reference_;                 ///< Reference mass for conservation tracking
+    bool mass_correction_use_flux_weight_ = false; ///< Track-B/C (inline-∇f flux); false = Track-A (v_z)
+
+    // Track-C geometric gate parameters (defaults: all gates disabled).
+    // Updated each step by MultiphysicsSolver via setMassCorrectionLaserX().
+    float mass_correction_laser_x_lu_        = -1.0f; ///< Gate 1: laser x [lu]; <0 = off
+    float mass_correction_trailing_margin_lu_ = 25.0f; ///< Gate 1: exclusion half-width [lu]
+    float mass_correction_z_substrate_lu_    = -1.0f; ///< Gate 2: substrate top [lu]; <0 = off
+    float mass_correction_z_offset_lu_       =  2.0f; ///< Gate 2: allowance above substrate [lu]
 
     // Interface compression settings
     bool interface_compression_enabled_ = false;  ///< Enable Olsson-Kreiss compression (default: OFF)
@@ -348,6 +470,20 @@ private:
 
     // Temporary storage for advection
     float* d_fill_level_tmp_;       ///< Temporary fill level for advection
+
+    // Cached scratch buffers (lazy-allocated, reused across calls).
+    // Bug-3 fix (2026-04-26): previously cudaMalloc'd inside computeTotalMass()
+    // and the correction path on every invocation — 3× per advection step.
+    //
+    // INVARIANT: every kernel that uses these buffers MUST launch with the same
+    // block size (currently 256). The lazy realloc only checks gridSize against
+    // a stored `_size_`, so changing block size between launches without changing
+    // num_cells_ would silently underrun the buffer. Search "blockSize = 256"
+    // in vof_solver.cu — all uses agree. (B3 hazard noted 2026-04-27.)
+    mutable float* d_mass_partial_sums_ = nullptr;
+    mutable int d_mass_partial_sums_size_ = 0;
+    int* d_interface_partial_counts_ = nullptr;
+    int d_interface_partial_counts_size_ = 0;
 
     // ---- PLIC geometric advection buffers (lazy-allocated) ----
     lbm::utils::CudaBuffer<float> plic_nx_;
@@ -363,6 +499,21 @@ private:
     void freeMemory();
     void advectFillLevelPLIC(const float* d_ux, const float* d_uy, const float* d_uz, float dt);
     void plicAllocateIfNeeded();
+
+    /// A1 (Track-A) helper: post-advection global-mass correction with
+    /// w = max(sign(Δm)·v_z, 0) weight. Single-velocity, fast.
+    void applyMassCorrectionInline(const float* d_vz);
+
+    /// B1 (Track-B) helper: post-advection global-mass correction with
+    /// w = max(sign(Δm)·(-∇f·v), 0) weight. ∇f is computed inline via
+    /// central differences from 6 neighbour fill_levels — no normal field
+    /// needed. Better at distinguishing capillary back-fill (toward groove)
+    /// from recoil-driven outward jet (away from liquid surface).
+    /// Falls back to uniform-additive when W ≈ 0.
+    void applyMassCorrectionInline(const float* d_vx, const float* d_vy,
+                                    const float* d_vz);
+
+    int mass_correction_call_count_ = 0;
 };
 
 // CUDA kernels for VOF solver
