@@ -205,6 +205,14 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_linescan_phase4 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_linescan_phase4 lbm_physics lbm_io CUDA::cudart)
 
+    # Phase-4-corrected: same Track-C config but ny=110 (vs Phase-4's 75) to
+    # eliminate y-wall ridge artifact. Memory budget: 1100×110×75 = 9.075M cells
+    # × 440 B = 3.99 GB (just under 4GB cap). interface_z=60 (substrate top),
+    # pool 100μm + 30μm gas above + 20μm below.
+    add_executable(sim_linescan_phase4_corrected apps/sim_linescan_phase4_corrected.cu)
+    set_target_properties(sim_linescan_phase4_corrected PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_linescan_phase4_corrected lbm_physics lbm_io CUDA::cudart)
+
     # Phase-5 integration: Track-C iter-4 + emissivity 0.55 + ray bounces=5
     add_executable(sim_linescan_phase5 apps/sim_linescan_phase5.cu)
     set_target_properties(sim_linescan_phase5 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
