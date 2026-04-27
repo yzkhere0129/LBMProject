@@ -250,10 +250,10 @@ int main() {
     // mini-Phase-2 (iter-1 t=400μs) restored correct rolling +0.40 m/s and
     // brought ridges to +10μm, centerline to -8μm — strong improvement.
     config.vof_mass_correction_use_flux_weight = true;
-    // ITER-5: damping 0.7 → 1.0 (full correction strength). With Track-C
-    // gates excluding ridges, full damping should drive centerline closer
-    // to F3D's -1μm without re-introducing ridge growth.
-    config.vof_mass_correction_damping = 1.0f;
+    // FINAL (iter-4 winning config): damping=0.7 + z_offset_lu=0.
+    // iter-5 with damping=1.0 introduced +24μm reject spike; iter-3 with
+    // z_offset=2 had ridge-100=+12 (over band). iter-4 is 3 PASS + 1 marginal.
+    config.vof_mass_correction_damping = 0.7f;
     config.mass_correction_use_track_c = true;
     config.mass_correction_trailing_margin_lu = 25.0f;   // 50 μm past laser
     config.mass_correction_z_substrate_lu     = 80.0f;   // matches interface_z=80
