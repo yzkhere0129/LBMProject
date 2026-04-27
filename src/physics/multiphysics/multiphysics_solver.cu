@@ -1503,21 +1503,14 @@ void MultiphysicsSolver::step(float dt) {
                                           dt, config_.dx,
                                           config_.evap_cooling_factor);
 
-        // VOF mass loss: apply full physical HKL mass flux (scale=1.0).
-        // Previous band-aid (scale=0.05) artificially suppressed 95% of evaporation.
-        {
-            int num_cells = config_.nx * config_.ny * config_.nz;
-            constexpr float mass_loss_scale = 1.0f;
-            // Scale the evap flux before passing to VOF
-            std::vector<float> h_J(num_cells);
-            CUDA_CHECK(cudaMemcpy(h_J.data(), d_evap_mass_flux_,
-                                  num_cells * sizeof(float), cudaMemcpyDeviceToHost));
-            for (int i = 0; i < num_cells; i++) h_J[i] *= mass_loss_scale;
-            CUDA_CHECK(cudaMemcpy(d_evap_mass_flux_, h_J.data(),
-                                  num_cells * sizeof(float), cudaMemcpyHostToDevice));
-            vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
-                                           config_.material.rho_liquid, dt);
-        }
+        // VOF mass loss: apply full physical HKL mass flux.
+        // F-06 (code-audit pass 1, 2026-04-27): the prior block multiplied the
+        // device array by a constexpr 1.0f via a GPU→CPU→GPU round-trip — a
+        // ~190 MB×3 host transfer per step on the 8M-cell production grid.
+        // The scale was a no-op; removed. To re-introduce a non-1.0 scale,
+        // do it in-kernel rather than round-tripping through host.
+        vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
+                                       config_.material.rho_liquid, dt);
 
         // Diagnostic: Print evaporation info every 100 steps
         if (current_step_ % 100 == 0) {
