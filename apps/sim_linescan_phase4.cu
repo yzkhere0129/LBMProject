@@ -175,7 +175,7 @@ int main() {
     config.ray_tracing.fresnel_n_refract  = 2.9613f;   // 316L @ 1064 nm Mills
     config.ray_tracing.fresnel_k_extinct  = 4.0133f;
     config.ray_tracing.num_rays           = 4096;       // dense enough for 50 μm spot
-    config.ray_tracing.max_bounces        = 5;          // ~70 % effective absorption
+    config.ray_tracing.max_bounces        = 3;          // iter-6 winning (5→3 reduces over-deep keyhole by 12 μm)
     config.ray_tracing.max_dda_steps      = 1500;       // domain ~1.2 mm / dx 2 μm → 600 cells, +slack
     config.ray_tracing.energy_cutoff      = 0.01f;
     config.ray_tracing.absorptivity       = 0.40f;      // unused when use_fresnel=true
@@ -241,12 +241,20 @@ int main() {
     config.cfl_v_target_interface      = 0.15f;
     config.cfl_v_target_bulk           = 0.10f;
 
-    // --- VOF ---
+    // --- VOF + Track-C iter-4 mass correction (post worktree-A merge, 2026-04-27) ---
+    // Worktree A iter-4 result on Phase-2 (t=800μs): centerline -6μm (vs Phase-1
+    // -14μm, F3D -1μm — 60% gap closed); 5/6 brief criteria PASS. The HANDOFF
+    // doc at docs/task-A-vof-mass-correction/HANDOFF_TO_NEXT_AGENT.md §8 P0 says
+    // Phase-4 (t=2ms) is the last unmeasured brief criterion (#2). This is that
+    // run.
     config.vof_subcycles               = 1;
-    // Phase-4 inherits Phase-1 settings (mass correction TURNED OFF: Phase-2
-    // test showed mass correction made groove DEEPER, not shallower — appears
-    // to redistribute mass to scan-start splash deposit at expense of center).
-    config.enable_vof_mass_correction  = false;
+    config.enable_vof_mass_correction          = true;
+    config.vof_mass_correction_use_flux_weight = true;     // Track-B base
+    config.vof_mass_correction_damping         = 0.7f;     // sweet spot (1.0 rejects)
+    config.mass_correction_use_track_c         = true;     // geometric gates ON
+    config.mass_correction_trailing_margin_lu  = 25.0f;    // 50 μm past laser tip
+    config.mass_correction_z_substrate_lu      = 80.0f;    // matches interface_z=80
+    config.mass_correction_z_offset_lu         = 0.0f;     // strict: no cells above substrate
 
     // --- Timing: Phase-4 FINAL 2 ms run (Night Protocol) ---
     // 2.0 ms = 25000 steps. VTK every 100 μs → 20 frames + initial.
