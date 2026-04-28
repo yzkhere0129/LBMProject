@@ -118,8 +118,8 @@ int main() {
     // but matches production baseline transverse — Marangoni rolls and side
     // ridges fit within ±60 μm of centerline (well under 75 μm domain half-width).
     config.nx = 1100;
-    config.ny = 200;   // R8: 75→200 to remove wall artifact (per Round 7 vtk-cfd-analyzer)
-    config.nz = 150;   // R8: 100→150 keyhole headroom (per Round 7 brief)
+    config.ny = 75;    // R8 redux: R6 baseline geometry for laptop 3050 (4GB) — matches stage1
+    config.nz = 100;   // 1100×75×100 = 8.25M cells, ~1.7GB total (fits 3050) — matches stage1
     config.dx = 2.0e-6f;
     config.dt = 8.0e-8f;
 
