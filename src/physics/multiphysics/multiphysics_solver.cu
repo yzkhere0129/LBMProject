@@ -967,7 +967,11 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
     //   dt=0.10μs → interval=50 → Δt=5.0μs
     //   dt=0.05μs → interval=100 → Δt=5.0μs
     // ============================================================
-    const float TARGET_DIAGNOSTIC_INTERVAL_SECONDS = 0.5e-6f;  // 0.5 μs (R6: high resolution for energy balance)
+    // R8 perf: was 0.5μs (every 6 steps at dt=80ns). On large grids (33M cells)
+    // each printEnergyBalance() does multi-field D2H + host reductions costing
+    // 1-3 sec per call → 28 sec/step. Bump to 50μs (every ~625 steps) → step
+    // rate normal. Sacrifices energy-balance temporal resolution, not accuracy.
+    const float TARGET_DIAGNOSTIC_INTERVAL_SECONDS = 50.0e-6f;
     diagnostic_interval_ = std::max(1, static_cast<int>(
         TARGET_DIAGNOSTIC_INTERVAL_SECONDS / config_.dt
     ));
