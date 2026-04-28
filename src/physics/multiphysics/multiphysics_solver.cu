@@ -2697,7 +2697,7 @@ void MultiphysicsSolver::computeTotalForce() {
     // gradients that excite high-frequency (checkerboard) modes at low tau.
     // Applied in physical units before conversion to preserve force integral.
     if (config_.enable_marangoni || config_.enable_surface_tension) {
-        force_accumulator_->smoothForceField(config_.nx, config_.ny, config_.nz, 2);
+        force_accumulator_->smoothForceField(config_.nx, config_.ny, config_.nz, 0);  // R7 H1H4
     }
 
     // Step 2g: Force phase masking — suppress surface forces in solid phase

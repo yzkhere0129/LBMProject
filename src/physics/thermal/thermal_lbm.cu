@@ -686,7 +686,7 @@ __global__ void applyEvaporationCoolingKernel(
         if (T <= T_boil) return;
 
         // Clausius-Clapeyron evaporation rate (Anisimov 1995)
-        const float alpha_evap = 0.82f;  // R6 OpenFOAM laserMeltFoam alignment
+        const float alpha_evap = 0.18f;  // R7 H1H4
         const float M_molar = mat.molar_mass;
         const float R_gas = 8.314f;
         const float P_ref = 101325.0f;
@@ -1502,7 +1502,7 @@ __global__ void applyRadiationBoundaryCondition(
     // Physical constants for Ti6Al4V evaporation
     // CRITICAL FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
     // Calibrated alpha_evap = 0.18 (Anisimov 1995)
-    const float alpha_evap = 0.82f;  // R6 OpenFOAM laserMeltFoam alignment
+    const float alpha_evap = 0.18f;  // R7 H1H4
     const float M_molar = material.molar_mass; // Molar mass [kg/mol]
     const float R_gas = 8.314f;               // Universal gas constant [J/(mol·K)]
     const float P_ref = 101325.0f;            // Reference pressure at boiling point [Pa]
@@ -1888,7 +1888,7 @@ __global__ void computeEvaporationPowerKernel(
 
     // Compute evaporation mass flux using Hertz-Knudsen equation
     // Calibrated alpha_evap = 0.18 (Anisimov 1995)
-    const float alpha_evap = 0.82f;  // R6 OpenFOAM laserMeltFoam alignment
+    const float alpha_evap = 0.18f;  // R7 H1H4
     const float M = material.molar_mass;  // kg/mol
     const float R = 8.314f;   // J/(mol·K)
     const float P_ref = 101325.0f;  // Pa
@@ -2277,7 +2277,7 @@ __global__ void computeEvaporationMassFluxKernel(
     // Physical constants for Ti6Al4V evaporation
     // CRITICAL FIX (2025-11-27): Reduced from 0.82 to 0.18 to prevent excessive evaporation
     // Calibrated alpha_evap = 0.18 (Anisimov 1995)
-    const float alpha_evap = 0.82f;  // R6 OpenFOAM laserMeltFoam alignment
+    const float alpha_evap = 0.18f;  // R7 H1H4
     const float M_molar = material.molar_mass; // Molar mass [kg/mol]
     const float R_gas = 8.314f;               // Universal gas constant [J/(mol·K)]
     const float P_ref = 101325.0f;            // Reference pressure at boiling point [Pa]

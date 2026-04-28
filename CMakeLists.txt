@@ -205,6 +205,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_linescan_phase4 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_linescan_phase4 lbm_physics lbm_io CUDA::cudart)
 
+    # R7 LONG: H1H4 (α_evap=0.18 + force smoothing=0) at full Phase-4 length, nz=150
+    add_executable(sim_phase4_round7 apps/sim_phase4_round7.cu)
+    set_target_properties(sim_phase4_round7 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_phase4_round7 lbm_physics lbm_io CUDA::cudart)
+
     # Phase-4-corrected: same Track-C config but ny=110 (vs Phase-4's 75) to
     # eliminate y-wall ridge artifact. Memory budget: 1100×110×75 = 9.075M cells
     # × 440 B = 3.99 GB (just under 4GB cap). interface_z=60 (substrate top),

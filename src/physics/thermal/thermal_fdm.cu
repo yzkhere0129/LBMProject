@@ -452,7 +452,7 @@ __global__ void fdmEvaporationCoolingKernel(
     // Previous 0.18 was the Semak-1995 "partial-pressure" value; laserMeltFoam's
     // UEqn.H/TEqn.H uses σ=0.82 (~full accommodation), which dominates the T
     // regulation and drops steady-state T from ~3760 K to near T_boil.
-    constexpr float alpha_evap = 0.82f;
+    constexpr float alpha_evap = 0.18f;  // R7 H1H4
 
     float exponent = (L_vap * M / R_gas) * (1.0f / T_boil - 1.0f / Tc);
     // Clamp exponent to prevent overflow (exp(88) ≈ FLT_MAX)
@@ -1036,7 +1036,7 @@ __global__ void fdmEvapCoolingImplicitKernel(
 
     constexpr float R_gas = 8.314f;
     constexpr float P_ref = 101325.0f;
-    constexpr float alpha_evap = 0.82f;
+    constexpr float alpha_evap = 0.18f;  // R7 H1H4
 
     float rho = mat.getDensity(T_old);
     float cp  = mat.getSpecificHeat(T_old);
@@ -1260,7 +1260,7 @@ __global__ void fdmEvapMassFluxKernel(
     // Hertz-Knudsen-Langmuir surface mass flux [kg/(m²·s)]
     constexpr float R_gas = 8.314f;
     constexpr float P_ref = 101325.0f;
-    constexpr float alpha_evap = 0.82f;  // R6 OpenFOAM-alignment
+    constexpr float alpha_evap = 0.18f;  // R7 H1H4  // R6 OpenFOAM-alignment
 
     float exponent = (mat.L_vaporization * mat.molar_mass / R_gas)
                    * (1.0f / T_boil - 1.0f / Tc);
