@@ -11,9 +11,11 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 find_package(CUDAToolkit REQUIRED)
 
 # Set CUDA architecture (adjust for your GPU)
-# Common architectures: 75 (RTX 20xx), 80 (A100), 86 (RTX 30xx), 89 (RTX 40xx)
+# Common architectures: 75 (RTX 20xx), 80 (A100), 86 (RTX 30xx), 89 (RTX 40xx),
+# 120 (RTX 5060/5070 Blackwell). Without 120 in this list, sm_120 GPU has to
+# JIT-compile PTX → first kernel launch can take 5-10 min for large grids.
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 75 80 86)
+    set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 120)
 endif()
 
 # Compiler flags
