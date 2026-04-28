@@ -210,6 +210,13 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_phase4_round7 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_phase4_round7 lbm_physics lbm_io CUDA::cudart)
 
+    # R7 power sweep (math-expert Rank-1 test: D ∝ P^α  →  energy ceiling)
+    foreach(P 75 150 225)
+        add_executable(r7_pwr_${P}W apps/r7_pwr_${P}W.cu)
+        set_target_properties(r7_pwr_${P}W PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+        target_link_libraries(r7_pwr_${P}W lbm_physics lbm_io CUDA::cudart)
+    endforeach()
+
     # Phase-4-corrected: same Track-C config but ny=110 (vs Phase-4's 75) to
     # eliminate y-wall ridge artifact. Memory budget: 1100×110×75 = 9.075M cells
     # × 440 B = 3.99 GB (just under 4GB cap). interface_z=60 (substrate top),
