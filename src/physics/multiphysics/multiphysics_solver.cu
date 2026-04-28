@@ -1909,15 +1909,28 @@ void MultiphysicsSolver::thermalStep(float dt) {
     // at T_boil + 50K (configurable overshoot) and track the removed
     // energy as volumetric boiling latent heat for energy conservation.
     // ============================================================
+    // ============================================================
+    // R8 Stage 1: BULK BOILING COOLING (physics-based)
+    // ============================================================
+    // Apply BEFORE the safety cap. Removes T_boil ~ T_boil+1500K dead zone
+    // where bulk cells previously had no cooling. Newton-cooling form
+    // T → T - α·(T-T_boil), floored at T_boil+100K.
+    // ============================================================
+    if (thermal_ && config_.physics.enable_bulk_boiling_cooling) {
+        auto* fdm = dynamic_cast<ThermalFDM*>(thermal_.get());
+        if (fdm) {
+            fdm->applyBulkBoilingCooling(config_.material.T_vaporization,
+                                         config_.physics.bulk_boiling_alpha);
+        }
+    }
+
     if (thermal_) {
         // Sprint-1 (2026-04-25): raised overshoot from 50 K to 1500 K.
-        // The 50 K cap effectively pinned bulk T at T_boil+50 K = 3140 K, which
-        // broadcast laterally and forced LBM Tmax 3650 K vs Flow3D 4262 K peak
-        // (-14 %). Real LPBF keyhole bottoms can superheat to 4500-5500 K
-        // (Khairallah 2016, Flow3D peak 4262 K). The aggressive cap was
-        // for stability when ESM evap cooling was less robust; with R7
-        // implicit Newton evap cooling now in production it can be relaxed.
-        thermal_->applySubsurfaceBoilingCap(config_.material.T_vaporization, 1500.0f);
+        // R8 Stage 1: with bulk_boiling_cooling enabled, this reverts to a
+        // safety floor (recommend overshoot=200K) rather than primary mechanism.
+        // Tracked separately from bulk cooling for diagnostic clarity.
+        thermal_->applySubsurfaceBoilingCap(config_.material.T_vaporization,
+                                            config_.physics.subsurface_cap_overshoot_K);
     }
 
     // ============================================================

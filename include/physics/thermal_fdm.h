@@ -160,6 +160,8 @@ private:
     // Energy tracking for gas wipe and subsurface cap (fixed-point, scale 1e12)
     unsigned long long* d_gas_wipe_energy_raw_ = nullptr;
     unsigned long long* d_boiling_cap_energy_raw_ = nullptr;
+    // R8 Stage 1: bulk boiling cooling (separate counter from cap)
+    unsigned long long* d_bulk_boil_energy_raw_ = nullptr;
 
     void allocateMemory();
     void freeMemory();
@@ -170,11 +172,21 @@ public:
     /// Apply sub-surface boiling cap: T_cap = T_boil + overshoot_K for f>=0.99 cells
     void applySubsurfaceBoilingCap(float T_boil, float overshoot_K = 50.0f);
 
+    /// R8 Stage 1: physics-based bulk boiling cooling for f>=0.99 cells with T>T_boil.
+    /// Newton-cooling form: T_new = T - α_boil·(T-T_boil), floored at T_boil+100K.
+    /// Smoothed indicator (50K tanh band) avoids T_boil-isotherm discontinuity.
+    /// Recommended α_boil = 2e-4 (per cfd-math-expert R8 Stage 1.2).
+    /// Tracks energy via separate counter (independent of cap).
+    void applyBulkBoilingCooling(float T_boil, float alpha_boil = 2.0e-4f);
+
     /// Get energy removed by gas wipe this step [J], resets counter
     double getGasWipeEnergyRemoved();
 
     /// Get energy removed by sub-surface boiling cap this step [J], resets counter
     double getBoilingCapEnergyRemoved();
+
+    /// R8: Get energy removed by bulk boiling cooling this step [J], resets counter
+    double getBulkBoilingEnergyRemoved();
 
     /// Compute thermal energy of metal cells only (fill >= 0.01) [J]
     double computeMetalThermalEnergy(float dx) const override;

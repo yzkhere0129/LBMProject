@@ -205,6 +205,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_linescan_phase4 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_linescan_phase4 lbm_physics lbm_io CUDA::cudart)
 
+    # R8 Stage 1: ny=200 + nz=150 + bulk_boiling_cooling enabled, t=2000μs full
+    add_executable(sim_round8_stage1 apps/sim_round8_stage1.cu)
+    set_target_properties(sim_round8_stage1 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_round8_stage1 lbm_physics lbm_io CUDA::cudart)
+
     # Phase-4-corrected: same Track-C config but ny=110 (vs Phase-4's 75) to
     # eliminate y-wall ridge artifact. Memory budget: 1100×110×75 = 9.075M cells
     # × 440 B = 3.99 GB (just under 4GB cap). interface_z=60 (substrate top),

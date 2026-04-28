@@ -223,6 +223,14 @@ struct MultiphysicsConfig {
         bool enable_recoil_pressure         = false; ///< Enable evaporation recoil pressure
         bool enable_solidification_shrinkage = false; ///< Enable solidification volume shrinkage
         bool use_fdm_thermal                = false; ///< Use FDM thermal solver instead of D3Q7 LBM
+        // R8 Stage 1: bulk boiling cooling — physics-based cooling for f>=0.99 cells
+        // with T>T_boil. Disabled by default; enable to replace dead-zone reliance on
+        // 1500K subsurface cap. cfd-math-expert recommends α_boil=2e-4 (R8 Stage 1.2).
+        bool  enable_bulk_boiling_cooling = false;
+        float bulk_boiling_alpha          = 2.0e-4f;
+        // R8 Stage 1: tighten subsurface cap from 1500K (dead-zone hack) to 200K
+        // safety floor when bulk_boiling is enabled. Ignored if cap disabled.
+        float subsurface_cap_overshoot_K  = 1500.0f;  // legacy default; set 200 with bulk cooling
     };
 
     struct NumericalConfig {

@@ -759,8 +759,10 @@ void ThermalFDM::allocateMemory() {
     CUDA_CHECK(cudaMemset(d_gas_wipe_mask_, 0, num_cells_ * sizeof(uint8_t)));
     CUDA_CHECK(cudaMalloc(&d_gas_wipe_energy_raw_, sizeof(unsigned long long)));
     CUDA_CHECK(cudaMalloc(&d_boiling_cap_energy_raw_, sizeof(unsigned long long)));
+    CUDA_CHECK(cudaMalloc(&d_bulk_boil_energy_raw_, sizeof(unsigned long long)));   // R8 Stage 1
     CUDA_CHECK(cudaMemset(d_gas_wipe_energy_raw_, 0, sizeof(unsigned long long)));
     CUDA_CHECK(cudaMemset(d_boiling_cap_energy_raw_, 0, sizeof(unsigned long long)));
+    CUDA_CHECK(cudaMemset(d_bulk_boil_energy_raw_, 0, sizeof(unsigned long long)));
 }
 
 void ThermalFDM::freeMemory() {
@@ -770,6 +772,7 @@ void ThermalFDM::freeMemory() {
     if (d_gas_wipe_mask_) { cudaFree(d_gas_wipe_mask_); d_gas_wipe_mask_ = nullptr; }
     if (d_gas_wipe_energy_raw_) { cudaFree(d_gas_wipe_energy_raw_); d_gas_wipe_energy_raw_ = nullptr; }
     if (d_boiling_cap_energy_raw_) { cudaFree(d_boiling_cap_energy_raw_); d_boiling_cap_energy_raw_ = nullptr; }
+    if (d_bulk_boil_energy_raw_) { cudaFree(d_bulk_boil_energy_raw_); d_bulk_boil_energy_raw_ = nullptr; }  // R8
 }
 
 void ThermalFDM::initialize(float initial_temp) {
@@ -1282,6 +1285,89 @@ void ThermalFDM::computeEvaporationMassFlux(float* d_J_evap,
         d_T_, fill_level, d_J_evap, material_, inv_dx, nx_, ny_, nz_);
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// ============================================================================
+// R8 Stage 1: Bulk Boiling Cooling
+// ----------------------------------------------------------------------------
+// Physics-based volumetric "boiling" sink for bulk metal cells (f >= 0.99) with
+// T > T_boil. Replaces the dead-zone between T_boil and T_cap that the existing
+// boiling-cap fired on (4590K). Uses Newton-cooling form per cfd-math-expert
+// recommendation (R8 Stage 1.2):
+//
+//   cooling_per_step  = α_boil · (T - T_boil)       [K]
+//   T_new             = max(T - cooling_per_step, T_boil + 100)
+//
+// The 50K tanh band around T_boil smooths the indicator (avoids isotherm
+// discontinuity that disrupted phase-change Newton iteration).
+//
+// Energy bookkeeping is in a SEPARATE counter from the cap so the diagnostic
+// ratio e_boil_sink/e_laser_in distinguishes physics-based bulk cooling from
+// the cap's numerical clipping.
+// ============================================================================
+__global__ void fdmBulkBoilingCoolingKernel(
+    float* __restrict__ T,
+    const float* __restrict__ fill_level,
+    float T_boil, float alpha_boil,
+    MaterialProperties mat, float dV,
+    unsigned long long* __restrict__ d_energy_removed_raw,
+    int num_cells)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_cells) return;
+    if (fill_level == nullptr) return;
+
+    float f = fill_level[idx];
+    if (f < 0.99f) return;          // bulk cells only (interface handled by HKL kernel)
+
+    float Tc = T[idx];
+    if (Tc <= T_boil) return;       // not superheated
+
+    // Smoothed indicator with 50K tanh band: 0 below T_boil, 1 well above.
+    // s(T) = 0.5 (1 + tanh((T - T_boil) / 50K)).  Avoids stiff Newton bounce.
+    const float band_K = 50.0f;
+    float s = 0.5f * (1.0f + tanhf((Tc - T_boil) / band_K));
+
+    // Newton-cooling rate. α_boil dimensionless per timestep.
+    float dT_target = alpha_boil * s * (Tc - T_boil);
+    float T_new = Tc - dT_target;
+
+    // Floor at T_boil + 100K (Anisimov-consistent, avoid runaway-cooling instability).
+    const float T_floor = T_boil + 100.0f;
+    if (T_new < T_floor) T_new = T_floor;
+    if (T_new > Tc)      T_new = Tc;   // cooling-only safety
+
+    T[idx] = T_new;
+
+    float dT_actual = Tc - T_new;
+    if (dT_actual > 0.0f) {
+        float rho = mat.getDensity(Tc);
+        float cp  = mat.getSpecificHeat(Tc);
+        float E_removed = rho * cp * dT_actual * dV;
+        unsigned long long E_fixed = (unsigned long long)(E_removed * 1.0e12);
+        atomicAdd(d_energy_removed_raw, E_fixed);
+    }
+}
+
+void ThermalFDM::applyBulkBoilingCooling(float T_boil, float alpha_boil) {
+    if (d_vof_fill_ == nullptr) return;
+    float dV = dx_ * dx_ * dx_;
+    int bs = 256, gs = (num_cells_ + bs - 1) / bs;
+    fdmBulkBoilingCoolingKernel<<<gs, bs>>>(
+        d_T_, d_vof_fill_, T_boil, alpha_boil,
+        material_, dV,
+        d_bulk_boil_energy_raw_, num_cells_);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+double ThermalFDM::getBulkBoilingEnergyRemoved() {
+    unsigned long long h_raw = 0;
+    CUDA_CHECK(cudaMemcpy(&h_raw, d_bulk_boil_energy_raw_, sizeof(unsigned long long),
+                          cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemset(d_bulk_boil_energy_raw_, 0, sizeof(unsigned long long)));
+    long long h_signed = static_cast<long long>(h_raw);
+    return static_cast<double>(h_signed) * 1.0e-12;
 }
 
 // ============================================================================
