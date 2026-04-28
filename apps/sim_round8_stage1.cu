@@ -119,7 +119,7 @@ int main() {
     // ridges fit within ±60 μm of centerline (well under 75 μm domain half-width).
     config.nx = 1100;
     config.ny = 200;   // R8: 75→200 to remove wall artifact (per Round 7 vtk-cfd-analyzer)
-    config.nz = 150;   // R8: 100→150 keyhole headroom (per Round 7 brief)
+    config.nz = 100;   // R8: nz 150→100 to fit 5060 8GB (ny=200 was eating memory)
     config.dx = 2.0e-6f;
     config.dt = 8.0e-8f;
 
