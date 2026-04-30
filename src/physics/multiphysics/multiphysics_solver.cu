@@ -1496,10 +1496,21 @@ void MultiphysicsSolver::step(float dt) {
                                           dt, config_.dx,
                                           config_.evap_cooling_factor);
 
-        // Apply mass loss to VOF fill_level
-        vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
-                                       config_.material.rho_liquid,
-                                       dt);
+        // Apply mass loss to VOF fill_level. Phase 4a opt-in: when
+        // surface.evap_use_plic_delta is true, route through the sharp-
+        // delta kernel that confines mass loss to the PLIC interface band
+        // (no leakage from deep-bulk cells with stray J_evap noise).
+        if (config_.surface.evap_use_plic_delta) {
+            vof_->applyEvaporationMassLossPLIC(
+                d_evap_mass_flux_,
+                config_.material.rho_liquid,
+                dt,
+                config_.surface.plic_h_smooth_lu);
+        } else {
+            vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
+                                           config_.material.rho_liquid,
+                                           dt);
+        }
 
         // Diagnostic: Print evaporation info every 100 steps
         if (current_step_ % 100 == 0) {

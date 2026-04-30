@@ -279,10 +279,13 @@ struct MultiphysicsConfig {
         bool marangoni_use_plic_delta = false;
         bool recoil_use_plic_delta    = false;
 
-        // Cosine-kernel half-width [lattice units] used by all three PLIC
-        // sharp-delta forces. Default 1.5 cells gives a 3-cell-wide force
-        // band — ~2× tighter than the legacy |∇f| smearing on a
-        // tanh-initialised interface.
+        // Phase 4a: PLIC-aware Hertz-Knudsen evaporation mass loss.
+        bool evap_use_plic_delta      = false;
+
+        // Cosine-kernel half-width [lattice units] used by all PLIC
+        // sharp-delta paths (Phase 3 forces and Phase 4 evaporation).
+        // Default 1.5 cells gives a 3-cell-wide band — ~2× tighter than
+        // the legacy |∇f| smearing on a tanh-initialised interface.
         float plic_h_smooth_lu        = 1.5f;
     };
 
@@ -669,6 +672,18 @@ public:
 
     /// True if ray tracing laser is active
     bool hasRayTracing() const { return ray_tracing_laser_ != nullptr; }
+
+    /**
+     * @brief Get the underlying VOFSolver instance.
+     *
+     * Exposed for test fixtures and advanced callers that need to configure
+     * Phase 1+ PLIC reconstruction modes (normal method, curvature method,
+     * advection scheme) before stepping. Returns nullptr if VOF is disabled
+     * in the config. Production code should prefer the SurfaceConfig flags
+     * for surface-force PLIC routing.
+     */
+    VOFSolver*       getVOFSolver()       { return vof_.get(); }
+    const VOFSolver* getVOFSolver() const { return vof_.get(); }
 
     /// Deposited power from last ray tracing step [W]
     float getRayTracingDepositedPower() const;
