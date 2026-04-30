@@ -31,6 +31,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 #include "utils/cuda_memory.h"
+#include "physics/interface_geometry.h"
 
 namespace lbm {
 namespace physics {
@@ -318,6 +319,54 @@ public:
      */
     float getReferenceMass() const { return mass_reference_; }
 
+    // ========================================================================
+    // PLIC Interface Geometry API (Phase 1 of PLIC upgrade)
+    // ========================================================================
+    //
+    // Phase 1 makes the per-cell PLIC reconstruction (Youngs unit normal +
+    // signed alpha) accessible to downstream physics modules so they can
+    // replace the smeared `|∇f|` kernel-based delta with a sharp interface.
+    //
+    // Storage convention (see include/physics/interface_geometry.h):
+    //   Plane n·X = alpha_signed in cell-corner unit-cube frame [0,1]^3.
+    //   Liquid lives where n·X < alpha_signed. n̂ is unit, points toward gas.
+    //
+    // Lifecycle:
+    //   1. Any call that modifies fill_level (initialize, advect, evap,
+    //      shrinkage, mass correction) sets plic_dirty_ = true and the cached
+    //      arrays may no longer match d_fill_level_.
+    //   2. recomputePLICReconstruction() runs the Youngs + alpha kernels and
+    //      clears the dirty flag. If already clean, returns immediately.
+    //   3. getInterfaceGeometry() returns a view marked plic_ready=true iff
+    //      the cache is current. Callers MUST consult plic_ready before
+    //      reading d_alpha (the underlying buffer may be uninitialized on a
+    //      brand-new VOFSolver that has never run PLIC advection).
+
+    /**
+     * @brief (Re)compute Youngs normal + alpha from the current fill_level.
+     * @note No-op if the cached reconstruction is already consistent with the
+     *       current fill (plic_dirty_ == false). Lazy-allocates the PLIC
+     *       buffers on first use.
+     * @note Cost: 2 kernel launches (~5–20 μs for 100^3 grid). Idempotent.
+     */
+    void recomputePLICReconstruction();
+
+    /**
+     * @brief Get a read-only view of the interface geometry.
+     * @return InterfaceGeometryView with d_normal_x/y/z, d_alpha (nullable),
+     *         d_fill, plic_ready, and grid dimensions.
+     * @note `view.plic_ready == false` iff PLIC reconstruction is stale or
+     *       has never been run. In that case, `view.d_alpha` and the normals
+     *       must NOT be dereferenced; downstream kernels should fall back to
+     *       the legacy `|∇f|`-based path.
+     */
+    InterfaceGeometryView getInterfaceGeometry() const;
+
+    /**
+     * @brief True iff cached PLIC reconstruction matches current fill_level.
+     */
+    bool isPLICReady() const { return !plic_dirty_; }
+
 private:
     // Domain dimensions
     int nx_, ny_, nz_;
@@ -356,13 +405,38 @@ private:
     lbm::utils::CudaBuffer<float> plic_alpha_;
     lbm::utils::CudaBuffer<float> plic_flux_;        // reusable per-direction face flux
     lbm::utils::CudaBuffer<float> plic_face_vel_;    // reusable per-direction face velocity
-    bool plic_strang_x_first_ = true;
+
+    // 3-way symmetric Strang rotation: cycle through 6 permutations of {x,y,z}
+    //   even step (0,2,4): forward order (XYZ, YZX, ZXY)
+    //   odd  step (1,3,5): reverse order (ZYX, XZY, YXZ)
+    // Counter wraps mod 6 so all three axes spend equal time as the "last sweep".
+    // This eliminates the persistent z-bias that XY-only swap leaves untreated.
+    int plic_strang_phase_ = 0;        // 0..5
+
+    // Persistent per-instance counters (replace function-level statics — H1 fix).
+    // Static counters caused two VOFSolver instances to share state and race on
+    // d_block_max reallocation in the parent advectFillLevel().
+    int plic_call_count_ = 0;          // diagnostic print cadence for PLIC clamp
+    int plic_substep_call_count_ = 0;  // diagnostic print cadence for CFL substepping
+
+    // Per-instance reduction buffers for CFL/v_max computation.
+    // Replace the function-level static d_block_max in advectFillLevel() (H1 fix).
+    lbm::utils::CudaBuffer<float> reduction_block_max_;
+
+    // PLIC reconstruction freshness flag.
+    // - Set to false on every fill_level write (initialize, advect, evap, etc.).
+    // - Set to true at the end of recomputePLICReconstruction() and after the
+    //   final post-advection reconstruction in advectFillLevelPLIC().
+    // External callers should call recomputePLICReconstruction() before
+    // reading plic_nx_/ny_/nz_/alpha_ via the public InterfaceGeometryView.
+    bool plic_dirty_ = true;
 
     // Utility functions
     void allocateMemory();
     void freeMemory();
     void advectFillLevelPLIC(const float* d_ux, const float* d_uy, const float* d_uz, float dt);
     void plicAllocateIfNeeded();
+    void plicMarkDirty() { plic_dirty_ = true; }
 };
 
 // CUDA kernels for VOF solver

@@ -116,6 +116,11 @@ add_cuda_test(test_vof_contact_angle unit/vof/test_vof_contact_angle.cu)
 add_cuda_test(test_vof_mass_conservation unit/vof/test_vof_mass_conservation.cu)
 add_cuda_test(test_vof_interface_compression unit/vof/test_vof_interface_compression.cu)
 
+# Phase 1 PLIC upgrade — InterfaceGeometryView API + dirty-flag tests
+add_cuda_test(test_plic_normal_vs_analytic unit/vof/test_plic_normal_vs_analytic.cu)
+add_cuda_test(test_plic_alpha_inversion    unit/vof/test_plic_alpha_inversion.cu)
+add_cuda_test(test_plic_dirty_flag         unit/vof/test_plic_dirty_flag.cu)
+
 # ============================================================================
 # COMPREHENSIVE VOF TEST SUITE (80% → 95% coverage target)
 # ============================================================================

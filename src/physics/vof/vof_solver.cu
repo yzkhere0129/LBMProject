@@ -1312,6 +1312,7 @@ void VOFSolver::freeMemory() {
 void VOFSolver::initialize(const float* fill_level) {
     CUDA_CHECK(cudaMemcpy(d_fill_level_, fill_level, num_cells_ * sizeof(float),
                cudaMemcpyHostToDevice));
+    plicMarkDirty();
 
     // Initialize cell flags based on fill level
     convertCells();
@@ -1338,6 +1339,7 @@ void VOFSolver::initializeDroplet(float center_x, float center_y,
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
 
     // Update cell flags and interface properties
     convertCells();
@@ -1366,24 +1368,22 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     // Fix: dynamically compute n_subs = ceil(CFL / CFL_target) and split
     // the advection into n_subs sub-steps of dt_sub = dt / n_subs.
     if (advection_scheme_ == VOFAdvectionScheme::PLIC) {
-        // Compute max CFL from velocity field (GPU reduction already exists)
+        // Compute max CFL from velocity field (GPU reduction).
+        // Per-instance reduction buffer (was function-level static — H1 fix).
         const int rt = 256;
         const int rb = (num_cells_ + rt - 1) / rt;
 
-        static float* d_block_max = nullptr;
-        static int d_block_max_size = 0;
-        if (d_block_max_size < rb) {
-            if (d_block_max) cudaFree(d_block_max);
-            CUDA_CHECK(cudaMalloc(&d_block_max, rb * sizeof(float)));
-            d_block_max_size = rb;
+        if (static_cast<int>(reduction_block_max_.size()) < rb) {
+            reduction_block_max_ = lbm::utils::CudaBuffer<float>(rb);
         }
 
         maxVelocityMagnitudeKernel<<<rb, rt, rt * sizeof(float)>>>(
-            velocity_x, velocity_y, velocity_z, d_block_max, num_cells_);
+            velocity_x, velocity_y, velocity_z,
+            reduction_block_max_.get(), num_cells_);
         CUDA_CHECK_KERNEL();
 
         std::vector<float> h_bmax(rb);
-        CUDA_CHECK(cudaMemcpy(h_bmax.data(), d_block_max,
+        CUDA_CHECK(cudaMemcpy(h_bmax.data(), reduction_block_max_.get(),
                               rb * sizeof(float), cudaMemcpyDeviceToHost));
         float v_max = 0.0f;
         for (int i = 0; i < rb; ++i)
@@ -1394,12 +1394,11 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
         int n_subs = std::max(1, static_cast<int>(std::ceil(cfl / cfl_target)));
         float dt_sub = dt / n_subs;
 
-        static int call_count = 0;
-        if (call_count % 500 == 0 || n_subs > 1) {
+        if (plic_substep_call_count_ % 500 == 0 || n_subs > 1) {
             printf("[VOF PLIC] Call %d: v_max=%.4f, CFL=%.3f, n_subs=%d, dt_sub=%.2e\n",
-                   call_count, v_max, cfl, n_subs, dt_sub);
+                   plic_substep_call_count_, v_max, cfl, n_subs, dt_sub);
         }
-        call_count++;
+        plic_substep_call_count_++;
 
         for (int sub = 0; sub < n_subs; ++sub) {
             advectFillLevelPLIC(velocity_x, velocity_y, velocity_z, dt_sub);
@@ -1424,22 +1423,20 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     const int reduction_threads = 256;
     const int reduction_blocks = (num_cells_ + reduction_threads - 1) / reduction_threads;
 
-    // Lazy-allocate reduction buffer (persists across calls)
-    static float* d_block_max = nullptr;
-    static int d_block_max_size = 0;
-    if (d_block_max_size < reduction_blocks) {
-        if (d_block_max) cudaFree(d_block_max);
-        CUDA_CHECK(cudaMalloc(&d_block_max, reduction_blocks * sizeof(float)));
-        d_block_max_size = reduction_blocks;
+    // Lazy-allocate reduction buffer as a per-instance class member (H1 fix).
+    // Was a function-level static, which caused two VOFSolver instances to race
+    // on cudaFree+cudaMalloc when grid sizes differed.
+    if (static_cast<int>(reduction_block_max_.size()) < reduction_blocks) {
+        reduction_block_max_ = lbm::utils::CudaBuffer<float>(reduction_blocks);
     }
 
     maxVelocityMagnitudeKernel<<<reduction_blocks, reduction_threads,
                                   reduction_threads * sizeof(float)>>>(
-        velocity_x, velocity_y, velocity_z, d_block_max, num_cells_);
+        velocity_x, velocity_y, velocity_z, reduction_block_max_.get(), num_cells_);
     CUDA_CHECK_KERNEL();
 
     std::vector<float> h_block_max(reduction_blocks);
-    CUDA_CHECK(cudaMemcpy(h_block_max.data(), d_block_max,
+    CUDA_CHECK(cudaMemcpy(h_block_max.data(), reduction_block_max_.get(),
                           reduction_blocks * sizeof(float), cudaMemcpyDeviceToHost));
 
     float v_max = 0.0f;
@@ -1731,6 +1728,7 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     }
 
     // NOTE: d_fill_level_ now contains final result (advected + optionally compressed + mass corrected)
+    plicMarkDirty();
 }
 
 void VOFSolver::reconstructInterface() {
@@ -1859,6 +1857,7 @@ void VOFSolver::enforceGlobalMassConservation(float target_mass) {
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
 }
 
 // ============================================================================
@@ -1952,6 +1951,7 @@ void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float d
     );
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
 
     // Diagnostic: Print evaporation mass loss info periodically
     static int evap_call_count = 0;
@@ -2109,6 +2109,7 @@ void VOFSolver::applySolidificationShrinkage(const float* dfl_dt, float beta, fl
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
 }
 
 // ============================================================================
@@ -2314,11 +2315,30 @@ __global__ void countInterfaceCellsKernel(
 // Caller must apply symmetry if alpha > S/2.
 __device__ __forceinline__ float plicVolumeFirstHalf(float alpha,
                                                       float m1, float m2, float m3) {
-    // 2D degenerate case (m3 ≈ 0, e.g. quasi-2D or thin-slab domain)
+    // Precondition: m1 >= m2 >= m3 >= 0. Caller (sort step in plicVolumeInBox /
+    // computePlicAlphaKernel) guarantees ordering. Inputs are absolute values.
+    //
+    // Scardovelli & Zaleski 2000, eq. 28 inclusion-exclusion formula valid for
+    // alpha in [0, S/2]; symmetry V(α) = 1 - V(S-α) handles the upper half.
+
+    // 2D degenerate case (m3 ≈ 0, e.g. quasi-2D or thin-slab domain).
+    // The 3D denominator 6*m1*m2*m3 → 0 when m3 vanishes; switch to a 2D law.
     if (m3 < 1e-8f) {
         float S2 = m1 + m2;
         if (alpha >= S2) return 1.0f;
         if (alpha <= 0.0f) return 0.0f;
+
+        // 1D degenerate case within 2D fallback (m2 ≈ 0 too, e.g. slab normal
+        // is axis-aligned). Without this guard, the 2*m1*m2 denominator blows
+        // up to NaN. m1 is the largest component; if m2 vanishes, m1 must be
+        // bounded away from zero (otherwise the original normal had |n|≈0 and
+        // the upstream Youngs kernel would have set it to (1,0,0) fallback).
+        // H2 fix: division-by-zero guard.
+        if (m2 < 1e-8f) {
+            // 1D slab: V = alpha / m1, clamped.
+            return fmaxf(0.0f, fminf(1.0f, alpha / fmaxf(m1, 1e-30f)));
+        }
+
         float vol2d;
         if (alpha <= m2) {
             vol2d = (alpha * alpha) / (2.0f * m1 * m2);
@@ -3018,13 +3038,28 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
 
     const float* vel_ptrs[3] = { d_ux, d_uy, d_uz };
 
-    // Strang splitting: alternate XYZ / YXZ order each step
+    // 3-way symmetric Strang rotation (H3 fix).
+    // The previous XY-swap-only version (XYZ ↔ YXZ) always put Z last, leaving
+    // a persistent z-bias that grew with the number of timesteps. Cycling through
+    // all 6 permutations of {x,y,z} ensures every axis gets equal "first" and
+    // "last" exposure on the timescale of 6 calls, restoring the symmetry that
+    // a true Strang split is supposed to provide.
+    //
+    //   phase 0: X Y Z   phase 3: Z Y X
+    //   phase 1: Y Z X   phase 4: X Z Y
+    //   phase 2: Z X Y   phase 5: Y X Z
+    static const int kStrangPermutations[6][3] = {
+        {0, 1, 2},   // XYZ
+        {1, 2, 0},   // YZX
+        {2, 0, 1},   // ZXY
+        {2, 1, 0},   // ZYX  (reverse of phase 0)
+        {0, 2, 1},   // XZY
+        {1, 0, 2},   // YXZ  (reverse of phase 2)
+    };
     int sweeps[3];
-    if (plic_strang_x_first_) {
-        sweeps[0] = 0; sweeps[1] = 1; sweeps[2] = 2;
-    } else {
-        sweeps[0] = 1; sweeps[1] = 0; sweeps[2] = 2;
-    }
+    sweeps[0] = kStrangPermutations[plic_strang_phase_][0];
+    sweeps[1] = kStrangPermutations[plic_strang_phase_][1];
+    sweeps[2] = kStrangPermutations[plic_strang_phase_][2];
 
     // Work on d_fill_level_ / d_fill_level_tmp_ ping-pong
     float* src = d_fill_level_;
@@ -3097,9 +3132,9 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    // Diagnostic: measure mass before and after clamp to quantify loss
-    static int plic_call = 0;
-    if (plic_call % 500 == 0) {
+    // Diagnostic: measure mass before and after clamp to quantify loss.
+    // Counter promoted from function-level static to class member (H1 fix).
+    if (plic_call_count_ % 500 == 0) {
         float mass_before = computeTotalMass();
         plicFinalClampKernel<<<(N + 255) / 256, 256>>>(d_fill_level_, N);
         CUDA_CHECK_KERNEL();
@@ -3108,14 +3143,14 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         float clamp_loss = mass_before - mass_after;
         printf("[PLIC CLAMP] Call %d: mass_before=%.1f, mass_after=%.1f, "
                "clamp_deleted=%.4f (%.4f%%)\n",
-               plic_call, mass_before, mass_after,
+               plic_call_count_, mass_before, mass_after,
                clamp_loss, clamp_loss / mass_before * 100.0f);
     } else {
         plicFinalClampKernel<<<(N + 255) / 256, 256>>>(d_fill_level_, N);
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
     }
-    plic_call++;
+    plic_call_count_++;
 
     // WALL BOUNDARY SEALING: zero-gradient on fill_level at WALL faces.
     // Seals Y-walls and Z-min to prevent side fragmentation.
@@ -3172,8 +3207,84 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         }
     }
 
-    // Alternate Strang sweep order for next call
-    plic_strang_x_first_ = !plic_strang_x_first_;
+    // Advance to the next 6-cycle Strang permutation.
+    plic_strang_phase_ = (plic_strang_phase_ + 1) % 6;
+
+    // Final reconstruction pass on the post-advection fill so that downstream
+    // physics modules can read a (n̂, α) cache consistent with d_fill_level_.
+    // The reconstructions inside the Strang loop were against intermediate
+    // sweep states — they are stale by the time control returns here.
+    plicMarkDirty();
+    recomputePLICReconstruction();
+}
+
+// ============================================================================
+// VOFSolver::recomputePLICReconstruction()  (Phase 1 PLIC upgrade)
+// ============================================================================
+// Runs the Youngs normal kernel and the alpha-inversion kernel on the current
+// d_fill_level_ field, populating plic_nx_/ny_/nz_/alpha_. No-op if the cache
+// is already consistent (plic_dirty_ == false).
+//
+// Idempotent and safe to call multiple times. Lazy-allocates PLIC buffers on
+// first invocation. Synchronous: returns only after both kernels complete.
+// ============================================================================
+void VOFSolver::recomputePLICReconstruction() {
+    if (!plic_dirty_) return;
+
+    plicAllocateIfNeeded();
+
+    int N = num_cells_;
+    int bcs[3] = { static_cast<int>(bc_x_),
+                   static_cast<int>(bc_y_),
+                   static_cast<int>(bc_z_) };
+
+    dim3 blk3(8, 8, 8);
+    dim3 grd3((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
+
+    computePlicNormalsKernel<<<grd3, blk3>>>(
+        d_fill_level_,
+        plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+        nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+    CUDA_CHECK_KERNEL();
+
+    dim3 cell_block(256);
+    dim3 cell_grid((N + 255) / 256);
+    computePlicAlphaKernel<<<cell_grid, cell_block>>>(
+        d_fill_level_,
+        plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+        plic_alpha_.get(),
+        N);
+    CUDA_CHECK_KERNEL();
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    plic_dirty_ = false;
+}
+
+// ============================================================================
+// VOFSolver::getInterfaceGeometry()  (Phase 1 PLIC upgrade)
+// ============================================================================
+// Returns a read-only InterfaceGeometryView pointing at the per-cell PLIC
+// arrays. `plic_ready` is true iff the cache is consistent with d_fill_level_.
+//
+// When `plic_ready == false`, downstream callers MUST NOT dereference
+// d_alpha / d_normal_*. The arrays may be uninitialized (fresh VOFSolver,
+// no advection yet) or stale (fill modified after last reconstruction).
+// ============================================================================
+InterfaceGeometryView VOFSolver::getInterfaceGeometry() const {
+    InterfaceGeometryView v;
+    v.d_normal_x = plic_nx_.get();
+    v.d_normal_y = plic_ny_.get();
+    v.d_normal_z = plic_nz_.get();
+    v.d_alpha    = plic_alpha_.get();
+    v.d_fill     = d_fill_level_;
+    v.plic_ready = !plic_dirty_;
+    v.nx = nx_;
+    v.ny = ny_;
+    v.nz = nz_;
+    v.n  = num_cells_;
+    v.dx = dx_;
+    return v;
 }
 
 } // namespace physics
