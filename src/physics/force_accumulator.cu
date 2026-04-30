@@ -274,20 +274,31 @@ __global__ void addSurfaceTensionForceKernel(
 // ============================================================================
 // Phase 3b PLIC-aware CSF: sharp surface delta + explicit n̂.
 // ============================================================================
-// F = σ · κ · n̂ · δ_h(d)            [N/m³]
+// F = -σ · κ · n̂_outward · δ_h(d)            [N/m³]
 //
-// Where:
-//   κ        — curvature in [1/m]; expected to be the height-function
-//              curvature (CurvatureMethod::PLIC_DIVERGENCE) when paired with
-//              this kernel. Using the legacy κ here would re-introduce the
-//              κ-noise problem the sharp delta amplifies.
-//   n̂        — unit interface normal, in lattice (dimensionless).
-//   δ_h(d)   — Brackbill-Kothe-Zemach cosine kernel at signed distance d
-//              from the cell centre to the PLIC plane, h_smooth = 1.5 cells.
-//              Returned by plicCosineDelta() in 1/lattice-unit, divided by
-//              dx to convert to 1/m.
+// Sign convention. Three concurrent conventions in the literature:
 //
-// Compared to the legacy F = σ·κ·∇f kernel above, this version
+//   κ_div     = +∇·n̂_outward.  For a convex liquid sphere this gives +2/R.
+//               Phase 3a's HF kernel returns this convention, verified
+//               against the analytic 2/R sign on test_plic_curvature.cu.
+//
+//   κ_geom    = -∇·n̂_outward.  Cummins-Francois-Kothe and most VOF
+//               literature use this convention; the height-function
+//               formula's "natural" output is -bracket / σ³ which equals
+//               κ_geom. Phase 3a applies an extra negation to land on
+//               κ_div for downstream-CSF-friendly κ > 0 sphere result.
+//
+//   F_inward  = +σκ_geom n̂ δ = -σκ_div n̂ δ.  This is the correct
+//               surface-tension direction: the force pulls a convex
+//               liquid drop inward (towards the centre of curvature).
+//
+// We use κ_div (Phase 3a output) as the curvature input, so this kernel
+// applies an explicit negative sign to land at F_inward. The legacy
+// addSurfaceTensionForceKernel achieves the same physics implicitly:
+// F_legacy = σκ∇f = -σκ_div n̂_outward |∇f| (because ∇f points INWARD
+// at a liquid interface), so it absorbs the sign in ∇f.
+//
+// Compared to the legacy F = σκ∇f kernel, this version
 //
 //   - localises the force to ≤ 3 cells around the interface (vs 4-5 cells
 //     of |∇f| smearing on a tanh-smoothed VOF)
@@ -329,7 +340,8 @@ __global__ void addSurfaceTensionForcePLICKernel(
     float kappa = curvature[idx];
     if (isnan(kappa) || isinf(kappa)) return;
 
-    float coeff = sigma * kappa * delta_phys;   // [N/m³] (n̂ is unit)
+    // Inward force on liquid (surface-tension squeeze): F = -σκn̂_outward·δ.
+    float coeff = -sigma * kappa * delta_phys;   // [N/m³] (n̂ is unit)
     fx[idx] += coeff * n_x;
     fy[idx] += coeff * n_y;
     fz[idx] += coeff * n_z;

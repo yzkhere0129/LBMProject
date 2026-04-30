@@ -131,6 +131,9 @@ TEST(PLICCsfForce, DirectionAndSharpness) {
                cudaMemcpyDeviceToHost);
 
     // ---- Direction check ---------------------------------------------------
+    // Surface tension squeezes a convex liquid drop inward, so F should be
+    // anti-parallel to the OUTWARD radial unit vector (= aligned with the
+    // INWARD direction). Test against -r̂.
     int n_dir = 0;
     int well_aligned = 0;
     double sum_angle = 0.0;
@@ -144,9 +147,10 @@ TEST(PLICCsfForce, DirectionAndSharpness) {
         float dxr = xc_ - cx, dyr = yc_ - cy, dzr = zc_ - cz;
         float r = std::sqrt(dxr*dxr + dyr*dyr + dzr*dzr);
         if (r < 1e-3f) continue;
-        float anx = dxr / r, any = dyr / r, anz = dzr / r;
+        // Inward unit vector (-r̂)
+        float inwardx = -dxr / r, inwardy = -dyr / r, inwardz = -dzr / r;
         float fhx = fx[idx] / fmag, fhy = fy[idx] / fmag, fhz = fz[idx] / fmag;
-        float dot = anx*fhx + any*fhy + anz*fhz;
+        float dot = inwardx*fhx + inwardy*fhy + inwardz*fhz;
         dot = std::min(1.0f, std::max(-1.0f, dot));
         float angle = std::acos(dot);
         sum_angle += angle;
@@ -156,8 +160,8 @@ TEST(PLICCsfForce, DirectionAndSharpness) {
     ASSERT_GT(n_dir, 1000);
     double mean_angle = sum_angle / n_dir;
     float frac_aligned = static_cast<float>(well_aligned) / n_dir;
-    printf("[PLIC CSF] direction: cells=%d, mean=%.3e rad, well_aligned(<5deg)=%.3f\n",
-           n_dir, mean_angle, frac_aligned);
+    printf("[PLIC CSF] direction (vs INWARD): cells=%d, mean=%.3e rad, "
+           "well_aligned(<5deg)=%.3f\n", n_dir, mean_angle, frac_aligned);
     EXPECT_LT(mean_angle, 0.05);
     EXPECT_GT(frac_aligned, 0.9f);
 
