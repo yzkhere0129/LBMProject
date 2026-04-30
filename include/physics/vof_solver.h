@@ -307,6 +307,19 @@ public:
                                        float dt, float h_smooth_lu = 1.5f);
 
     /**
+     * @brief Phase 4b geometric PLIC area evaporation: df = -J × A_PLIC × dt / (ρ × dx).
+     *
+     * Uses the true polygon area of the PLIC plane inside the cell
+     * (A_PLIC = dV/dα, dimensionless lattice-unit area) instead of the
+     * cosine-kernel surface delta.  For an axis-aligned interface A_PLIC = 1
+     * and the formula reduces to the legacy result; for a tilted plane
+     * A_PLIC > 1, giving the 1/cos(θ) enhancement specified in roadmap §3 Phase 4.
+     *
+     * Falls back to applyEvaporationMassLoss() when PLIC is not ready.
+     */
+    void applyEvaporationMassLossPLICArea(const float* J_evap, float rho, float dt);
+
+    /**
      * @brief Apply solidification shrinkage to fill level
      * @param dfl_dt Liquid fraction rate of change [1/s] (device pointer)
      * @param beta Shrinkage factor = 1 - rho_liquid/rho_solid
@@ -516,6 +529,17 @@ private:
     // d_block_max reallocation in the parent advectFillLevel().
     int plic_call_count_ = 0;          // diagnostic print cadence for PLIC clamp
     int plic_substep_call_count_ = 0;  // diagnostic print cadence for CFL substepping
+
+    // H1-followup (2026-04-30 audit): 4 more statics in advectFillLevel + 1
+    // in applyEvaporationMassLoss were leaking state across VOFSolver
+    // instances (diag_plic_smoke runs legacy then PLIC back-to-back, and the
+    // "scheme reported" flag from instance 1 suppressed the print on
+    // instance 2). Promoted so each solver has its own diagnostic cadence.
+    int   advect_call_count_       = 0;
+    float advect_prev_mass_        = -1.0f;
+    int   advect_prev_substeps_    = 1;
+    bool  advect_scheme_reported_  = false;
+    int   evap_call_count_         = 0;
 
     // Per-instance reduction buffers for CFL/v_max computation.
     // Replace the function-level static d_block_max in advectFillLevel() (H1 fix).

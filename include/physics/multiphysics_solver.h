@@ -279,8 +279,13 @@ struct MultiphysicsConfig {
         bool marangoni_use_plic_delta = false;
         bool recoil_use_plic_delta    = false;
 
-        // Phase 4a: PLIC-aware Hertz-Knudsen evaporation mass loss.
+        // Phase 4a: PLIC-aware Hertz-Knudsen evaporation mass loss (cosine delta).
         bool evap_use_plic_delta      = false;
+
+        // Phase 4b: geometric PLIC area evaporation (A_PLIC = dV/dα).
+        // Overrides evap_use_plic_delta when true. Uses the true polygon
+        // area of the PLIC plane: df = -J × A_PLIC × dt / (ρ × dx).
+        bool evap_use_plic_area       = false;
 
         // Cosine-kernel half-width [lattice units] used by all PLIC
         // sharp-delta paths (Phase 3 forces and Phase 4 evaporation).
@@ -552,16 +557,13 @@ struct MultiphysicsConfig {
      *
      * Sets every Phase 2/3/4 opt-in flag (laser column-march, sharp-delta
      * CSF / Marangoni / recoil, PLIC evap) and the cosine-kernel half-
-     * width to 1.5 cells. Caller still needs to flip the VOFSolver
-     * normal/curvature methods after construction:
+     * width to 1.5 cells.
      *
-     *     solver.getVOFSolver()->setNormalReconstructionMethod(
-     *         NormalReconstructionMethod::HEIGHT_FUNCTION);
-     *     solver.getVOFSolver()->setCurvatureMethod(
-     *         CurvatureMethod::PLIC_DIVERGENCE);
-     *
-     * (A future roadmap item will auto-flip those when this preset fires;
-     * decoupled now to keep the test fixture pattern explicit.)
+     * MultiphysicsSolver::initialize() detects that at least one PLIC flag
+     * is set and automatically calls
+     *   vof_->setNormalReconstructionMethod(HEIGHT_FUNCTION)
+     *   vof_->setCurvatureMethod(PLIC_DIVERGENCE)
+     * so no manual follow-up on the VOFSolver is needed.
      */
     void enableFullPLICStack(float h_smooth_lu = 1.5f) {
         laser.plic_aware_column_march    = true;

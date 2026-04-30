@@ -170,6 +170,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_line_scan_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_line_scan_316L lbm_physics lbm_io CUDA::cudart)
 
+    # LPBF line scan with PLIC full-stack (apples-to-apples vs sim_line_scan_316L)
+    add_executable(sim_line_scan_316L_plic apps/sim_line_scan_316L_plic.cu)
+    set_target_properties(sim_line_scan_316L_plic PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_line_scan_316L_plic lbm_physics lbm_io CUDA::cudart)
+
     # LPBF powder bed simulation (316L, realistic powder layer)
     add_executable(sim_powder_bed_316L apps/sim_powder_bed_316L.cu)
     set_target_properties(sim_powder_bed_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

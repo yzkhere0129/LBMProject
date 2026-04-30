@@ -1008,6 +1008,21 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
             vof_->setMassConservationCorrection(true, 0.7f);  // damping=0.7 (moderate)
             std::cout << "  VOF mass correction: ENABLED (damping=0.7)" << std::endl;
         }
+
+        // Auto-activate PLIC normal/curvature methods whenever any PLIC path
+        // is enabled.  Keeps the SurfaceConfig flags as the single source of
+        // truth and eliminates the foot-gun of forgetting the two VOFSolver
+        // calls after enableFullPLICStack().
+        const bool any_plic_path =
+            config_.laser.plic_aware_column_march ||
+            config_.surface.csf_use_plic_delta    ||
+            config_.surface.marangoni_use_plic_delta ||
+            config_.surface.recoil_use_plic_delta ||
+            config_.surface.evap_use_plic_delta;
+        if (any_plic_path) {
+            vof_->setNormalReconstructionMethod(NormalReconstructionMethod::HEIGHT_FUNCTION);
+            vof_->setCurvatureMethod(CurvatureMethod::PLIC_DIVERGENCE);
+        }
     }
 
     // Surface tension (optional - add in Step 3)
@@ -1496,11 +1511,14 @@ void MultiphysicsSolver::step(float dt) {
                                           dt, config_.dx,
                                           config_.evap_cooling_factor);
 
-        // Apply mass loss to VOF fill_level. Phase 4a opt-in: when
-        // surface.evap_use_plic_delta is true, route through the sharp-
-        // delta kernel that confines mass loss to the PLIC interface band
-        // (no leakage from deep-bulk cells with stray J_evap noise).
-        if (config_.surface.evap_use_plic_delta) {
+        // Apply mass loss to VOF fill_level.
+        // Priority: area (Phase 4b) > delta (Phase 4a) > legacy.
+        if (config_.surface.evap_use_plic_area) {
+            vof_->applyEvaporationMassLossPLICArea(
+                d_evap_mass_flux_,
+                config_.material.rho_liquid,
+                dt);
+        } else if (config_.surface.evap_use_plic_delta) {
             vof_->applyEvaporationMassLossPLIC(
                 d_evap_mass_flux_,
                 config_.material.rho_liquid,
@@ -2469,10 +2487,18 @@ void MultiphysicsSolver::computeTotalForce() {
         const float3* normals = vof_->getInterfaceNormals();
 
         if (temperature && fill_level && normals) {
-            // Material properties from config (no hardcoded Ti6Al4V values)
+            // Material properties from config (no hardcoded Ti6Al4V values).
+            // M is taken from the material database when valid (>0); the legacy
+            // SurfaceConfig::molar_mass (Ti6Al4V default 0.0476) is only used
+            // as a fallback for old configs that don't populate material.molar_mass.
+            // Mismatch otherwise silently doubles recoil pressure for 316L
+            // (Ti6Al4V = 0.0476 vs 316L = 0.0558 kg/mol) — see
+            // code-quality-reviewer 2026-04-30 audit.
             const float T_boil = config_.material.T_vaporization;
             const float L_v = config_.material.L_vaporization;
-            const float M = config_.surface.molar_mass;
+            const float M = (config_.material.molar_mass > 0.0f)
+                            ? config_.material.molar_mass
+                            : config_.surface.molar_mass;
             const float P_atm = 101325.0f; // Pa (physical constant)
 
             if (config_.surface.recoil_use_plic_delta) {

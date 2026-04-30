@@ -81,14 +81,6 @@ TEST(PLICFullStack, RunsWithoutNaNFor50Steps) {
 
     MultiphysicsSolver solver(cfg);
 
-    // Caller is responsible for activating PLIC normal + curvature methods
-    // on the underlying VOFSolver — MultiphysicsSolver does not auto-pick
-    // them when the surface flags flip on.
-    if (auto* vof = solver.getVOFSolver()) {
-        vof->setNormalReconstructionMethod(NormalReconstructionMethod::HEIGHT_FUNCTION);
-        vof->setCurvatureMethod(CurvatureMethod::PLIC_DIVERGENCE);
-    }
-
     // Initialise a half-filled domain with a tilted top surface; gives the
     // PLIC plane some non-axis-aligned cells to exercise.
     int N = cfg.nx * cfg.ny * cfg.nz;
@@ -154,10 +146,6 @@ TEST(PLICFullStack, LongRunStable) {
     cfg.laser_power = 60.0f;          // bump power so heating is visible
 
     MultiphysicsSolver solver(cfg);
-    if (auto* vof = solver.getVOFSolver()) {
-        vof->setNormalReconstructionMethod(NormalReconstructionMethod::HEIGHT_FUNCTION);
-        vof->setCurvatureMethod(CurvatureMethod::PLIC_DIVERGENCE);
-    }
 
     int N = cfg.nx * cfg.ny * cfg.nz;
     std::vector<float> fill(N);

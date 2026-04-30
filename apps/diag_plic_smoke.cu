@@ -84,13 +84,6 @@ Result runOnce(const MultiphysicsConfig& cfg, bool use_plic, int n_steps) {
 
     MultiphysicsSolver solver(active);
 
-    if (use_plic) {
-        if (auto* vof = solver.getVOFSolver()) {
-            vof->setNormalReconstructionMethod(NormalReconstructionMethod::HEIGHT_FUNCTION);
-            vof->setCurvatureMethod(CurvatureMethod::PLIC_DIVERGENCE);
-        }
-    }
-
     int N = active.nx * active.ny * active.nz;
     std::vector<float> fill(N);
     for (int k = 0; k < active.nz; ++k) {

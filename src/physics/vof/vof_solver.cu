@@ -1507,19 +1507,14 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     float dt_sub = dt / static_cast<float>(n_substeps);
     float cfl_sub = vof_cfl / static_cast<float>(n_substeps);
 
-    // Diagnostic: print VOF advection info periodically
-    static int call_count = 0;
-    static float prev_mass = -1.0f;
-    static int prev_substeps = 1;
-    static bool scheme_reported = false;
-
-    if (call_count % 500 == 0 && call_count < 5000) {
-        // Compute current mass
+    // Diagnostic: print VOF advection info periodically.
+    // Counters are class members (H1-followup 2026-04-30) so multiple
+    // VOFSolver instances do not share diagnostic state.
+    if (advect_call_count_ % 500 == 0 && advect_call_count_ < 5000) {
         float mass = computeTotalMass();
-        float mass_change = (prev_mass > 0) ? (mass - prev_mass) : 0.0f;
+        float mass_change = (advect_prev_mass_ > 0) ? (mass - advect_prev_mass_) : 0.0f;
 
-        // Report scheme on first call
-        if (!scheme_reported) {
+        if (!advect_scheme_reported_) {
             const char* scheme_name = (advection_scheme_ == VOFAdvectionScheme::UPWIND) ? "UPWIND" : "TVD";
             const char* limiter_names[] = {"MINMOD", "VAN_LEER", "SUPERBEE", "MC"};
             const char* limiter_name = limiter_names[static_cast<int>(tvd_limiter_)];
@@ -1528,21 +1523,20 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
                 printf(" (limiter: %s)", limiter_name);
             }
             printf("\n");
-            scheme_reported = true;
+            advect_scheme_reported_ = true;
         }
 
         printf("[VOF ADVECT] Call %d: v_max=%.6f, CFL=%.6f, n_sub=%d, CFL_sub=%.3f, mass=%.1f (delta=%.3f)\n",
-               call_count, v_max, vof_cfl, n_substeps, cfl_sub, mass, mass_change);
-        prev_mass = mass;
+               advect_call_count_, v_max, vof_cfl, n_substeps, cfl_sub, mass, mass_change);
+        advect_prev_mass_ = mass;
     }
 
-    // Warn if subcycling activated/deactivated
-    if (n_substeps != prev_substeps && call_count % 100 == 0) {
+    if (n_substeps != advect_prev_substeps_ && advect_call_count_ % 100 == 0) {
         printf("[VOF SUBCYCLE] Step %d: CFL=%.3f requires %d substeps (dt_sub=%.2e s, CFL_sub=%.3f)\n",
-               call_count, vof_cfl, n_substeps, dt_sub, cfl_sub);
+               advect_call_count_, vof_cfl, n_substeps, dt_sub, cfl_sub);
     }
-    prev_substeps = n_substeps;
-    call_count++;
+    advect_prev_substeps_ = n_substeps;
+    advect_call_count_++;
 
     if (vof_cfl > 0.5f) {
         printf("WARNING: VOF CFL violation: %.3f > 0.5 (v_max=%.2e, dt=%.2e s, dx=%.2e m)\n",
@@ -1660,7 +1654,7 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
                 CUDA_CHECK(cudaDeviceSynchronize());
 
                 // Diagnostic output (periodic)
-                if (call_count % 500 == 0) {
+                if (advect_call_count_ % 500 == 0) {
                     float mass_after = computeTotalMass();
                     float correction_applied = mass_after - mass_current;
                     printf("[VOF MASS CORRECTION] ΔM=%.3e (%.3f%%), N_int=%d, corrected=%.3e\n",
@@ -1669,7 +1663,7 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
                 }
             } else {
                 // Warning: cannot correct mass without interface cells
-                if (mass_error_fraction > 0.01f && call_count % 1000 == 0) {
+                if (mass_error_fraction > 0.01f && advect_call_count_ % 1000 == 0) {
                     printf("[VOF MASS WARNING] Cannot correct %.1f%% mass loss - no interface cells!\n",
                            mass_error_fraction * 100.0f);
                 }
@@ -2206,9 +2200,9 @@ void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float d
     CUDA_CHECK(cudaDeviceSynchronize());
     plicMarkDirty();
 
-    // Diagnostic: Print evaporation mass loss info periodically
-    static int evap_call_count = 0;
-    if (evap_call_count % 500 == 0 && evap_call_count < 5000) {
+    // Diagnostic: Print evaporation mass loss info periodically.
+    // Counter is a class member (H1-followup 2026-04-30) so per-instance state.
+    if (evap_call_count_ % 500 == 0 && evap_call_count_ < 5000) {
         // Sample J_evap to check if evaporation is active
         int top_layer_start = (nz_ - 1) * nx_ * ny_;
         int sample_size = std::min(nx_ * ny_, 10000);
@@ -2226,10 +2220,10 @@ void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float d
 
         if (active_cells > 0) {
             printf("[VOF EVAP] Call %d: active_cells=%d, max_J=%.4e kg/(m^2*s), df_max=%.6f\n",
-                   evap_call_count, active_cells, max_J, max_J * dt / (rho * dx_));
+                   evap_call_count_, active_cells, max_J, max_J * dt / (rho * dx_));
         }
     }
-    evap_call_count++;
+    evap_call_count_++;
 }
 
 // ============================================================================
@@ -2252,6 +2246,82 @@ void VOFSolver::applyEvaporationMassLossPLIC(const float* J_evap, float rho,
 
     applyEvaporationMassLossPLICKernel<<<gridSize, blockSize>>>(
         d_fill_level_, J_evap, view, rho, dx_, dt, h_smooth_lu);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
+}
+
+// ============================================================================
+// Phase 4b: geometric PLIC area evaporation kernel.
+// ============================================================================
+// Uses the true area of the PLIC polygon inside the cell (A_PLIC = dV/dα)
+// rather than the cosine-kernel delta.  Mass flux per cell:
+//
+//   dm = J_evap × (A_PLIC × dx²) × dt        [kg]
+//   dV = dm / ρ                               [m³]
+//   df = -dV / dx³ = -J × A_PLIC × dt / (ρ × dx)
+//
+// For an axis-aligned interface A_PLIC = 1 → df = -J·dt/(ρ·dx), identical to
+// the legacy formula.  For a tilted plane A_PLIC > 1, giving the 1/cos(θ)
+// enhancement specified in roadmap §3 Phase 4.
+// ============================================================================
+__global__ void applyEvaporationMassLossPLICAreaKernel(
+    float* fill_level,
+    const float* J_evap,
+    InterfaceGeometryView view,
+    float rho, float dx, float dt)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= view.nx || j >= view.ny || k >= view.nz) return;
+    int idx = i + view.nx * (j + view.ny * k);
+
+    float f = fill_level[idx];
+    float J = J_evap[idx];
+    if (f <= 0.0f || J <= 0.0f) return;
+
+    // Restrict to interface cells only (same guard as the delta variant).
+    if (!plicIsInterfaceCell(idx, view, 1e-3f)) return;
+
+    float n_x = view.d_normal_x[idx];
+    float n_y = view.d_normal_y[idx];
+    float n_z = view.d_normal_z[idx];
+    if ((n_x*n_x + n_y*n_y + n_z*n_z) < 0.25f) return;
+
+    float alpha = view.d_alpha[idx];
+    float A_plic = plicCellSurfaceArea(n_x, n_y, n_z, alpha);
+    if (A_plic <= 0.0f) return;
+
+    // df = -J × A_PLIC × dt / (ρ × dx)
+    // (A_PLIC is dimensionless lattice-unit area; multiply by dx² / dx³ = 1/dx)
+    float df = -J * A_plic * dt / (rho * dx);
+
+    // 2% per-step stability limiter (same as legacy and delta variants).
+    constexpr float MAX_DF_PER_STEP = 0.02f;
+    if (df < -MAX_DF_PER_STEP * f) df = -MAX_DF_PER_STEP * f;
+
+    float f_new = f + df;
+    if (f_new < 1e-9f) f_new = 0.0f;
+    fill_level[idx] = fmaxf(0.0f, fminf(1.0f, f_new));
+}
+
+void VOFSolver::applyEvaporationMassLossPLICArea(const float* J_evap, float rho,
+                                                  float dt) {
+    recomputePLICReconstruction();
+    auto view = getInterfaceGeometry();
+    if (!view.plic_ready) {
+        applyEvaporationMassLoss(J_evap, rho, dt);
+        return;
+    }
+
+    dim3 blockSize(8, 8, 8);
+    dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
+                  (ny_ + blockSize.y - 1) / blockSize.y,
+                  (nz_ + blockSize.z - 1) / blockSize.z);
+
+    applyEvaporationMassLossPLICAreaKernel<<<gridSize, blockSize>>>(
+        d_fill_level_, J_evap, view, rho, dx_, dt);
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
     plicMarkDirty();

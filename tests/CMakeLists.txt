@@ -126,6 +126,13 @@ add_cuda_test(test_plic_curvature          unit/vof/test_plic_curvature.cu)
 add_cuda_test(test_plic_csf_force          unit/vof/test_plic_csf_force.cu)
 add_cuda_test(test_plic_marangoni_recoil   unit/vof/test_plic_marangoni_recoil.cu)
 add_cuda_test(test_plic_evaporation        unit/vof/test_plic_evaporation.cu)
+add_cuda_test(test_plic_evap_area          unit/vof/test_plic_evap_area.cu)
+
+# Physics-pinning tests (not tautological — check direction, magnitude, integral)
+add_cuda_test(test_plic_marangoni_direction unit/vof/test_plic_marangoni_direction.cu)
+add_cuda_test(test_plic_recoil_magnitude    unit/vof/test_plic_recoil_magnitude.cu)
+add_cuda_test(test_plic_csf_laplace         unit/vof/test_plic_csf_laplace.cu)
+add_cuda_test(test_plic_laser_column_dT     unit/vof/test_plic_laser_column_dT.cu)
 
 # ============================================================================
 # COMPREHENSIVE VOF TEST SUITE (80% → 95% coverage target)
