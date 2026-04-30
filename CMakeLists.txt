@@ -175,6 +175,13 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_powder_bed_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_powder_bed_316L lbm_physics lbm_io CUDA::cudart)
 
+    # PLIC vs legacy diagnostic — runs a tiny LPBF setup in both modes
+    # and prints a comparison. Useful for quickly verifying the PLIC stack
+    # before running a full benchmark.
+    add_executable(diag_plic_smoke apps/diag_plic_smoke.cu)
+    set_target_properties(diag_plic_smoke PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(diag_plic_smoke lbm_physics lbm_io CUDA::cudart)
+
     # Powder bed LPBF demo
     add_executable(demo_powder_bed_lpbf apps/demo_powder_bed_lpbf.cu)
     set_target_properties(demo_powder_bed_lpbf PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
