@@ -1938,21 +1938,33 @@ void MultiphysicsSolver::thermalStep(float dt) {
     }
 
     // ============================================================
-    // RE-APPLY DIRICHLET BCs AFTER STREAMING
+    // RE-APPLY DIRICHLET / CONVECTIVE / RADIATION BCs AFTER STREAMING
     // ============================================================
-    // Streaming can perturb Dirichlet values via bounce-back.
-    // Re-applying ensures exact enforcement (standard LBM pattern).
+    // R13 fix (2026-04-30, cfd-cuda-architect audit):
+    // The pre-collision applyFaceThermalBC for CONVECTIVE/RADIATION
+    // had its ΔT_cool overwritten by fdmAdvDiffKernel's adiabatic
+    // ghost-cell stencil at face cells (Tzm = Tc → zero z-flux).
+    // Only DIRICHLET survived because it was re-applied here post-
+    // streaming. Now extend to CONVECTIVE/RADIATION.
+    //
+    // Magnitude in current 2 ms run: ~0.5 W (substrate diffusion length
+    // 105 μm < substrate depth 200 μm), but real bug still worth fixing.
     // ============================================================
     if (use_per_face) {
         for (int face = 0; face < 6; ++face) {
             ThermalBCType bc = config_.boundaries.thermalBCForFace(face);
-            if (bc == ThermalBCType::DIRICHLET) {
+            if (bc == ThermalBCType::DIRICHLET ||
+                bc == ThermalBCType::CONVECTIVE ||
+                bc == ThermalBCType::RADIATION) {
                 thermal_->applyFaceThermalBC(
                     face,
-                    static_cast<int>(ThermalBCType::DIRICHLET),
+                    static_cast<int>(bc),
                     dt, config_.dx,
                     config_.boundaries.dirichlet_temperature,
-                    0.0f, 0.0f, 0.0f, 0.0f  // unused params
+                    config_.boundaries.convective_h,
+                    config_.boundaries.convective_T_inf,
+                    config_.boundaries.radiation_emissivity,
+                    config_.boundaries.radiation_T_ambient
                 );
             }
         }
