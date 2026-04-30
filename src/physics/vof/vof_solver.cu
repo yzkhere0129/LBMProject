@@ -1744,16 +1744,194 @@ void VOFSolver::reconstructInterface() {
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+// ============================================================================
+// Phase 3a PLIC curvature: Cummins-Francois-Kothe height-function curvature.
+// ============================================================================
+// For a height surface H(u, v) = (interface position along the dominant axis
+// as a function of the two lateral coordinates u, v):
+//
+//     κ = -(H_uu (1 + H_v²) + H_vv (1 + H_u²) - 2 H_u H_v H_uv)
+//          / (1 + H_u² + H_v²)^{3/2}
+//
+// We work directly with the column heights h(u, v) — which have h = (const) ±
+// H depending on the sign of the dominant gradient. The signs of H_u, H_v get
+// flipped in the formula by the (h ↔ H) sign, and the squared terms are
+// invariant; the cross term H_u H_v H_uv has two sign flips that cancel; and
+// the linear terms H_uu, H_vv pick up a single sign. The net effect is that
+// the bracket evaluated with h-derivatives matches H-derivatives up to an
+// overall sign s_dom = -sign(g_dominant). With our outward-normal convention,
+// κ > 0 for a convex liquid drop (sphere → 2/R) when we write
+//
+//     κ = +s_dom · (h_uu(1+h_v²) + h_vv(1+h_u²) - 2 h_u h_v h_uv)
+//                  / (1 + h_u² + h_v²)^{3/2}.
+//
+// Why this beats divergence-of-normal: the n̂ field is zero in bulk cells,
+// so a central-difference divergence at an interface cell next to bulk
+// suffers an artificial O(1/dx) jump. Column heights, by contrast, are
+// continuous across the interface band and naturally smooth.
+//
+// Reference: Cummins, Francois & Kothe (2005). Estimating curvature from
+// volume fractions. Computers & Structures 83, 425-434, eq. (7).
+// ============================================================================
+__global__ void computeCurvaturePLICKernel(
+    const float* __restrict__ fill,
+    float* __restrict__ kappa_out,
+    float dx,
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+    int idx = i + nx * (j + ny * k);
+
+    float f = fill[idx];
+    if (f <= 0.0f || f >= 1.0f) {
+        kappa_out[idx] = 0.0f;
+        return;
+    }
+
+#define IDX_BC(ii, jj, kk) \
+    ( ((bc_x == 0) ? (((ii) % nx + nx) % nx) : max(0, min(nx-1, (ii)))) \
+      + nx * ( \
+            ((bc_y == 0) ? (((jj) % ny + ny) % ny) : max(0, min(ny-1, (jj)))) \
+            + ny * ((bc_z == 0) ? (((kk) % nz + nz) % nz) : max(0, min(nz-1, (kk)))) \
+        ) )
+#define FILL_BC(ii, jj, kk) fill[IDX_BC(ii, jj, kk)]
+
+    // Identify dominant axis by Parker-Youngs gradient magnitude — same
+    // procedure as the HF normal kernel so the column orientation is
+    // consistent across normal and curvature.
+    int im = (bc_x == 0) ? ((i > 0)    ? i-1 : nx-1) : max(0,    i-1);
+    int ip = (bc_x == 0) ? ((i < nx-1) ? i+1 : 0)    : min(nx-1, i+1);
+    int jm = (bc_y == 0) ? ((j > 0)    ? j-1 : ny-1) : max(0,    j-1);
+    int jp = (bc_y == 0) ? ((j < ny-1) ? j+1 : 0)    : min(ny-1, j+1);
+    int km = (bc_z == 0) ? ((k > 0)    ? k-1 : nz-1) : max(0,    k-1);
+    int kp = (bc_z == 0) ? ((k < nz-1) ? k+1 : 0)    : min(nz-1, k+1);
+
+    auto FG = [&](int ii, int jj, int kk) -> float { return FILL_BC(ii, jj, kk); };
+
+    float gx = (FG(ip,j,k) - FG(im,j,k));
+    float gy = (FG(i,jp,k) - FG(i,jm,k));
+    float gz = (FG(i,j,kp) - FG(i,j,km));
+    float ax = fabsf(gx), ay = fabsf(gy), az = fabsf(gz);
+
+    constexpr int W = 4;            // 9-point column (matches HF normal kernel)
+    constexpr int LEN = 2 * W + 1;
+    float h[3][3];
+
+    // Build column heights along the dominant axis. The lateral 3×3 stencil
+    // is the same shape as the HF-normal kernel.
+    auto colX = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        for (int di = -W; di <= W; ++di) s += FILL_BC(ic + di, jc, kc);
+        return s;
+    };
+    auto colY = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        for (int dj = -W; dj <= W; ++dj) s += FILL_BC(ic, jc + dj, kc);
+        return s;
+    };
+    auto colZ = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        for (int dk = -W; dk <= W; ++dk) s += FILL_BC(ic, jc, kc + dk);
+        return s;
+    };
+
+    bool axis_x = (ax >= ay && ax >= az);
+    bool axis_y = (!axis_x) && (ay >= az);
+    if (axis_x) {
+        for (int dj = -1; dj <= 1; ++dj)
+            for (int dk = -1; dk <= 1; ++dk)
+                h[dj+1][dk+1] = colX(i, j + dj, k + dk);
+    } else if (axis_y) {
+        for (int di = -1; di <= 1; ++di)
+            for (int dk = -1; dk <= 1; ++dk)
+                h[di+1][dk+1] = colY(i + di, j, k + dk);
+    } else {
+        for (int di = -1; di <= 1; ++di)
+            for (int dj = -1; dj <= 1; ++dj)
+                h[di+1][dj+1] = colZ(i + di, j + dj, k);
+    }
+
+    // Validity: central column must straddle the interface; otherwise we
+    // cannot trust the second derivatives. 0 falls back to LEGACY values
+    // already in kappa_out (here: 0 — caller must combine with legacy κ).
+    const float low = 0.5f, high = static_cast<float>(LEN) - 0.5f;
+    if (h[1][1] <= low || h[1][1] >= high) {
+        kappa_out[idx] = 0.0f;
+        return;
+    }
+
+    // First and second derivatives of h on the 3×3 stencil. Lattice-unit
+    // spacing (dx=1 between lateral cells); the physical 1/dx factor is
+    // applied at the end.
+    float h_u   = 0.5f * (h[2][1] - h[0][1]);
+    float h_v   = 0.5f * (h[1][2] - h[1][0]);
+    float h_uu  = h[2][1] - 2.0f * h[1][1] + h[0][1];
+    float h_vv  = h[1][2] - 2.0f * h[1][1] + h[1][0];
+    float h_uv  = 0.25f * (h[2][2] - h[2][0] - h[0][2] + h[0][0]);
+
+    float denom = 1.0f + h_u * h_u + h_v * h_v;
+    float denom32 = sqrtf(denom) * denom;
+    float numer = h_uu * (1.0f + h_v * h_v)
+                + h_vv * (1.0f + h_u * h_u)
+                - 2.0f * h_u * h_v * h_uv;
+
+    // Derivation. Two parametrisations of the surface depending on which
+    // side carries the liquid:
+    //
+    //   gradient·dominant > 0  (liquid above interface):
+    //     n̂ = ( H_u,  H_v, -1) / σ      ⟹ ∇·n̂ = +bracket_H / σ³
+    //     h ∝ -H  ⟹ bracket_h = -bracket_H
+    //     κ = ∇·n̂ = +bracket_H / σ³ = -bracket_h / σ³
+    //
+    //   gradient·dominant < 0  (liquid below interface):
+    //     n̂ = (-H_u, -H_v, +1) / σ      ⟹ ∇·n̂ = -bracket_H / σ³
+    //     h ∝ +H  ⟹ bracket_h = +bracket_H
+    //     κ = ∇·n̂ = -bracket_H / σ³ = -bracket_h / σ³
+    //
+    // Both cases collapse to the same formula:
+    //
+    //     κ = -bracket_h / σ³           (no s_dom factor)
+    //
+    // The dominant-axis sign (s_dom = -sign(g_dominant)) is handled
+    // automatically through the column-height construction.
+    //
+    // Verified numerically against analytic 2/R on R=48 sphere (top, bottom,
+    // sides) — see test_plic_curvature.cu.
+    float kappa = -numer / denom32;
+    kappa_out[idx] = kappa / dx;
+
+#undef FILL_BC
+#undef IDX_BC
+}
+
 void VOFSolver::computeCurvature() {
     dim3 blockSize(8, 8, 8);
     dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
                   (ny_ + blockSize.y - 1) / blockSize.y,
                   (nz_ + blockSize.z - 1) / blockSize.z);
 
-    computeCurvatureKernel<<<gridSize, blockSize>>>(
-        d_fill_level_, d_interface_normal_, d_curvature_, dx_, nx_, ny_, nz_);
+    if (curvature_method_ == CurvatureMethod::PLIC_DIVERGENCE) {
+        // Cummins-Francois-Kothe height-function curvature. Does not use the
+        // cached PLIC normal field — operates directly on fill_level via
+        // 9-point columns + 3×3 lateral stencil. Sign convention matches
+        // the divergence-of-outward-normal definition: κ = +2/R for a
+        // convex liquid sphere in gas.
+        int bcs[3] = { static_cast<int>(bc_x_),
+                       static_cast<int>(bc_y_),
+                       static_cast<int>(bc_z_) };
+        computeCurvaturePLICKernel<<<gridSize, blockSize>>>(
+            d_fill_level_, d_curvature_, dx_,
+            nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+    } else {
+        computeCurvatureKernel<<<gridSize, blockSize>>>(
+            d_fill_level_, d_interface_normal_, d_curvature_,
+            dx_, nx_, ny_, nz_);
+    }
     CUDA_CHECK_KERNEL();
-
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 

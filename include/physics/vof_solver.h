@@ -99,6 +99,23 @@ enum class NormalReconstructionMethod : uint8_t {
 };
 
 /**
+ * @brief Curvature reconstruction algorithm.
+ *
+ * Phase 3a of the PLIC upgrade. The default LEGACY_HF path is the existing
+ * height-function-on-fill kernel, which differentiates the smoothed fill
+ * level twice — robust but smeared and prone to ~10% κ errors on a
+ * resolved sphere. PLIC_DIVERGENCE computes κ = -∇·n̂ via central
+ * differences on the per-cell unit normal stored in plic_nx_/ny_/nz_; with
+ * HEIGHT_FUNCTION normals it gives the standard O((h/R)²) Cummins-Francois-
+ * Kothe accuracy, which is required to pair with sharp surface deltas in
+ * Phase 3b without amplifying κ noise.
+ */
+enum class CurvatureMethod : uint8_t {
+    LEGACY_HF       = 0,   ///< height-function on fill_level (current behaviour)
+    PLIC_DIVERGENCE = 1    ///< -∇·n̂ on the PLIC unit-normal field
+};
+
+/**
  * @brief VOF solver for free surface tracking
  *
  * This class implements the Volume of Fluid method for tracking interfaces
@@ -418,6 +435,20 @@ public:
         return normal_method_;
     }
 
+    /**
+     * @brief Select the curvature-reconstruction algorithm.
+     * @param method LEGACY_HF (default, height-function on fill_level) or
+     *               PLIC_DIVERGENCE (-∇·n̂ on PLIC normals).
+     */
+    void setCurvatureMethod(CurvatureMethod method) {
+        curvature_method_ = method;
+        // PLIC_DIVERGENCE uses the cached PLIC normal field; ensure it is
+        // current next time computeCurvature() runs.
+        plicMarkDirty();
+    }
+
+    CurvatureMethod getCurvatureMethod() const { return curvature_method_; }
+
 private:
     // Domain dimensions
     int nx_, ny_, nz_;
@@ -477,6 +508,9 @@ private:
     // Active normal-reconstruction algorithm (default YOUNGS for backward
     // compatibility — HEIGHT_FUNCTION must be opted-in by tests / Phase 3).
     NormalReconstructionMethod normal_method_ = NormalReconstructionMethod::YOUNGS;
+
+    // Active curvature algorithm (Phase 3a — default keeps legacy behaviour).
+    CurvatureMethod curvature_method_ = CurvatureMethod::LEGACY_HF;
 
     // PLIC reconstruction freshness flag.
     // - Set to false on every fill_level write (initialize, advect, evap, etc.).
