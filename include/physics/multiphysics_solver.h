@@ -543,6 +543,35 @@ struct MultiphysicsConfig {
     float getDx() const { return domain.dx; }
     float getDt() const { return numerics.dt; }
 
+    // ------------------------------------------------------------------ //
+    // PLIC-stack convenience preset
+    // ------------------------------------------------------------------ //
+
+    /**
+     * @brief Enable all PLIC sharp-delta paths in one call.
+     *
+     * Sets every Phase 2/3/4 opt-in flag (laser column-march, sharp-delta
+     * CSF / Marangoni / recoil, PLIC evap) and the cosine-kernel half-
+     * width to 1.5 cells. Caller still needs to flip the VOFSolver
+     * normal/curvature methods after construction:
+     *
+     *     solver.getVOFSolver()->setNormalReconstructionMethod(
+     *         NormalReconstructionMethod::HEIGHT_FUNCTION);
+     *     solver.getVOFSolver()->setCurvatureMethod(
+     *         CurvatureMethod::PLIC_DIVERGENCE);
+     *
+     * (A future roadmap item will auto-flip those when this preset fires;
+     * decoupled now to keep the test fixture pattern explicit.)
+     */
+    void enableFullPLICStack(float h_smooth_lu = 1.5f) {
+        laser.plic_aware_column_march    = true;
+        surface.csf_use_plic_delta       = true;
+        surface.marangoni_use_plic_delta = true;
+        surface.recoil_use_plic_delta    = true;
+        surface.evap_use_plic_delta      = true;
+        surface.plic_h_smooth_lu         = h_smooth_lu;
+    }
+
     /**
      * @brief Validate configuration for LBM stability, physics consistency,
      *        and parameter ranges.

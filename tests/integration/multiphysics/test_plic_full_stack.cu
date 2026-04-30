@@ -57,12 +57,8 @@ void configurePLICStack(MultiphysicsConfig& cfg) {
     cfg.enable_solidification_shrinkage = false;
 
     // ---------------- Phase 2 / 3 / 4 PLIC opt-ins -----------------
-    cfg.laser.plic_aware_column_march    = true;
-    cfg.surface.csf_use_plic_delta       = true;
-    cfg.surface.marangoni_use_plic_delta = true;
-    cfg.surface.recoil_use_plic_delta    = true;
-    cfg.surface.evap_use_plic_delta      = true;
-    cfg.surface.plic_h_smooth_lu         = 1.5f;
+    // (Preset method bundles all five flags + h_smooth_lu.)
+    cfg.enableFullPLICStack(1.5f);
 
     // Reasonable LPBF-ish parameters (compact grid → small power).
     cfg.laser_power = 30.0f;

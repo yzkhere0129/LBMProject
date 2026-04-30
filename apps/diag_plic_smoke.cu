@@ -79,11 +79,7 @@ Result runOnce(const MultiphysicsConfig& cfg, bool use_plic, int n_steps) {
     MultiphysicsConfig active = cfg;
 
     if (use_plic) {
-        active.laser.plic_aware_column_march    = true;
-        active.surface.csf_use_plic_delta       = true;
-        active.surface.marangoni_use_plic_delta = true;
-        active.surface.recoil_use_plic_delta    = true;
-        active.surface.evap_use_plic_delta      = true;
+        active.enableFullPLICStack();
     }
 
     MultiphysicsSolver solver(active);
