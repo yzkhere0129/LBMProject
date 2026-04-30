@@ -109,7 +109,7 @@ TEST_F(DarcyStabilityTest, ExtremeDarcyBraking_NoNaN) {
 
     // Create ForceAccumulator and compute Darcy coefficient field
     ForceAccumulator forces(NX, NY, NZ);
-    forces.computeDarcyCoefficientField(d_lf, C_darcy, rho, dx, dt);
+    forces.computeDarcyCoefficientField(d_lf, nullptr, C_darcy, rho, dx, dt);
 
     // Zero force arrays (no body forces, only Darcy)
     forces.reset();
@@ -212,7 +212,7 @@ TEST_F(DarcyStabilityTest, MushyZoneSmooth_MonotonicDeceleration) {
     cudaMemcpy(d_lf, h_lf.data(), NC * sizeof(float), cudaMemcpyHostToDevice);
 
     ForceAccumulator forces(NX, NY, NZ);
-    forces.computeDarcyCoefficientField(d_lf, C_darcy, rho, dx, dt);
+    forces.computeDarcyCoefficientField(d_lf, nullptr, C_darcy, rho, dx, dt);
     forces.reset();
     const float* darcy_K = forces.getDarcyCoefficient();
 
@@ -295,7 +295,7 @@ TEST_F(DarcyStabilityTest, DarcyCoefficientValues_Correct) {
     cudaMemcpy(d_lf, h_lf.data(), NC * sizeof(float), cudaMemcpyHostToDevice);
 
     ForceAccumulator forces(N, 1, 1);
-    forces.computeDarcyCoefficientField(d_lf, C, rho, dx, dt);
+    forces.computeDarcyCoefficientField(d_lf, nullptr, C, rho, dx, dt);
 
     // Read back K values
     std::vector<float> h_K(NC);
@@ -360,7 +360,7 @@ TEST_F(DarcyStabilityTest, NoPressureOscillation) {
     cudaMemcpy(d_lf, h_lf.data(), NC * sizeof(float), cudaMemcpyHostToDevice);
 
     ForceAccumulator forces(NX, NY, NZ);
-    forces.computeDarcyCoefficientField(d_lf, C_darcy, rho, dx, dt);
+    forces.computeDarcyCoefficientField(d_lf, nullptr, C_darcy, rho, dx, dt);
     forces.reset();
     const float* darcy_K = forces.getDarcyCoefficient();
 

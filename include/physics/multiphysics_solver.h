@@ -265,6 +265,25 @@ struct MultiphysicsConfig {
         float recoil_force_multiplier = 1.0f;    ///< Force multiplier for VOF smearing compensation
         float evap_cooling_factor    = 1.0f;    ///< Evaporation cooling scaling (compensate VOF smearing)
         float molar_mass             = 0.0476f;  ///< Molar mass [kg/mol] (Ti6Al4V default)
+
+        // ---- Phase 3 PLIC sharp-delta force flags --------------------------
+        // When true the corresponding force kernel uses the PLIC plane
+        // geometry (cosine kernel surface delta + explicit unit normal)
+        // instead of the legacy |∇f| smearing. Default false preserves the
+        // calibration baselines. Each flag is independent so users can mix-
+        // and-match (e.g. PLIC CSF with legacy Marangoni) for diagnosis.
+        // The caller (MultiphysicsSolver::computeAllForces) calls
+        // vof->recomputePLICReconstruction() once per step before any of
+        // these dispatches when ANY flag is true.
+        bool csf_use_plic_delta       = false;
+        bool marangoni_use_plic_delta = false;
+        bool recoil_use_plic_delta    = false;
+
+        // Cosine-kernel half-width [lattice units] used by all three PLIC
+        // sharp-delta forces. Default 1.5 cells gives a 3-cell-wide force
+        // band — ~2× tighter than the legacy |∇f| smearing on a
+        // tanh-initialised interface.
+        float plic_h_smooth_lu        = 1.5f;
     };
 
     struct BuoyancyConfig {

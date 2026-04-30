@@ -2343,17 +2343,46 @@ void MultiphysicsSolver::computeTotalForce() {
         }
     }
 
+    // ============================================================
+    // Phase 3/5: ensure PLIC plane cache is fresh once per step
+    // ============================================================
+    // Whenever ANY surface force is configured to consume the PLIC plane
+    // geometry, we refresh the (n̂, α) cache here — once — so that all
+    // three force kernels below see consistent data. Costs ~5–20 μs on
+    // a 100³ grid (dirty-flag short-circuits subsequent calls).
+    const bool any_plic_force =
+        (config_.surface.csf_use_plic_delta && config_.enable_surface_tension) ||
+        (config_.surface.marangoni_use_plic_delta && config_.enable_marangoni) ||
+        (config_.surface.recoil_use_plic_delta && config_.enable_recoil_pressure);
+    if (any_plic_force && vof_) {
+        vof_->recomputePLICReconstruction();
+    }
+
     // 2b. Surface tension force (CSF model)
     if (config_.enable_surface_tension && surface_tension_ && vof_) {
         const float* fill_level = vof_->getFillLevel();
         const float* curvature = vof_->getCurvature();
 
         if (fill_level && curvature) {
-            force_accumulator_->addSurfaceTensionForce(
-                curvature, fill_level,
-                config_.surface_tension_coeff,
-                config_.nx, config_.ny, config_.nz,
-                config_.dx);
+            if (config_.surface.csf_use_plic_delta) {
+                // Phase 3b: σ·κ·n̂·δ_h(d). The curvature must be the HF
+                // version — using legacy κ here re-introduces the noise
+                // the sharp delta amplifies. We do not silently swap the
+                // method; the caller should setCurvatureMethod(PLIC_DIVERGENCE)
+                // when enabling csf_use_plic_delta.
+                force_accumulator_->addSurfaceTensionForcePLIC(
+                    vof_->getInterfaceGeometry(),
+                    curvature,
+                    config_.surface_tension_coeff,
+                    config_.dx,
+                    config_.surface.plic_h_smooth_lu);
+            } else {
+                force_accumulator_->addSurfaceTensionForce(
+                    curvature, fill_level,
+                    config_.surface_tension_coeff,
+                    config_.nx, config_.ny, config_.nz,
+                    config_.dx);
+            }
         }
     }
 
@@ -2400,12 +2429,25 @@ void MultiphysicsSolver::computeTotalForce() {
             // Marangoni must act at the VOF gas-metal interface (where ∇f ≠ 0),
             // NOT gated by the thermal phase state. Solid surface suppression
             // is already handled by Darcy damping (K > 0 where fl < 1).
-            force_accumulator_->addMarangoniForce(
-                d_T_smoothed_, fill_level, nullptr, normals,
-                config_.dsigma_dT,
-                config_.nx, config_.ny, config_.nz,
-                config_.dx,
-                1.0f);
+            if (config_.surface.marangoni_use_plic_delta) {
+                // Phase 3c: dσ/dT · ∇_s T · δ_h(d). Tangential gradient is
+                // projected with PLIC unit normal (more accurate than from
+                // ∇f). liquid_fraction=nullptr matches the legacy choice
+                // above: gate the gas-metal interface, not the thermal phase.
+                force_accumulator_->addMarangoniForcePLIC(
+                    d_T_smoothed_, /*liquid_fraction=*/nullptr,
+                    vof_->getInterfaceGeometry(),
+                    config_.dsigma_dT,
+                    config_.dx,
+                    config_.surface.plic_h_smooth_lu);
+            } else {
+                force_accumulator_->addMarangoniForce(
+                    d_T_smoothed_, fill_level, nullptr, normals,
+                    config_.dsigma_dT,
+                    config_.nx, config_.ny, config_.nz,
+                    config_.dx,
+                    1.0f);
+            }
         }
     }
 
@@ -2422,15 +2464,30 @@ void MultiphysicsSolver::computeTotalForce() {
             const float M = config_.surface.molar_mass;
             const float P_atm = 101325.0f; // Pa (physical constant)
 
-            force_accumulator_->addRecoilPressureForce(
-                temperature, fill_level, normals,
-                T_boil, L_v, M, P_atm,
-                config_.recoil_coefficient,
-                config_.recoil_smoothing_width,
-                config_.recoil_max_pressure,
-                config_.nx, config_.ny, config_.nz,
-                config_.dx,
-                config_.recoil_force_multiplier);
+            if (config_.surface.recoil_use_plic_delta) {
+                // Phase 3d: -P_recoil·n̂·δ_h(d). Sharp delta concentrates
+                // the force, so users should typically reduce
+                // recoil_force_multiplier from its calibrated 5–10× legacy
+                // value back toward 1.0.
+                force_accumulator_->addRecoilPressureForcePLIC(
+                    temperature, vof_->getInterfaceGeometry(),
+                    T_boil, L_v, M, P_atm,
+                    config_.recoil_coefficient,
+                    config_.recoil_max_pressure,
+                    config_.dx,
+                    config_.surface.plic_h_smooth_lu,
+                    config_.recoil_force_multiplier);
+            } else {
+                force_accumulator_->addRecoilPressureForce(
+                    temperature, fill_level, normals,
+                    T_boil, L_v, M, P_atm,
+                    config_.recoil_coefficient,
+                    config_.recoil_smoothing_width,
+                    config_.recoil_max_pressure,
+                    config_.nx, config_.ny, config_.nz,
+                    config_.dx,
+                    config_.recoil_force_multiplier);
+            }
         }
     }
 

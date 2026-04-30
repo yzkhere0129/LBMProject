@@ -100,7 +100,7 @@ void runSharpMushyZone() {
     CUDA_CHECK(cudaMemcpy(d_lf, h_lf.data(), NC * sizeof(float), cudaMemcpyHostToDevice));
 
     ForceAccumulator forces(NX, NY, NZ);
-    forces.computeDarcyCoefficientField(d_lf, C_darcy, rho, dx, dt);
+    forces.computeDarcyCoefficientField(d_lf, nullptr, C_darcy, rho, dx, dt);
     forces.reset();
     const float* darcy_K = forces.getDarcyCoefficient();
 
@@ -219,7 +219,7 @@ void runPerpendicularImpact() {
 
     // Darcy coefficient field
     ForceAccumulator forces(NX, NY, NZ);
-    forces.computeDarcyCoefficientField(d_lf, C_darcy, rho, dx, dt);
+    forces.computeDarcyCoefficientField(d_lf, nullptr, C_darcy, rho, dx, dt);
     const float* darcy_K = forces.getDarcyCoefficient();
 
     // Body force arrays: F_x = F_body in liquid zone, 0 in solid zone
@@ -381,7 +381,7 @@ void runCoefficientSweep() {
     CUDA_CHECK(cudaMemcpy(d_lf, h_lf.data(), N_POINTS * sizeof(float), cudaMemcpyHostToDevice));
 
     ForceAccumulator forces(N_POINTS, 1, 1);
-    forces.computeDarcyCoefficientField(d_lf, C, rho, dx, dt);
+    forces.computeDarcyCoefficientField(d_lf, nullptr, C, rho, dx, dt);
 
     std::vector<float> h_K(N_POINTS);
     CUDA_CHECK(cudaMemcpy(h_K.data(), forces.getDarcyCoefficient(),
@@ -443,7 +443,7 @@ void runExtremeBraking() {
     CUDA_CHECK(cudaMemcpy(d_lf, h_lf.data(), NC * sizeof(float), cudaMemcpyHostToDevice));
 
     ForceAccumulator forces(NX, NY, NZ);
-    forces.computeDarcyCoefficientField(d_lf, C_darcy, rho, dx, dt);
+    forces.computeDarcyCoefficientField(d_lf, nullptr, C_darcy, rho, dx, dt);
     forces.reset();
     const float* darcy_K = forces.getDarcyCoefficient();
 
