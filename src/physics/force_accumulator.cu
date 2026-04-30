@@ -7,6 +7,7 @@
 #include "physics/marangoni.h"
 #include "physics/surface_tension.h"
 #include "physics/recoil_pressure.h"
+#include "physics/interface_geometry.h"
 #include <cuda_runtime.h>
 #include <iostream>
 #include <vector>
@@ -270,6 +271,70 @@ __global__ void addSurfaceTensionForceKernel(
     fz[idx] += force_mag * grad_fz;
 }
 
+// ============================================================================
+// Phase 3b PLIC-aware CSF: sharp surface delta + explicit n̂.
+// ============================================================================
+// F = σ · κ · n̂ · δ_h(d)            [N/m³]
+//
+// Where:
+//   κ        — curvature in [1/m]; expected to be the height-function
+//              curvature (CurvatureMethod::PLIC_DIVERGENCE) when paired with
+//              this kernel. Using the legacy κ here would re-introduce the
+//              κ-noise problem the sharp delta amplifies.
+//   n̂        — unit interface normal, in lattice (dimensionless).
+//   δ_h(d)   — Brackbill-Kothe-Zemach cosine kernel at signed distance d
+//              from the cell centre to the PLIC plane, h_smooth = 1.5 cells.
+//              Returned by plicCosineDelta() in 1/lattice-unit, divided by
+//              dx to convert to 1/m.
+//
+// Compared to the legacy F = σ·κ·∇f kernel above, this version
+//
+//   - localises the force to ≤ 3 cells around the interface (vs 4-5 cells
+//     of |∇f| smearing on a tanh-smoothed VOF)
+//   - uses the unit normal explicitly, which is more accurate than ∇f/|∇f|
+//     when the gradient is noisy
+//   - has total ∫F dV preserved to discretisation order (cosine kernel is
+//     a partition of unity), but with 2-3× the spatial concentration.
+//
+// Skip cells that are not interface (f ∈ (eps, 1-eps)) or where PLIC
+// reconstruction is stale (caller must call recomputePLICReconstruction()
+// before launching this kernel).
+// ============================================================================
+__global__ void addSurfaceTensionForcePLICKernel(
+    InterfaceGeometryView view,
+    const float* curvature,
+    float* fx, float* fy, float* fz,
+    float sigma, float dx, float h_smooth_lu)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= view.nx || j >= view.ny || k >= view.nz) return;
+    int idx = i + view.nx * (j + view.ny * k);
+
+    if (!plicIsInterfaceCell(idx, view, 0.01f)) return;
+
+    float n_x = view.d_normal_x[idx];
+    float n_y = view.d_normal_y[idx];
+    float n_z = view.d_normal_z[idx];
+    float n_mag2 = n_x*n_x + n_y*n_y + n_z*n_z;
+    if (n_mag2 < 0.25f) return;   // degenerate normal, skip
+
+    // Signed distance from cell centre to the PLIC plane in lattice units.
+    float d_lu = plicSignedDistanceFromCenter(idx, view);
+    float delta_lu = plicCosineDelta(d_lu, h_smooth_lu);
+    if (delta_lu <= 0.0f) return;
+    float delta_phys = delta_lu / dx;     // [1/m]
+
+    float kappa = curvature[idx];
+    if (isnan(kappa) || isinf(kappa)) return;
+
+    float coeff = sigma * kappa * delta_phys;   // [N/m³] (n̂ is unit)
+    fx[idx] += coeff * n_x;
+    fy[idx] += coeff * n_y;
+    fz[idx] += coeff * n_z;
+}
+
 /**
  * @brief Add Marangoni force (thermocapillary)
  * F_m = (dσ/dT) · ∇_s T · |∇f| / h [N/m³]
@@ -454,6 +519,99 @@ __global__ void addMarangoniForceKernel(
     fz[idx] += coeff * grad_T_s_z;
 }
 
+// ============================================================================
+// Phase 3c: PLIC-aware Marangoni — F_m = dσ/dT · ∇_s T · δ_h(d).
+// ============================================================================
+// Drop-in replacement for addMarangoniForceKernel that uses the PLIC plane
+// data (signed distance from cell centre + unit normal) and the cosine sharp
+// delta in place of the legacy |∇f| smearing.
+//
+// Algorithm:
+//   1. Skip non-interface cells (f ∈ (eps, 1-eps)).
+//   2. Optional liquid_fraction gate to suppress force in solid/mushy zone.
+//   3. ∇T from central differences on the temperature field.
+//   4. ∇_s T = ∇T - (∇T·n̂) n̂  using the PLIC unit normal (more accurate
+//      than the noisy ∇f/|∇f| at the same cell).
+//   5. δ_h(d) = plicCosineDelta(d, h_smooth_lu) / dx, applied as the
+//      surface delta. With h_smooth = 1.5 lu the force band is ≤ 3 cells.
+//   6. F_volumetric = dσ/dT · ∇_s T · δ_h.
+//
+// Compared to the legacy kernel, the force is more spatially concentrated
+// (sharp delta), the tangent direction is purer (PLIC n̂ instead of
+// noisy gradient-derived normal), and the kernel needs one fewer cell-
+// neighbourhood read (no ∇f).
+// ============================================================================
+__global__ void addMarangoniForcePLICKernel(
+    const float* temperature,
+    const float* liquid_fraction,
+    InterfaceGeometryView view,
+    float* fx, float* fy, float* fz,
+    float dsigma_dT, float dx,
+    float h_smooth_lu)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= view.nx || j >= view.ny || k >= view.nz) return;
+    int idx = i + view.nx * (j + view.ny * k);
+
+    if (!plicIsInterfaceCell(idx, view, 0.01f)) return;
+
+    float n_x = view.d_normal_x[idx];
+    float n_y = view.d_normal_y[idx];
+    float n_z = view.d_normal_z[idx];
+    float n_mag2 = n_x*n_x + n_y*n_y + n_z*n_z;
+    if (n_mag2 < 0.25f) return;
+
+    // Mushy-zone gate (preserved from legacy kernel).
+    float fl_gate = 1.0f;
+    if (liquid_fraction != nullptr) {
+        float fl = liquid_fraction[idx];
+        fl_gate = fminf(fmaxf((fl - 0.1f) / 0.1f, 0.0f), 1.0f);
+        if (fl_gate < 1e-6f) return;
+    }
+
+    // ∇T (central differences with one-sided fallback at boundaries).
+    auto dT = [&](int axis) -> float {
+        int ip_, im_;
+        if (axis == 0) {
+            ip_ = (i + 1 < view.nx) ? (i + 1) + view.nx * (j + view.ny * k) : idx;
+            im_ = (i > 0)            ? (i - 1) + view.nx * (j + view.ny * k) : idx;
+        } else if (axis == 1) {
+            ip_ = (j + 1 < view.ny) ? i + view.nx * ((j + 1) + view.ny * k) : idx;
+            im_ = (j > 0)            ? i + view.nx * ((j - 1) + view.ny * k) : idx;
+        } else {
+            ip_ = (k + 1 < view.nz) ? i + view.nx * (j + view.ny * (k + 1)) : idx;
+            im_ = (k > 0)            ? i + view.nx * (j + view.ny * (k - 1)) : idx;
+        }
+        // 0.5 / dx for two-sided, 1/dx for one-sided.
+        bool one_sided = (ip_ == idx || im_ == idx);
+        float scale = one_sided ? (1.0f / dx) : (0.5f / dx);
+        return (temperature[ip_] - temperature[im_]) * scale;
+    };
+
+    float grad_T_x = dT(0);
+    float grad_T_y = dT(1);
+    float grad_T_z = dT(2);
+
+    // ∇_s T = ∇T - (∇T·n̂) n̂.
+    float grad_T_dot_n = grad_T_x * n_x + grad_T_y * n_y + grad_T_z * n_z;
+    float grad_T_s_x = grad_T_x - grad_T_dot_n * n_x;
+    float grad_T_s_y = grad_T_y - grad_T_dot_n * n_y;
+    float grad_T_s_z = grad_T_z - grad_T_dot_n * n_z;
+
+    // Sharp delta.
+    float d_lu = plicSignedDistanceFromCenter(idx, view);
+    float delta_lu = plicCosineDelta(d_lu, h_smooth_lu);
+    if (delta_lu <= 0.0f) return;
+    float delta_phys = delta_lu / dx;
+
+    float coeff = fl_gate * dsigma_dT * delta_phys;
+    fx[idx] += coeff * grad_T_s_x;
+    fy[idx] += coeff * grad_T_s_y;
+    fz[idx] += coeff * grad_T_s_z;
+}
+
 /**
  * @brief Add recoil pressure force (evaporation-driven)
  * F_recoil = P_recoil · n · |∇f| / h [N/m³]
@@ -576,6 +734,63 @@ __global__ void addRecoilPressureForceKernel(
     fx[idx] += -coeff * n.x;  // Negative: force pushes INTO liquid
     fy[idx] += -coeff * n.y;
     fz[idx] += -coeff * n.z;
+}
+
+// ============================================================================
+// Phase 3d: PLIC-aware recoil pressure — F = -P_recoil · n̂ · δ_h(d).
+// ============================================================================
+// Replaces the |∇f| smear with a sharp surface delta. Saturation pressure
+// uses the same Clausius-Clapeyron form as the legacy kernel and respects
+// the same activation threshold and pressure cap.
+//
+// In the LBM context, recoil drives keyhole formation. The legacy smeared
+// kernel needed a `force_multiplier` to compensate for the |∇f| dilution
+// across 3-4 cells; with the sharp delta the force is naturally
+// concentrated and the multiplier should be reduced or eliminated by the
+// caller. We expose the multiplier as a parameter for back-compatibility
+// with calibration baselines.
+// ============================================================================
+__global__ void addRecoilPressureForcePLICKernel(
+    const float* temperature,
+    InterfaceGeometryView view,
+    float* fx, float* fy, float* fz,
+    float T_boil, float L_v, float M, float P_atm,
+    float C_r, float max_pressure,
+    float dx, float h_smooth_lu, float force_multiplier)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= view.nx || j >= view.ny || k >= view.nz) return;
+    int idx = i + view.nx * (j + view.ny * k);
+
+    if (!plicIsInterfaceCell(idx, view, 0.01f)) return;
+
+    float n_x = view.d_normal_x[idx];
+    float n_y = view.d_normal_y[idx];
+    float n_z = view.d_normal_z[idx];
+    float n_mag2 = n_x*n_x + n_y*n_y + n_z*n_z;
+    if (n_mag2 < 0.25f) return;
+
+    float T = temperature[idx];
+    const float T_activation = T_boil - 500.0f;
+    if (T < T_activation) return;
+
+    const float R_gas = 8.314f;
+    float exponent = (L_v * M / R_gas) * (1.0f / T_boil - 1.0f / T);
+    exponent = fminf(50.0f, fmaxf(-50.0f, exponent));
+    float P_sat = P_atm * expf(exponent);
+    float P_recoil = fminf(C_r * P_sat, max_pressure);
+
+    float d_lu = plicSignedDistanceFromCenter(idx, view);
+    float delta_lu = plicCosineDelta(d_lu, h_smooth_lu);
+    if (delta_lu <= 0.0f) return;
+    float delta_phys = delta_lu / dx;
+
+    float coeff = P_recoil * delta_phys * force_multiplier;
+    fx[idx] += -coeff * n_x;   // Recoil pushes INTO liquid (opposite n̂).
+    fy[idx] += -coeff * n_y;
+    fz[idx] += -coeff * n_z;
 }
 
 /**
@@ -1148,6 +1363,52 @@ void ForceAccumulator::addSurfaceTensionForce(
     surface_tension_mag_ = getMaxForceMagnitude();
 }
 
+// ============================================================================
+// Phase 3b: PLIC sharp-delta surface-tension force.
+// ============================================================================
+// Adds  F = σ · κ · n̂ · δ_h(d)  (using the cached PLIC plane and PLIC HF
+// curvature) to the force accumulator's (fx, fy, fz). Caller is responsible
+// for ensuring the InterfaceGeometryView is fresh (vof.recomputePLIC...())
+// and that `curvature` was computed with CurvatureMethod::PLIC_DIVERGENCE.
+//
+// h_smooth_lu is the cosine-kernel half-width in lattice units. Default
+// 1.5 cells gives a 3-cell-wide force band, ~2× tighter than the legacy
+// |∇f| smearing on a tanh-initialised interface.
+// ============================================================================
+void ForceAccumulator::addSurfaceTensionForcePLIC(
+    const InterfaceGeometryView& view,
+    const float* curvature,
+    float sigma, float dx, float h_smooth_lu)
+{
+    if (!view.plic_ready) {
+        // Caller forgot to refresh the cache; fail silently rather than
+        // dereferencing a null d_alpha. (Callers wired through Multiphysics
+        // already guarantee freshness.)
+        return;
+    }
+
+    dim3 threads(8, 8, 8);
+    dim3 blocks((view.nx + threads.x - 1) / threads.x,
+                (view.ny + threads.y - 1) / threads.y,
+                (view.nz + threads.z - 1) / threads.z);
+
+    addSurfaceTensionForcePLICKernel<<<blocks, threads>>>(
+        view, curvature,
+        d_fx_, d_fy_, d_fz_,
+        sigma, dx, h_smooth_lu);
+    CUDA_CHECK_KERNEL();
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        throw std::runtime_error("ForceAccumulator::addSurfaceTensionForcePLIC: "
+                                 "kernel launch failed: " +
+                                 std::string(cudaGetErrorString(err)));
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    surface_tension_mag_ = getMaxForceMagnitude();
+}
+
 void ForceAccumulator::addMarangoniForce(
     const float* temperature, const float* fill_level,
     const float* liquid_fraction,
@@ -1211,6 +1472,66 @@ void ForceAccumulator::addRecoilPressureForce(
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Update diagnostic
+    recoil_mag_ = getMaxForceMagnitude();
+}
+
+// ============================================================================
+// Phase 3c PLIC-aware Marangoni — host wrapper.
+// ============================================================================
+void ForceAccumulator::addMarangoniForcePLIC(
+    const float* temperature,
+    const float* liquid_fraction,
+    const InterfaceGeometryView& view,
+    float dsigma_dT, float dx, float h_smooth_lu)
+{
+    if (!view.plic_ready) return;
+    dim3 threads(8, 8, 8);
+    dim3 blocks((view.nx + threads.x - 1) / threads.x,
+                (view.ny + threads.y - 1) / threads.y,
+                (view.nz + threads.z - 1) / threads.z);
+    addMarangoniForcePLICKernel<<<blocks, threads>>>(
+        temperature, liquid_fraction, view,
+        d_fx_, d_fy_, d_fz_,
+        dsigma_dT, dx, h_smooth_lu);
+    CUDA_CHECK_KERNEL();
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        throw std::runtime_error("ForceAccumulator::addMarangoniForcePLIC: "
+                                 "kernel launch failed: " +
+                                 std::string(cudaGetErrorString(err)));
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+    marangoni_mag_ = getMaxForceMagnitude();
+}
+
+// ============================================================================
+// Phase 3d PLIC-aware recoil pressure — host wrapper.
+// ============================================================================
+void ForceAccumulator::addRecoilPressureForcePLIC(
+    const float* temperature,
+    const InterfaceGeometryView& view,
+    float T_boil, float L_v, float M, float P_atm,
+    float C_r, float max_pressure,
+    float dx, float h_smooth_lu, float force_multiplier)
+{
+    if (!view.plic_ready) return;
+    dim3 threads(8, 8, 8);
+    dim3 blocks((view.nx + threads.x - 1) / threads.x,
+                (view.ny + threads.y - 1) / threads.y,
+                (view.nz + threads.z - 1) / threads.z);
+    addRecoilPressureForcePLICKernel<<<blocks, threads>>>(
+        temperature, view,
+        d_fx_, d_fy_, d_fz_,
+        T_boil, L_v, M, P_atm, C_r, max_pressure,
+        dx, h_smooth_lu, force_multiplier);
+    CUDA_CHECK_KERNEL();
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        throw std::runtime_error("ForceAccumulator::addRecoilPressureForcePLIC: "
+                                 "kernel launch failed: " +
+                                 std::string(cudaGetErrorString(err)));
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
     recoil_mag_ = getMaxForceMagnitude();
 }
 
