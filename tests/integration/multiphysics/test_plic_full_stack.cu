@@ -149,6 +149,63 @@ TEST(PLICFullStack, RunsWithoutNaNFor50Steps) {
 }
 
 // ---------------------------------------------------------------------------
+// Long run: 200 steps gives the fluid time to respond to the laser deposit
+// and confirms the PLIC stack is stable beyond initial transients.
+// ---------------------------------------------------------------------------
+TEST(PLICFullStack, LongRunStable) {
+    MultiphysicsConfig cfg;
+    configurePLICStack(cfg);
+    cfg.laser_power = 60.0f;          // bump power so heating is visible
+
+    MultiphysicsSolver solver(cfg);
+    if (auto* vof = solver.getVOFSolver()) {
+        vof->setNormalReconstructionMethod(NormalReconstructionMethod::HEIGHT_FUNCTION);
+        vof->setCurvatureMethod(CurvatureMethod::PLIC_DIVERGENCE);
+    }
+
+    int N = cfg.nx * cfg.ny * cfg.nz;
+    std::vector<float> fill(N);
+    for (int k = 0; k < cfg.nz; ++k) {
+        for (int j = 0; j < cfg.ny; ++j) {
+            for (int i = 0; i < cfg.nx; ++i) {
+                float z_surf = (cfg.nz - 6) + 0.05f * (i - cfg.nx * 0.5f);
+                float v = z_surf - k;
+                fill[i + cfg.nx * (j + cfg.ny * k)] =
+                    std::max(0.0f, std::min(1.0f, 0.5f + 0.5f * v));
+            }
+        }
+    }
+    solver.initialize(1500.0f, 0.5f);
+    if (auto* vof = solver.getVOFSolver()) {
+        vof->initialize(fill.data());
+    }
+
+    float m0 = solver.getVOFSolver()->computeTotalMass();
+
+    const int n_steps = 200;
+    float v_peak = 0.0f, T_peak = 0.0f;
+    for (int step = 0; step < n_steps; ++step) {
+        solver.step();
+        if ((step + 1) % 20 == 0) {
+            ASSERT_FALSE(solver.checkNaN()) << "NaN at step " << step + 1;
+            float v = solver.getMaxVelocity();
+            float T = solver.getMaxTemperature();
+            v_peak = std::max(v_peak, v);
+            T_peak = std::max(T_peak, T);
+        }
+    }
+    float m_final = solver.getVOFSolver()->computeTotalMass();
+    float dm_rel = std::fabs(m_final - m0) / m0;
+    printf("[PLIC LONG RUN] m0=%.4f, m_final=%.4f, |Δm/m₀|=%.3e, v_peak=%.3e m/s, T_peak=%.1f K\n",
+           m0, m_final, dm_rel, v_peak, T_peak);
+
+    EXPECT_LT(dm_rel, 0.10f) << "Mass conservation < 10% over 200 steps";
+    EXPECT_LT(v_peak, 200.0f) << "v_peak sanity bound";
+    EXPECT_LT(T_peak, 50000.0f) << "T_peak sanity bound";
+    EXPECT_GT(T_peak, 1500.0f) << "Laser should have raised T above initial 1500 K";
+}
+
+// ---------------------------------------------------------------------------
 // Default (legacy) path: same setup with all PLIC flags off — should
 // run identically clean. Confirms the PLIC opt-ins don't break the
 // default path through the same MultiphysicsSolver dispatch code.
