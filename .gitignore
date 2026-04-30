@@ -92,6 +92,7 @@ venv/
 !CMakeLists.txt
 !LBM_Framework_Blueprint.json
 !MATERIAL_DATABASE.yaml
+!PLIC_DELIVERY.md
 !*.sh
 
 # Un-ignore documentation source files
