@@ -2118,6 +2118,81 @@ __global__ void applyEvaporationMassLossKernel(
     fill_level[idx] = fmaxf(0.0f, fminf(1.0f, f_new));
 }
 
+// ============================================================================
+// Phase 4a: PLIC-aware Hertz-Knudsen evaporation mass loss.
+// ============================================================================
+// Replaces df = -J · dt / (ρ · dx) (which assumes A_surface = dx²,
+// i.e. a horizontal interface) with
+//
+//     df = -J · δ_h(d) · dt / ρ
+//
+// where δ_h(d) is the cosine kernel surface delta evaluated at the signed
+// distance from the cell centre to the PLIC plane. Two improvements:
+//
+//   1. The delta is non-zero across a 3-cell band (h_smooth = 1.5 lu by
+//      default) — the same band the Phase 3b/c/d forces act on. This
+//      avoids the legacy kernel's "any f>0 cell with J>0 loses mass"
+//      which can leak mass from deep-bulk cells if J was accidentally
+//      non-zero there.
+//
+//   2. For an axis-aligned interface, δ_h(0) = 1/(h_smooth_lu · dx) and
+//      the 3-cell sum over d ∈ {-1, 0, +1} integrates to ≈ 1/dx, so the
+//      total cell-stack mass loss matches the legacy formula. For a
+//      tilted plane, δ_h still integrates to ~1/dx along the column
+//      (cosine kernel is partition-of-unity), giving the same total
+//      mass loss but distributed across cells along the plane normal —
+//      more physical than dumping it all in the f-positive cell.
+//
+// Bulk cells (f ≈ 0 or f ≈ 1) get zero deposit because plicCosineDelta
+// returns 0 for |d| ≥ h_smooth and the cell centre is far from the plane
+// in those cases.
+// ============================================================================
+__global__ void applyEvaporationMassLossPLICKernel(
+    float* fill_level,
+    const float* J_evap,
+    InterfaceGeometryView view,
+    float rho, float dx, float dt, float h_smooth_lu)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= view.nx || j >= view.ny || k >= view.nz) return;
+    int idx = i + view.nx * (j + view.ny * k);
+
+    float f = fill_level[idx];
+    float J = J_evap[idx];
+    if (f <= 0.0f || J <= 0.0f) return;
+
+    // Use sharp delta only for interface-band cells where PLIC is meaningful.
+    // For pure-bulk cells (f outside (eps, 1-eps)) we conservatively skip —
+    // legacy behaviour would have removed mass even there given non-zero J,
+    // but that is an unphysical artefact of the cell-level kernel; the
+    // Phase 4a contract is "evaporate only at the interface".
+    if (!plicIsInterfaceCell(idx, view, 1e-3f)) return;
+
+    float n_x = view.d_normal_x[idx];
+    float n_y = view.d_normal_y[idx];
+    float n_z = view.d_normal_z[idx];
+    if ((n_x*n_x + n_y*n_y + n_z*n_z) < 0.25f) return;
+
+    float d_lu = plicSignedDistanceFromCenter(idx, view);
+    float delta_lu = plicCosineDelta(d_lu, h_smooth_lu);
+    if (delta_lu <= 0.0f) return;
+    float delta_phys = delta_lu / dx;     // [1/m]
+
+    // df = -J · δ_h · dt / ρ
+    float df = -J * delta_phys * dt / rho;
+
+    // Match the legacy 2 % per-step stability limiter — keeps the kernel
+    // numerically robust at extreme T (>40,000 K is a known stress case).
+    constexpr float MAX_DF_PER_STEP = 0.02f;
+    if (df < -MAX_DF_PER_STEP * f) df = -MAX_DF_PER_STEP * f;
+
+    float f_new = f + df;
+    if (f_new < 1e-9f) f_new = 0.0f;
+    fill_level[idx] = fmaxf(0.0f, fminf(1.0f, f_new));
+}
+
 void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float dt) {
     dim3 blockSize(8, 8, 8);
     dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
@@ -2155,6 +2230,31 @@ void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float d
         }
     }
     evap_call_count++;
+}
+
+// ============================================================================
+// Phase 4a: PLIC-aware evaporation mass loss — host wrapper.
+// ============================================================================
+void VOFSolver::applyEvaporationMassLossPLIC(const float* J_evap, float rho,
+                                              float dt, float h_smooth_lu) {
+    recomputePLICReconstruction();   // ensure cache is fresh
+    auto view = getInterfaceGeometry();
+    if (!view.plic_ready) {
+        // No interface yet — fall back to the legacy kernel.
+        applyEvaporationMassLoss(J_evap, rho, dt);
+        return;
+    }
+
+    dim3 blockSize(8, 8, 8);
+    dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
+                  (ny_ + blockSize.y - 1) / blockSize.y,
+                  (nz_ + blockSize.z - 1) / blockSize.z);
+
+    applyEvaporationMassLossPLICKernel<<<gridSize, blockSize>>>(
+        d_fill_level_, J_evap, view, rho, dx_, dt, h_smooth_lu);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
 }
 
 // ============================================================================

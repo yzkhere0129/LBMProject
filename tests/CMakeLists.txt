@@ -125,6 +125,7 @@ add_cuda_test(test_plic_dirty_flag         unit/vof/test_plic_dirty_flag.cu)
 add_cuda_test(test_plic_curvature          unit/vof/test_plic_curvature.cu)
 add_cuda_test(test_plic_csf_force          unit/vof/test_plic_csf_force.cu)
 add_cuda_test(test_plic_marangoni_recoil   unit/vof/test_plic_marangoni_recoil.cu)
+add_cuda_test(test_plic_evaporation        unit/vof/test_plic_evaporation.cu)
 
 # ============================================================================
 # COMPREHENSIVE VOF TEST SUITE (80% → 95% coverage target)

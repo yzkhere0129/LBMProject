@@ -291,6 +291,22 @@ public:
     void applyEvaporationMassLoss(const float* J_evap, float rho, float dt);
 
     /**
+     * @brief Phase 4a PLIC-aware evaporation: df = -J · δ_h(d) · dt / ρ.
+     *
+     * Sharp-delta replacement for applyEvaporationMassLoss that uses the
+     * cached PLIC plane geometry. Mass loss is concentrated in the cosine-
+     * kernel band around the PLIC interface (default 3 cells). Bulk cells
+     * (deep in the metal where T may be high but no surface is exposed)
+     * receive no mass loss — fixing a known artefact of the legacy kernel
+     * which removed mass anywhere f > 0 ∧ J > 0.
+     *
+     * Caller does NOT need to call recomputePLICReconstruction() first;
+     * this method does it internally if the cache is dirty.
+     */
+    void applyEvaporationMassLossPLIC(const float* J_evap, float rho,
+                                       float dt, float h_smooth_lu = 1.5f);
+
+    /**
      * @brief Apply solidification shrinkage to fill level
      * @param dfl_dt Liquid fraction rate of change [1/s] (device pointer)
      * @param beta Shrinkage factor = 1 - rho_liquid/rho_solid
