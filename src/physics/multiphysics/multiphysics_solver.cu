@@ -317,6 +317,84 @@ __global__ void computeLaserHeatSourceKernel(
     d_heat_source[idx] = f * laser.computeVolumetricHeatSource(x, y, depth);
 }
 
+// ============================================================================
+// Phase 2 PLIC-aware laser kernel: top-down column march, sharp deposit
+// ============================================================================
+// One thread per (i, j) column. The thread:
+//   1. Zeros the entire column's d_heat_source.
+//   2. Evaluates the surface intensity I(x, y) = absorptivity · I_Gaussian(x,y).
+//   3. Marches k from nz-1 (top) down to 0, looking for the first cell with
+//      f > F_GAS_THRESHOLD.
+//   4. When found, writes the entire absorbed power into that cell with
+//      Q_vol = I_xy / (dx · max(f, F_MIN_DEPOSIT)).
+//      The 1/f weighting cancels the f factor that would otherwise smear
+//      ΔT = Q · dt / (ρ · cp · f) into a smaller-than-correct temperature
+//      rise; with this scaling the cell heats as if its full mass (ρ · f ·
+//      dx³) absorbed the entire incident intensity over its dx² footprint.
+//   5. Stops the column march. Cells below the absorbing cell receive no
+//      direct heat — only conduction. This is physically correct for
+//      metallic absorption depths (~10 nm) much smaller than the grid
+//      resolution (typically dx ≥ 1 μm in LPBF).
+//
+// vs. the legacy per-cell Beer-Lambert kernel above:
+//   - Legacy: every cell at depth d gets Q = α·I·β·exp(-β·d)·f. Energy is
+//     spread over ~10 cells (penetration depth ≈ 10 μm = 5 cells at dx=2 μm),
+//     producing a temperature smear that washes out the keyhole cap and
+//     widens Pool W by ~30 % vs F3D ground truth.
+//   - PLIC column march: all energy lands in one cell. Conduction handles
+//     downstream propagation. No smearing.
+//
+// Caller must call vof->recomputePLICReconstruction() before launch when the
+// PLIC plane is to be used for sub-cell sub-positioning. The current Phase 2
+// kernel only consumes fill_level and does not read the plane data, so the
+// reconstruction is not strictly required — but Phase 3 will need it.
+// ============================================================================
+__global__ void computeLaserHeatSourcePLICColumnKernel(
+    float* d_heat_source,
+    const float* fill_level,
+    LaserSource laser,
+    int nx, int ny, int nz,
+    float dx,
+    float f_min_deposit)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= nx || j >= ny) return;
+
+    // Zero the entire column first so that no stale value remains in cells
+    // below the absorbing cell (or in cells of all-gas columns).
+    for (int k = 0; k < nz; ++k) {
+        int idx = i + nx * (j + ny * k);
+        d_heat_source[idx] = 0.0f;
+    }
+
+    float x = i * dx;
+    float y = j * dx;
+
+    // Surface intensity [W/m²] including absorptivity. Beer-Lambert depth
+    // attenuation is intentionally NOT applied here — the column march
+    // implements the sharp-deposit boundary directly.
+    float I_xy = laser.computeIntensity(x, y) * laser.absorptivity;
+    if (I_xy < 1e-10f) return;
+
+    constexpr float F_GAS_THRESHOLD = 1e-3f;
+
+    // March top → bottom. Stop at first cell with meaningful metal content.
+    for (int k = nz - 1; k >= 0; --k) {
+        int idx = i + nx * (j + ny * k);
+        float f = (fill_level != nullptr) ? fill_level[idx] : 1.0f;
+        if (f < F_GAS_THRESHOLD) continue;
+
+        // Deposit. Q_vol = I_xy / (dx · max(f, f_min_deposit)).
+        // ΔT per step = Q_vol · dt / (ρ · cp · f) gives the correct
+        // temperature rise for the cell's metal mass.
+        float f_eff = fmaxf(f, f_min_deposit);
+        d_heat_source[idx] = I_xy / (dx * f_eff);
+        return;
+    }
+    // All-gas column: nothing to deposit (heat_source already zeroed).
+}
+
 /**
  * @brief Convert volumetric force [N/m³] to lattice units
  * F_lattice = F_physical * (dt² / dx)
@@ -1517,6 +1595,28 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
                    ray_tracing_laser_->getInputPower(),
                    ray_tracing_laser_->getEnergyError());
         }
+    } else if (config_.laser.plic_aware_column_march) {
+        // ============================================================
+        // Phase 2: PLIC-aware column march, sharp single-cell deposit
+        // ============================================================
+        // 2D launch (one thread per (i, j) column). The kernel walks the
+        // column top-down internally; no z-slab thread parallelism here.
+        dim3 threads(16, 16);
+        dim3 blocks(
+            (config_.nx + threads.x - 1) / threads.x,
+            (config_.ny + threads.y - 1) / threads.y
+        );
+        const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
+        computeLaserHeatSourcePLICColumnKernel<<<blocks, threads>>>(
+            d_heat_source,
+            fill_ptr,
+            *laser_,
+            config_.nx, config_.ny, config_.nz,
+            config_.dx,
+            config_.laser.plic_f_min_deposit
+        );
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
     } else {
         // ============================================================
         // Beer-Lambert path: volumetric Gaussian projection (original)
@@ -2743,25 +2843,39 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
     CUDA_CHECK(cudaMalloc(&d_heat_source, num_cells * sizeof(float)));
     CudaFreeGuard guard{d_heat_source};
 
-    // Compute volumetric heat source from laser (same as applyLaserSource)
-    dim3 threads(8, 8, 8);
-    dim3 blocks(
-        (config_.nx + threads.x - 1) / threads.x,
-        (config_.ny + threads.y - 1) / threads.y,
-        (config_.nz + threads.z - 1) / threads.z
-    );
-
-    float z_surface = interface_z_;
+    // Compute volumetric heat source from laser (same dispatch as applyLaserSource).
     const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
-
-    computeLaserHeatSourceKernel<<<blocks, threads>>>(
-        d_heat_source,
-        fill_ptr,
-        *laser_,
-        config_.nx, config_.ny, config_.nz,
-        config_.dx,
-        z_surface
-    );
+    if (config_.laser.plic_aware_column_march) {
+        dim3 threads(16, 16);
+        dim3 blocks(
+            (config_.nx + threads.x - 1) / threads.x,
+            (config_.ny + threads.y - 1) / threads.y
+        );
+        computeLaserHeatSourcePLICColumnKernel<<<blocks, threads>>>(
+            d_heat_source,
+            fill_ptr,
+            *laser_,
+            config_.nx, config_.ny, config_.nz,
+            config_.dx,
+            config_.laser.plic_f_min_deposit
+        );
+    } else {
+        dim3 threads(8, 8, 8);
+        dim3 blocks(
+            (config_.nx + threads.x - 1) / threads.x,
+            (config_.ny + threads.y - 1) / threads.y,
+            (config_.nz + threads.z - 1) / threads.z
+        );
+        float z_surface = interface_z_;
+        computeLaserHeatSourceKernel<<<blocks, threads>>>(
+            d_heat_source,
+            fill_ptr,
+            *laser_,
+            config_.nx, config_.ny, config_.nz,
+            config_.dx,
+            z_surface
+        );
+    }
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
 

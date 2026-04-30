@@ -285,6 +285,23 @@ struct MultiphysicsConfig {
         float start_y           = -1.0f;    ///< Initial Y [m] (<0 = auto center)
         float scan_vx           = 0.36f;    ///< Scan velocity X [m/s]
         float scan_vy           = 0.0f;     ///< Scan velocity Y [m/s]
+
+        // Phase 2 of the PLIC upgrade: when true, the laser kernel performs
+        // a top-down column march per (i, j) and deposits the entire absorbed
+        // surface intensity into the first cell with f > F_GAS_THRESHOLD,
+        // weighted by 1/max(f, F_MIN_DEPOSIT) so that ΔT in interface cells
+        // matches the analytic q·dt / (ρ·cp·f·dx). This eliminates the 2-3
+        // cell smearing of the legacy Beer-Lambert volumetric path.
+        // Bulk metal cells below the absorbing cell receive no direct heat
+        // (only conduction); a metallic absorption length << dx makes this a
+        // good approximation. Default false for backward compatibility —
+        // existing tests calibrate against the legacy path.
+        bool plic_aware_column_march = false;
+
+        // Floor for the f-weighted denominator in PLIC laser deposition.
+        // Avoids 1/f blow-up when f is very small (thin meniscus). Should
+        // match the PLIC interface threshold (1e-6) used inside vof_solver.
+        float plic_f_min_deposit = 0.05f;
     };
 
     // ------------------------------------------------------------------ //
@@ -389,6 +406,8 @@ struct MultiphysicsConfig {
     float& laser_start_y           = laser.start_y;
     float& laser_scan_vx           = laser.scan_vx;
     float& laser_scan_vy           = laser.scan_vy;
+    bool&  laser_plic_aware_column_march = laser.plic_aware_column_march;
+    float& laser_plic_f_min_deposit      = laser.plic_f_min_deposit;
 
     // ------------------------------------------------------------------ //
     // Constructor / copy / move
@@ -470,7 +489,9 @@ struct MultiphysicsConfig {
           laser_start_x(laser.start_x),
           laser_start_y(laser.start_y),
           laser_scan_vx(laser.scan_vx),
-          laser_scan_vy(laser.scan_vy)
+          laser_scan_vy(laser.scan_vy),
+          laser_plic_aware_column_march(laser.plic_aware_column_march),
+          laser_plic_f_min_deposit(laser.plic_f_min_deposit)
     {}
 
     MultiphysicsConfig& operator=(const MultiphysicsConfig& o) {
