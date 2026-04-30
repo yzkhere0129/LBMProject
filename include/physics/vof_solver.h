@@ -66,6 +66,39 @@ enum class TVDLimiter : uint8_t {
 };
 
 /**
+ * @brief PLIC normal reconstruction algorithm.
+ *
+ * Affects the kernel that VOFSolver uses to estimate the per-cell unit
+ * interface normal n̂ inside `recomputePLICReconstruction()` and inside
+ * the Strang-split sweeps in `advectFillLevelPLIC()`. The choice trades
+ * implementation simplicity / robustness against accuracy on curved
+ * interfaces.
+ *
+ *   - YOUNGS: Parker-Youngs 3×3×3 weighted central differences. Default.
+ *     Exact for axis-aligned planar interfaces (round-off only). Angular
+ *     error on a sphere of radius R is O(h/R) — the algorithm is first
+ *     order on curved surfaces. Robust at boundaries and for under-resolved
+ *     features. Cost: ~30 reads per cell.
+ *
+ *   - HEIGHT_FUNCTION: 7-point column heights along the Youngs-determined
+ *     dominant axis, with central differences for the two non-dominant
+ *     normal components. Angular error on a sphere is O((h/R)²) — second
+ *     order on curved surfaces. Falls back to Youngs in cells where the
+ *     column does not bracket a clean liquid→gas transition. Required to
+ *     hit the roadmap §3 Phase 1 acceptance gate of ε<1e-3 on a curved
+ *     interface. Cost: ~70 reads per cell.
+ *
+ * Reference for HEIGHT_FUNCTION:
+ *   Cummins, Francois & Kothe (2005). Estimating curvature from volume
+ *   fractions. Computers & Structures 83, 425-434. (height-function
+ *   kernel; PLIC normals derived from the same column-height construct.)
+ */
+enum class NormalReconstructionMethod : uint8_t {
+    YOUNGS          = 0,
+    HEIGHT_FUNCTION = 1
+};
+
+/**
  * @brief VOF solver for free surface tracking
  *
  * This class implements the Volume of Fluid method for tracking interfaces
@@ -367,6 +400,24 @@ public:
      */
     bool isPLICReady() const { return !plic_dirty_; }
 
+    /**
+     * @brief Select the normal-reconstruction algorithm used by PLIC paths.
+     * @param method YOUNGS (default, O(h/R) on curves) or HEIGHT_FUNCTION
+     *               (O((h/R)²) on curves; fallback to Youngs in degenerate cells).
+     * @note Marks the cache dirty so the next reconstruction uses the new method.
+     */
+    void setNormalReconstructionMethod(NormalReconstructionMethod method) {
+        normal_method_ = method;
+        plicMarkDirty();
+    }
+
+    /**
+     * @brief Get the active normal-reconstruction algorithm.
+     */
+    NormalReconstructionMethod getNormalReconstructionMethod() const {
+        return normal_method_;
+    }
+
 private:
     // Domain dimensions
     int nx_, ny_, nz_;
@@ -422,6 +473,10 @@ private:
     // Per-instance reduction buffers for CFL/v_max computation.
     // Replace the function-level static d_block_max in advectFillLevel() (H1 fix).
     lbm::utils::CudaBuffer<float> reduction_block_max_;
+
+    // Active normal-reconstruction algorithm (default YOUNGS for backward
+    // compatibility — HEIGHT_FUNCTION must be opted-in by tests / Phase 3).
+    NormalReconstructionMethod normal_method_ = NormalReconstructionMethod::YOUNGS;
 
     // PLIC reconstruction freshness flag.
     // - Set to false on every fill_level write (initialize, advect, evap, etc.).

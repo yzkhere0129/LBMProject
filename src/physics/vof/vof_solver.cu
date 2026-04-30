@@ -2544,6 +2544,305 @@ __global__ void computePlicNormalsKernel(
 }
 
 // ============================================================================
+// Kernel 1b: Height-Function PLIC normal (Cummins-Francois-Kothe 2005)
+// ============================================================================
+// Algorithm:
+//   1. Compute Parker-Youngs gradient (gx, gy, gz) — used only to pick the
+//      dominant axis. The dominant-axis choice is robust under O(h/R) noise
+//      because (h/R) << 1 in resolved interfaces.
+//   2. Along the dominant axis (say x), build 9 column-height values
+//        h(j', k') = Σ_{di = -W..+W} f(i + di, j', k')
+//      for (j', k') in the 3×3 lateral stencil around (j, k). With W = 3 the
+//      column spans 7 cells and reliably brackets the interface for radii
+//      R ≳ 5 cells.
+//   3. Central differences in the lateral plane:
+//        ∂h/∂y ≈ ½ (h(j+1,k) − h(j−1,k))
+//        ∂h/∂z ≈ ½ (h(j,k+1) − h(j,k−1))
+//   4. Convert to interface normal. With sign sx = -sign(gx) so that
+//      n̂ points liquid → gas, the unnormalized normal is
+//        n_unscaled = (sx, -sx · ∂h/∂y, -sx · ∂h/∂z)
+//      then normalize to unit length.
+//   5. Validity check: the central-column sum h(j, k) must lie strictly
+//      between {0.5, 2W+0.5} (i.e. the column has crossed the interface
+//      and is not entirely empty / full). When the check fails the cell
+//      falls back to the Youngs normal — this happens at domain corners
+//      and at sub-cell radii of curvature.
+//
+// Accuracy: angular error scales as (h/R)² on smooth curved interfaces vs
+// O(h/R) for Youngs. Required to satisfy the roadmap §3 Phase 1 spec
+// (ε < 1e-3 on a sphere of analytic radius).
+//
+// Cost: ~63 fill reads per cell (9 columns × 7 cells) plus the Youngs
+// 27-point evaluation = ~90 reads. Roughly 3× Youngs cost; only used for
+// PLIC reconstruction, not for every advection sub-sweep unless explicitly
+// requested via setNormalReconstructionMethod(HEIGHT_FUNCTION).
+//
+// Reference: Cummins, Francois & Kothe (2005). Estimating curvature from
+// volume fractions. Computers & Structures 83, 425-434.
+// ============================================================================
+__global__ void computePlicNormalsHFKernel(
+    const float* __restrict__ fill,
+    float* __restrict__ nx_out,
+    float* __restrict__ ny_out,
+    float* __restrict__ nz_out,
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + nx * (j + ny * k);
+    float f = fill[idx];
+
+    // Bulk cells: no plane needed.
+    if (f <= 0.0f || f >= 1.0f) {
+        nx_out[idx] = 0.0f;
+        ny_out[idx] = 0.0f;
+        nz_out[idx] = 0.0f;
+        return;
+    }
+
+    // BC-aware index helper. ii/jj/kk may be OOB; clamp or wrap.
+#define IDX_BC(ii, jj, kk) \
+    ( ((bc_x == 0) ? (((ii) % nx + nx) % nx) : max(0, min(nx-1, (ii)))) \
+      + nx * ( \
+            ((bc_y == 0) ? (((jj) % ny + ny) % ny) : max(0, min(ny-1, (jj)))) \
+            + ny * ((bc_z == 0) ? (((kk) % nz + nz) % nz) : max(0, min(nz-1, (kk)))) \
+        ) )
+#define FILL_BC(ii, jj, kk) fill[IDX_BC(ii, jj, kk)]
+
+    // ------------------------------------------------------------------------
+    // Step 1: Parker-Youngs gradient → dominant axis selection
+    // ------------------------------------------------------------------------
+    int im = (bc_x == 0) ? ((i > 0)    ? i-1 : nx-1) : max(0,    i-1);
+    int ip = (bc_x == 0) ? ((i < nx-1) ? i+1 : 0)    : min(nx-1, i+1);
+    int jm = (bc_y == 0) ? ((j > 0)    ? j-1 : ny-1) : max(0,    j-1);
+    int jp = (bc_y == 0) ? ((j < ny-1) ? j+1 : 0)    : min(ny-1, j+1);
+    int km = (bc_z == 0) ? ((k > 0)    ? k-1 : nz-1) : max(0,    k-1);
+    int kp = (bc_z == 0) ? ((k < nz-1) ? k+1 : 0)    : min(nz-1, k+1);
+
+    auto FY = [&](int ii, int jj, int kk) -> float {
+        return FILL_BC(ii, jj, kk);
+    };
+
+    float gx = 0.0f;
+    gx += 2.0f * (FY(ip,j,k)  - FY(im,j,k));
+    gx += 1.0f * (FY(ip,jp,k) - FY(im,jp,k));
+    gx += 1.0f * (FY(ip,jm,k) - FY(im,jm,k));
+    gx += 1.0f * (FY(ip,j,kp) - FY(im,j,kp));
+    gx += 1.0f * (FY(ip,j,km) - FY(im,j,km));
+    gx += 0.5f * (FY(ip,jp,kp) - FY(im,jp,kp));
+    gx += 0.5f * (FY(ip,jp,km) - FY(im,jp,km));
+    gx += 0.5f * (FY(ip,jm,kp) - FY(im,jm,kp));
+    gx += 0.5f * (FY(ip,jm,km) - FY(im,jm,km));
+
+    float gy = 0.0f;
+    gy += 2.0f * (FY(i,jp,k)  - FY(i,jm,k));
+    gy += 1.0f * (FY(ip,jp,k) - FY(ip,jm,k));
+    gy += 1.0f * (FY(im,jp,k) - FY(im,jm,k));
+    gy += 1.0f * (FY(i,jp,kp) - FY(i,jm,kp));
+    gy += 1.0f * (FY(i,jp,km) - FY(i,jm,km));
+    gy += 0.5f * (FY(ip,jp,kp) - FY(ip,jm,kp));
+    gy += 0.5f * (FY(ip,jp,km) - FY(ip,jm,km));
+    gy += 0.5f * (FY(im,jp,kp) - FY(im,jm,kp));
+    gy += 0.5f * (FY(im,jp,km) - FY(im,jm,km));
+
+    float gz = 0.0f;
+    gz += 2.0f * (FY(i,j,kp)  - FY(i,j,km));
+    gz += 1.0f * (FY(ip,j,kp) - FY(ip,j,km));
+    gz += 1.0f * (FY(im,j,kp) - FY(im,j,km));
+    gz += 1.0f * (FY(i,jp,kp) - FY(i,jp,km));
+    gz += 1.0f * (FY(i,jm,kp) - FY(i,jm,km));
+    gz += 0.5f * (FY(ip,jp,kp) - FY(ip,jp,km));
+    gz += 0.5f * (FY(ip,jm,kp) - FY(ip,jm,km));
+    gz += 0.5f * (FY(im,jp,kp) - FY(im,jp,km));
+    gz += 0.5f * (FY(im,jm,kp) - FY(im,jm,km));
+
+    float gmag = sqrtf(gx*gx + gy*gy + gz*gz);
+    if (gmag < 1e-8f) {
+        nx_out[idx] = 1.0f;
+        ny_out[idx] = 0.0f;
+        nz_out[idx] = 0.0f;
+        return;
+    }
+
+    // Pre-compute Youngs normal as fallback target.
+    float ny_x_y = -gx / gmag;
+    float ny_y_y = -gy / gmag;
+    float ny_z_y = -gz / gmag;
+
+    float ax = fabsf(gx), ay = fabsf(gy), az = fabsf(gz);
+
+    // ------------------------------------------------------------------------
+    // Step 2-4: Column-height normal along dominant axis
+    // ------------------------------------------------------------------------
+    // Column half-width: 4 cells → 9-point column. Captures interface for
+    // R ≳ 6 cells before the column saturates (h ≈ 0 or h ≈ 9), and reduces
+    // the HF→Youngs fallback rate near sphere "polar caps" where the column
+    // direction is nearly tangent to the surface — those cells dominate the
+    // mean-angular-error budget.
+    constexpr int W = 4;
+    constexpr int LEN = 2 * W + 1;          // 9
+
+    float h[3][3];
+    bool  hf_ok = false;
+    float n_x = ny_x_y, n_y = ny_y_y, n_z = ny_z_y;  // Youngs fallback
+
+    auto buildColumnX = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        #pragma unroll
+        for (int di = -W; di <= W; ++di) s += FILL_BC(ic + di, jc, kc);
+        return s;
+    };
+    auto buildColumnY = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        #pragma unroll
+        for (int dj = -W; dj <= W; ++dj) s += FILL_BC(ic, jc + dj, kc);
+        return s;
+    };
+    auto buildColumnZ = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        #pragma unroll
+        for (int dk = -W; dk <= W; ++dk) s += FILL_BC(ic, jc, kc + dk);
+        return s;
+    };
+
+    // Sign convention derivation (for x-dominant case; y/z analogous by index
+    // permutation):
+    //
+    //   Let H(y,z) = interface position along x. Define s_x = -sign(gx) so that
+    //   n̂ liquid→gas has x-component = s_x (if gx > 0, f increases with x →
+    //   liquid at +x → n̂ points to -x, so s_x = -1).
+    //
+    //   The level-set function is F = (x - H) for gx > 0 (liquid above F=0)
+    //   or F = (H - x) for gx < 0 (liquid below F=0). In both cases the
+    //   liquid→gas normal is parallel to (s_x, ∂H/∂y, ∂H/∂z) up to a global
+    //   sign that the s_x already absorbed. Hence
+    //
+    //       n̂ ∝ (s_x, ∂H/∂y, ∂H/∂z)        before normalisation.
+    //
+    //   Column heights and H relate by sign:
+    //     gx > 0: h = const - H  ⟹  ∂h/∂y = -∂H/∂y  ⟹  ∂H/∂y = -hy
+    //     gx < 0: h = H - const  ⟹  ∂h/∂y = +∂H/∂y  ⟹  ∂H/∂y = +hy
+    //   Combined: ∂H/∂y = -s_x · hy. Substituting:
+    //
+    //       n̂ ∝ (s_x, -s_x · hy, -s_x · hz).
+    //
+    //   The global factor s_x is absorbed by normalisation, so the
+    //   numerically-stable form (avoids the spurious sign flip the earlier
+    //   draft had) is simply:
+    //
+    //       n_x = s_x,    n_y = -hy,    n_z = -hz
+    //
+    //   for x-dominant. y-dominant: n = (-hx, s_y, -hz). z-dominant: n =
+    //   (-hx, -hy, s_z).
+
+    // Parker-Youngs weighted central difference on the 3×3 column-height
+    // stencil: averaging three parallel central differences (center weight 2,
+    // edge weight 1, sum 4) reduces outliers near the dominant-axis switch
+    // line (45° orientations where two of |gx|, |gy|, |gz| are nearly equal).
+    //   weightedCD_first  = (1/8) [ 2(h[2][1]-h[0][1]) + (h[2][0]-h[0][0]) + (h[2][2]-h[0][2]) ]
+    //   weightedCD_second = (1/8) [ 2(h[1][2]-h[1][0]) + (h[0][2]-h[0][0]) + (h[2][2]-h[2][0]) ]
+    // Inlined below to avoid CUDA lambda-with-array-parameter issues.
+
+    if (ax >= ay && ax >= az) {
+        // x-dominant: column along x, gradient in (y, z).
+        for (int dj = -1; dj <= 1; ++dj)
+            for (int dk = -1; dk <= 1; ++dk)
+                h[dj+1][dk+1] = buildColumnX(i, j + dj, k + dk);
+
+        const float low = 0.5f, high = static_cast<float>(LEN) - 0.5f;
+        if (h[1][1] > low && h[1][1] < high) {
+            float hy = (1.0f / 8.0f) * (
+                  2.0f * (h[2][1] - h[0][1])
+                +        (h[2][0] - h[0][0])
+                +        (h[2][2] - h[0][2]));
+            float hz = (1.0f / 8.0f) * (
+                  2.0f * (h[1][2] - h[1][0])
+                +        (h[0][2] - h[0][0])
+                +        (h[2][2] - h[2][0]));
+            float sx = (gx > 0.0f) ? -1.0f : 1.0f;
+            float n_x_raw = sx;
+            float n_y_raw = -hy;
+            float n_z_raw = -hz;
+            float m = sqrtf(n_x_raw*n_x_raw + n_y_raw*n_y_raw + n_z_raw*n_z_raw);
+            if (m > 1e-8f) {
+                n_x = n_x_raw / m;
+                n_y = n_y_raw / m;
+                n_z = n_z_raw / m;
+                hf_ok = true;
+            }
+        }
+    } else if (ay >= ax && ay >= az) {
+        // y-dominant: column along y, gradient in (x, z).
+        for (int di = -1; di <= 1; ++di)
+            for (int dk = -1; dk <= 1; ++dk)
+                h[di+1][dk+1] = buildColumnY(i + di, j, k + dk);
+
+        const float low = 0.5f, high = static_cast<float>(LEN) - 0.5f;
+        if (h[1][1] > low && h[1][1] < high) {
+            float hx = (1.0f / 8.0f) * (
+                  2.0f * (h[2][1] - h[0][1])
+                +        (h[2][0] - h[0][0])
+                +        (h[2][2] - h[0][2]));
+            float hz = (1.0f / 8.0f) * (
+                  2.0f * (h[1][2] - h[1][0])
+                +        (h[0][2] - h[0][0])
+                +        (h[2][2] - h[2][0]));
+            float sy = (gy > 0.0f) ? -1.0f : 1.0f;
+            float n_x_raw = -hx;
+            float n_y_raw = sy;
+            float n_z_raw = -hz;
+            float m = sqrtf(n_x_raw*n_x_raw + n_y_raw*n_y_raw + n_z_raw*n_z_raw);
+            if (m > 1e-8f) {
+                n_x = n_x_raw / m;
+                n_y = n_y_raw / m;
+                n_z = n_z_raw / m;
+                hf_ok = true;
+            }
+        }
+    } else {
+        // z-dominant: column along z, gradient in (x, y).
+        for (int di = -1; di <= 1; ++di)
+            for (int dj = -1; dj <= 1; ++dj)
+                h[di+1][dj+1] = buildColumnZ(i + di, j + dj, k);
+
+        const float low = 0.5f, high = static_cast<float>(LEN) - 0.5f;
+        if (h[1][1] > low && h[1][1] < high) {
+            float hx = (1.0f / 8.0f) * (
+                  2.0f * (h[2][1] - h[0][1])
+                +        (h[2][0] - h[0][0])
+                +        (h[2][2] - h[0][2]));
+            float hy = (1.0f / 8.0f) * (
+                  2.0f * (h[1][2] - h[1][0])
+                +        (h[0][2] - h[0][0])
+                +        (h[2][2] - h[2][0]));
+            float sz = (gz > 0.0f) ? -1.0f : 1.0f;
+            float n_x_raw = -hx;
+            float n_y_raw = -hy;
+            float n_z_raw = sz;
+            float m = sqrtf(n_x_raw*n_x_raw + n_y_raw*n_y_raw + n_z_raw*n_z_raw);
+            if (m > 1e-8f) {
+                n_x = n_x_raw / m;
+                n_y = n_y_raw / m;
+                n_z = n_z_raw / m;
+                hf_ok = true;
+            }
+        }
+    }
+
+    // hf_ok=false silently uses Youngs values from above — no separate write.
+    nx_out[idx] = n_x;
+    ny_out[idx] = n_y;
+    nz_out[idx] = n_z;
+
+#undef FILL_BC
+#undef IDX_BC
+}
+
+// ============================================================================
 // Kernel 2: Alpha (plane constant) inversion — one thread per cell
 // ============================================================================
 __global__ void computePlicAlphaKernel(
@@ -3079,11 +3378,18 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         dim3 face_block(256);
         dim3 face_grid((face_N + 255) / 256);
 
-        // Step 1: Compute Youngs normals from current fill
-        computePlicNormalsKernel<<<grd3, blk3>>>(
-            src,
-            plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
-            nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+        // Step 1: Compute interface normals from current fill (Youngs or HF).
+        if (normal_method_ == NormalReconstructionMethod::HEIGHT_FUNCTION) {
+            computePlicNormalsHFKernel<<<grd3, blk3>>>(
+                src,
+                plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+                nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+        } else {
+            computePlicNormalsKernel<<<grd3, blk3>>>(
+                src,
+                plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+                nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+        }
         CUDA_CHECK_KERNEL();
 
         // Step 2: Invert alpha from volume fraction + normal
@@ -3241,10 +3547,17 @@ void VOFSolver::recomputePLICReconstruction() {
     dim3 blk3(8, 8, 8);
     dim3 grd3((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
 
-    computePlicNormalsKernel<<<grd3, blk3>>>(
-        d_fill_level_,
-        plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
-        nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+    if (normal_method_ == NormalReconstructionMethod::HEIGHT_FUNCTION) {
+        computePlicNormalsHFKernel<<<grd3, blk3>>>(
+            d_fill_level_,
+            plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+            nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+    } else {
+        computePlicNormalsKernel<<<grd3, blk3>>>(
+            d_fill_level_,
+            plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+            nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+    }
     CUDA_CHECK_KERNEL();
 
     dim3 cell_block(256);
