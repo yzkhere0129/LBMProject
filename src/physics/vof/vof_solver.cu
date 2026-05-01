@@ -2155,32 +2155,43 @@ __global__ void applyEvaporationMassLossPLICKernel(
 
     float f = fill_level[idx];
     float J = J_evap[idx];
-    if (f <= 0.0f || J <= 0.0f) return;
+    if (J <= 0.0f) return;
 
-    // Use sharp delta only for interface-band cells where PLIC is meaningful.
-    // For pure-bulk cells (f outside (eps, 1-eps)) we conservatively skip —
-    // legacy behaviour would have removed mass even there given non-zero J,
-    // but that is an unphysical artefact of the cell-level kernel; the
-    // Phase 4a contract is "evaporate only at the interface".
-    if (!plicIsInterfaceCell(idx, view, 1e-3f)) return;
+    // BKZ partition-of-unity surface delta = |∇f| (replaces cosine δ_h
+    // that broke when restricted to f∈(eps, 1-eps); see CSF kernel
+    // header for the full rationale). Computing |∇f| via central
+    // differences naturally restricts mass loss to the interface band
+    // (|∇f| = 0 in deep bulk and deep gas) AND covers the bulk-band
+    // cells just outside the f-gate, restoring the Σ|∇f|·dV ≈ A_surface
+    // invariant.
+    auto cd = [&](int axis) -> float {
+        int ip_, im_;
+        if (axis == 0) {
+            ip_ = (i + 1 < view.nx) ? (i + 1) + view.nx * (j + view.ny * k) : idx;
+            im_ = (i > 0)            ? (i - 1) + view.nx * (j + view.ny * k) : idx;
+        } else if (axis == 1) {
+            ip_ = (j + 1 < view.ny) ? i + view.nx * ((j + 1) + view.ny * k) : idx;
+            im_ = (j > 0)            ? i + view.nx * ((j - 1) + view.ny * k) : idx;
+        } else {
+            ip_ = (k + 1 < view.nz) ? i + view.nx * (j + view.ny * (k + 1)) : idx;
+            im_ = (k > 0)            ? i + view.nx * (j + view.ny * (k - 1)) : idx;
+        }
+        bool one_sided = (ip_ == idx || im_ == idx);
+        float scale = one_sided ? (1.0f / dx) : (0.5f / dx);
+        return (view.d_fill[ip_] - view.d_fill[im_]) * scale;
+    };
+    float gfx = cd(0), gfy = cd(1), gfz = cd(2);
+    float g_mag = sqrtf(gfx*gfx + gfy*gfy + gfz*gfz);
+    if (g_mag < 1e-10f) return;     // deep bulk: no surface here
 
-    float n_x = view.d_normal_x[idx];
-    float n_y = view.d_normal_y[idx];
-    float n_z = view.d_normal_z[idx];
-    if ((n_x*n_x + n_y*n_y + n_z*n_z) < 0.25f) return;
+    (void)h_smooth_lu;              // accepted for API continuity, not used
 
-    float d_lu = plicSignedDistanceFromCenter(idx, view);
-    float delta_lu = plicCosineDelta(d_lu, h_smooth_lu);
-    if (delta_lu <= 0.0f) return;
-    float delta_phys = delta_lu / dx;     // [1/m]
+    // df = -J · |∇f| · dt / ρ. Note: |∇f| has units 1/m, so dt/ρ × 1/m
+    // = dimensionless × s × m³/kg × kg/(m²s) ÷ m = dimensionless. ✓
+    float df = -J * g_mag * dt / rho;
 
-    // df = -J · δ_h · dt / ρ
-    float df = -J * delta_phys * dt / rho;
-
-    // Match the legacy 2 % per-step stability limiter — keeps the kernel
-    // numerically robust at extreme T (>40,000 K is a known stress case).
     constexpr float MAX_DF_PER_STEP = 0.02f;
-    if (df < -MAX_DF_PER_STEP * f) df = -MAX_DF_PER_STEP * f;
+    if (f > 0.0f && df < -MAX_DF_PER_STEP * f) df = -MAX_DF_PER_STEP * f;
 
     float f_new = f + df;
     if (f_new < 1e-9f) f_new = 0.0f;

@@ -684,14 +684,6 @@ __global__ void addMarangoniForcePLICKernel(
     if (i >= view.nx || j >= view.ny || k >= view.nz) return;
     int idx = i + view.nx * (j + view.ny * k);
 
-    if (!plicIsInterfaceCell(idx, view, 0.01f)) return;
-
-    float n_x = view.d_normal_x[idx];
-    float n_y = view.d_normal_y[idx];
-    float n_z = view.d_normal_z[idx];
-    float n_mag2 = n_x*n_x + n_y*n_y + n_z*n_z;
-    if (n_mag2 < 0.25f) return;
-
     // Mushy-zone gate (preserved from legacy kernel).
     float fl_gate = 1.0f;
     if (liquid_fraction != nullptr) {
@@ -700,8 +692,8 @@ __global__ void addMarangoniForcePLICKernel(
         if (fl_gate < 1e-6f) return;
     }
 
-    // ∇T (central differences with one-sided fallback at boundaries).
-    auto dT = [&](int axis) -> float {
+    // ∇T and ∇f via central differences (one-sided fallback at boundaries).
+    auto cd = [&](const float* fld, int axis) -> float {
         int ip_, im_;
         if (axis == 0) {
             ip_ = (i + 1 < view.nx) ? (i + 1) + view.nx * (j + view.ny * k) : idx;
@@ -713,29 +705,51 @@ __global__ void addMarangoniForcePLICKernel(
             ip_ = (k + 1 < view.nz) ? i + view.nx * (j + view.ny * (k + 1)) : idx;
             im_ = (k > 0)            ? i + view.nx * (j + view.ny * (k - 1)) : idx;
         }
-        // 0.5 / dx for two-sided, 1/dx for one-sided.
         bool one_sided = (ip_ == idx || im_ == idx);
         float scale = one_sided ? (1.0f / dx) : (0.5f / dx);
-        return (temperature[ip_] - temperature[im_]) * scale;
+        return (fld[ip_] - fld[im_]) * scale;
     };
 
-    float grad_T_x = dT(0);
-    float grad_T_y = dT(1);
-    float grad_T_z = dT(2);
+    // ∇f for the BKZ surface delta (partition-of-unity replacement for the
+    // cosine δ_h that was breaking when restricted to f∈(0.01, 0.99)).
+    // See addSurfaceTensionForcePLICKernel header for the full rationale.
+    float gfx = cd(view.d_fill, 0);
+    float gfy = cd(view.d_fill, 1);
+    float gfz = cd(view.d_fill, 2);
+    float g_mag2 = gfx*gfx + gfy*gfy + gfz*gfz;
+    if (g_mag2 < 1e-20f) return;
+    float g_mag = sqrtf(g_mag2);
 
-    // ∇_s T = ∇T - (∇T·n̂) n̂.
+    // Surface unit normal — prefer PLIC HF (more accurate). For bulk-band
+    // cells where PLIC stores n̂=0, fall back to the locally-derived
+    // n̂_∇f = -∇f / |∇f| (still unit, points liquid → gas). This dual-
+    // source extrapolation is what makes the kernel partition-of-unity
+    // correct for cells in the central-diff stencil but outside the
+    // f∈(0,1) gate.
+    float n_x = view.d_normal_x[idx];
+    float n_y = view.d_normal_y[idx];
+    float n_z = view.d_normal_z[idx];
+    float n_mag2 = n_x*n_x + n_y*n_y + n_z*n_z;
+    if (n_mag2 < 0.25f) {
+        // Use ∇f-derived normal: ∇f points INTO liquid, so n̂_outward = -∇f/|∇f|.
+        n_x = -gfx / g_mag;
+        n_y = -gfy / g_mag;
+        n_z = -gfz / g_mag;
+    }
+
+    float grad_T_x = cd(temperature, 0);
+    float grad_T_y = cd(temperature, 1);
+    float grad_T_z = cd(temperature, 2);
+
+    // Surface-tangential gradient: ∇_s T = ∇T - (∇T·n̂) n̂.
     float grad_T_dot_n = grad_T_x * n_x + grad_T_y * n_y + grad_T_z * n_z;
     float grad_T_s_x = grad_T_x - grad_T_dot_n * n_x;
     float grad_T_s_y = grad_T_y - grad_T_dot_n * n_y;
     float grad_T_s_z = grad_T_z - grad_T_dot_n * n_z;
 
-    // Sharp delta.
-    float d_lu = plicSignedDistanceFromCenter(idx, view);
-    float delta_lu = plicCosineDelta(d_lu, h_smooth_lu);
-    if (delta_lu <= 0.0f) return;
-    float delta_phys = delta_lu / dx;
-
-    float coeff = fl_gate * dsigma_dT * delta_phys;
+    // Volumetric Marangoni force = surface stress × δ_surface.
+    // BKZ partition-of-unity uses |∇f| as the volumetric surface delta.
+    float coeff = fl_gate * dsigma_dT * g_mag;
     fx[idx] += coeff * grad_T_s_x;
     fy[idx] += coeff * grad_T_s_y;
     fz[idx] += coeff * grad_T_s_z;
@@ -893,14 +907,32 @@ __global__ void addRecoilPressureForcePLICKernel(
     if (i >= view.nx || j >= view.ny || k >= view.nz) return;
     int idx = i + view.nx * (j + view.ny * k);
 
-    if (!plicIsInterfaceCell(idx, view, 0.01f)) return;
+    // ∇f central diff (BKZ partition-of-unity surface delta — see CSF
+    // kernel header for rationale). |∇f| > 0 selects the band cells.
+    auto cd = [&](int axis) -> float {
+        int ip_, im_;
+        if (axis == 0) {
+            ip_ = (i + 1 < view.nx) ? (i + 1) + view.nx * (j + view.ny * k) : idx;
+            im_ = (i > 0)            ? (i - 1) + view.nx * (j + view.ny * k) : idx;
+        } else if (axis == 1) {
+            ip_ = (j + 1 < view.ny) ? i + view.nx * ((j + 1) + view.ny * k) : idx;
+            im_ = (j > 0)            ? i + view.nx * ((j - 1) + view.ny * k) : idx;
+        } else {
+            ip_ = (k + 1 < view.nz) ? i + view.nx * (j + view.ny * (k + 1)) : idx;
+            im_ = (k > 0)            ? i + view.nx * (j + view.ny * (k - 1)) : idx;
+        }
+        bool one_sided = (ip_ == idx || im_ == idx);
+        float scale = one_sided ? (1.0f / dx) : (0.5f / dx);
+        return (view.d_fill[ip_] - view.d_fill[im_]) * scale;
+    };
+    float gfx = cd(0), gfy = cd(1), gfz = cd(2);
+    float g_mag2 = gfx*gfx + gfy*gfy + gfz*gfz;
+    if (g_mag2 < 1e-20f) return;     // deep bulk
 
-    float n_x = view.d_normal_x[idx];
-    float n_y = view.d_normal_y[idx];
-    float n_z = view.d_normal_z[idx];
-    float n_mag2 = n_x*n_x + n_y*n_y + n_z*n_z;
-    if (n_mag2 < 0.25f) return;
-
+    // Temperature: prefer local; for bulk-band cells (no f-gate), use the
+    // local cell's T regardless of f. This is the standard treatment for
+    // recoil — the band-shoulder cells are just outside the interface but
+    // their T is well-defined and ~the same as the interface cell.
     float T = temperature[idx];
     const float T_activation = T_boil - 500.0f;
     if (T < T_activation) return;
@@ -911,15 +943,16 @@ __global__ void addRecoilPressureForcePLICKernel(
     float P_sat = P_atm * expf(exponent);
     float P_recoil = fminf(C_r * P_sat, max_pressure);
 
-    float d_lu = plicSignedDistanceFromCenter(idx, view);
-    float delta_lu = plicCosineDelta(d_lu, h_smooth_lu);
-    if (delta_lu <= 0.0f) return;
-    float delta_phys = delta_lu / dx;
-
-    float coeff = P_recoil * delta_phys * force_multiplier;
-    fx[idx] += -coeff * n_x;   // Recoil pushes INTO liquid (opposite n̂).
-    fy[idx] += -coeff * n_y;
-    fz[idx] += -coeff * n_z;
+    // F = +P_recoil · ∇f. ∇f points INTO liquid (toward higher f), so this
+    // pushes liquid INWARD = recoil/keyhole-formation direction. The
+    // unused (h_smooth_lu) parameter is kept on the host wrapper for API
+    // continuity but no longer affects the kernel — cosine-δ replaced by
+    // BKZ ∇f-delta to satisfy partition-of-unity.
+    (void)h_smooth_lu;
+    float coeff = P_recoil * force_multiplier;
+    fx[idx] += coeff * gfx;
+    fy[idx] += coeff * gfy;
+    fz[idx] += coeff * gfz;
 }
 
 /**
