@@ -393,6 +393,102 @@ __global__ void fdmDirichletKernel(
 }
 
 // ============================================================================
+// CUDA Kernel: Radiation BC on a face (Stefan-Boltzmann)
+// ============================================================================
+//   q_rad = ε · σ · (T⁴ - T_amb⁴)  [W/m²]
+//   dT    = -q_rad · dt / (ρ · Cp · dx)  [K]
+// Gas cells (fill < 0.05) skipped.
+// ============================================================================
+__global__ void fdmRadiationBCFaceKernel(
+    float* __restrict__ T,
+    const float* __restrict__ fill_level,
+    MaterialProperties mat,
+    int face, int nx, int ny, int nz,
+    float dt, float dx,
+    float emissivity, float T_ambient)
+{
+    int a = blockIdx.x * blockDim.x + threadIdx.x;
+    int b = blockIdx.y * blockDim.y + threadIdx.y;
+    int idx = -1;
+
+    switch (face) {
+        case 0: if (a<ny && b<nz) idx = 0      + nx*(a + ny*b); break;
+        case 1: if (a<ny && b<nz) idx = nx-1   + nx*(a + ny*b); break;
+        case 2: if (a<nx && b<nz) idx = a      + nx*(0 + ny*b); break;
+        case 3: if (a<nx && b<nz) idx = a      + nx*(ny-1+ny*b); break;
+        case 4: if (a<nx && b<ny) idx = a      + nx*(b + ny*0); break;
+        case 5: if (a<nx && b<ny) idx = a      + nx*(b + ny*(nz-1)); break;
+    }
+    if (idx < 0) return;
+
+    float fc = (fill_level != nullptr) ? fill_level[idx] : 1.0f;
+    if (fc < 0.05f) return;
+
+    float T_loc = T[idx];
+    if (T_loc <= T_ambient) return;
+
+    const float SIGMA_SB = 5.67e-8f;
+    float T2 = T_loc * T_loc;
+    float Ta2 = T_ambient * T_ambient;
+    float q_rad = emissivity * SIGMA_SB * (T2*T2 - Ta2*Ta2);
+
+    float rho = mat.getDensity(T_loc);
+    float cp  = mat.getSpecificHeat(T_loc);
+    float dT  = q_rad * dt / (rho * cp * dx);
+
+    float T_new = T_loc - dT;
+    if (T_new < T_ambient) T_new = T_ambient;
+    T[idx] = T_new;
+}
+
+// ============================================================================
+// CUDA Kernel: Convective BC on a face (Newton's law of cooling)
+// ============================================================================
+//   q_conv = h · (T - T_inf)  [W/m²]
+//   dT     = -q_conv · dt / (ρ · Cp · dx)  [K]
+// ============================================================================
+__global__ void fdmConvectiveBCFaceKernel(
+    float* __restrict__ T,
+    const float* __restrict__ fill_level,
+    MaterialProperties mat,
+    int face, int nx, int ny, int nz,
+    float dt, float dx,
+    float h_conv, float T_inf)
+{
+    int a = blockIdx.x * blockDim.x + threadIdx.x;
+    int b = blockIdx.y * blockDim.y + threadIdx.y;
+    int idx = -1;
+
+    switch (face) {
+        case 0: if (a<ny && b<nz) idx = 0      + nx*(a + ny*b); break;
+        case 1: if (a<ny && b<nz) idx = nx-1   + nx*(a + ny*b); break;
+        case 2: if (a<nx && b<nz) idx = a      + nx*(0 + ny*b); break;
+        case 3: if (a<nx && b<nz) idx = a      + nx*(ny-1+ny*b); break;
+        case 4: if (a<nx && b<ny) idx = a      + nx*(b + ny*0); break;
+        case 5: if (a<nx && b<ny) idx = a      + nx*(b + ny*(nz-1)); break;
+    }
+    if (idx < 0) return;
+
+    float fc = (fill_level != nullptr) ? fill_level[idx] : 1.0f;
+    if (fc < 0.05f) return;
+
+    float T_loc = T[idx];
+    float dT_diff = T_loc - T_inf;
+    if (fabsf(dT_diff) < 1e-3f) return;
+
+    float q_conv = h_conv * dT_diff;
+
+    float rho = mat.getDensity(T_loc);
+    float cp  = mat.getSpecificHeat(T_loc);
+    float dT  = q_conv * dt / (rho * cp * dx);
+
+    float T_new = T_loc - dT;
+    if (dT_diff > 0 && T_new < T_inf) T_new = T_inf;
+    if (dT_diff < 0 && T_new > T_inf) T_new = T_inf;
+    T[idx] = T_new;
+}
+
+// ============================================================================
 // CUDA Kernel: Evaporation Cooling (Hertz-Knudsen-Langmuir + anti-oscillation)
 // ============================================================================
 // At surface cells where T > T_boil:
@@ -966,19 +1062,41 @@ void ThermalFDM::applyFaceThermalBC(int face, int bc_type,
         fdmDirichletKernel<<<grid2d, block2d>>>(
             d_T_, dirichlet_T, face, nx_, ny_, nz_);
         CUDA_CHECK_KERNEL();
+    } else if (bc_type == 3) {  // CONVECTIVE
+        fdmConvectiveBCFaceKernel<<<grid2d, block2d>>>(
+            d_T_, d_vof_fill_, material_,
+            face, nx_, ny_, nz_,
+            dt, dx, h_conv, T_inf);
+        CUDA_CHECK_KERNEL();
+    } else if (bc_type == 4) {  // RADIATION
+        fdmRadiationBCFaceKernel<<<grid2d, block2d>>>(
+            d_T_, d_vof_fill_, material_,
+            face, nx_, ny_, nz_,
+            dt, dx, emissivity, T_ambient);
+        CUDA_CHECK_KERNEL();
     }
-    // TODO: CONVECTIVE (bc_type=3) and RADIATION (bc_type=4)
-    // can be added following the same pattern as ThermalLBM
 }
 
 void ThermalFDM::applyRadiationBC(float dt, float dx, float eps, float T_amb) {
-    // Simplified: radiation on z_max face only (top surface)
-    // q_rad = eps * sigma * (T^4 - T_amb^4), applied as dT = -q/(rho*cp*dx) * dt
-    // TODO: implement as a face-specific radiation kernel
+    dim3 block2d(16, 16);
+    dim3 grid2d((nx_ + 15) / 16, (ny_ + 15) / 16);
+    fdmRadiationBCFaceKernel<<<grid2d, block2d>>>(
+        d_T_, d_vof_fill_, material_,
+        5,  // face=5 = z_max (top)
+        nx_, ny_, nz_,
+        dt, dx, eps, T_amb);
+    CUDA_CHECK_KERNEL();
 }
 
 void ThermalFDM::applySubstrateCoolingBC(float dt, float dx, float h, float T_sub) {
-    // TODO: implement convective BC at z_min
+    dim3 block2d(16, 16);
+    dim3 grid2d((nx_ + 15) / 16, (ny_ + 15) / 16);
+    fdmConvectiveBCFaceKernel<<<grid2d, block2d>>>(
+        d_T_, d_vof_fill_, material_,
+        4,  // face=4 = z_min (bottom)
+        nx_, ny_, nz_,
+        dt, dx, h, T_sub);
+    CUDA_CHECK_KERNEL();
 }
 
 // R7 IMPLICIT OPENFOAM-ALIGNED: Backward-Euler Newton iteration for
