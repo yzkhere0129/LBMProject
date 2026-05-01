@@ -106,20 +106,23 @@ int main() {
     // ==================================================================
     MultiphysicsConfig config;
 
-    // --- Domain: 1200 × 150 × 100 μm (600×75×50 cells at dx=2μm) ---
-    config.nx = 600;
-    config.ny = 75;
-    config.nz = 50;
+    // --- Domain: 2200 × 200 × 200 μm (1100×100×100 cells at dx=2μm) ---
+    config.nx = 1100;
+    config.ny = 100;   // match truth-floor
+    config.nz = 100;
     config.dx = 2.0e-6f;
     config.dt = 8.0e-8f;   // 80 ns
 
     // --- Material ---
     config.material = MaterialDatabase::get316L();
+    config.material.T_solidus  = 1674.15f;  // F3D Mills table
+    config.material.T_liquidus = 1697.15f;
 
     // --- Physics ---
     config.enable_thermal           = true;
     config.enable_thermal_advection = true;
     config.enable_phase_change      = true;
+    config.use_fdm_thermal          = true;  // match truth-floor
     config.enable_fluid             = true;
     config.enable_vof               = true;
     config.enable_vof_advection     = true;
@@ -135,13 +138,24 @@ int main() {
     // --- Moving laser (identical to legacy) ---
     const float v_scan = 0.8f;  // 800 mm/s
     config.laser_power              = 150.0f;
-    config.laser_spot_radius        = 50.0e-6f;
+    config.laser_spot_radius        = 39.0e-6f;  // F3D dum2=39e-6
     config.laser_absorptivity       = 0.40f;   // NOTE: F3D uses 0.70; see header
     config.laser_penetration_depth  = 10.0e-6f;
-    config.laser_start_x            = 100.0e-6f;
+    config.laser_start_x            = 500.0e-6f;  // match truth-floor
     config.laser_start_y            = -1.0f;   // auto-center Y
     config.laser_scan_vx            = v_scan;
     config.laser_scan_vy            = 0.0f;
+
+    // --- Ray-tracing laser ---
+    config.ray_tracing.enabled            = true;
+    config.ray_tracing.use_fresnel        = true;
+    config.ray_tracing.fresnel_n_refract  = 2.9613f;
+    config.ray_tracing.fresnel_k_extinct  = 4.0133f;
+    config.ray_tracing.num_rays           = 4096;
+    config.ray_tracing.max_bounces        = 3;
+    config.ray_tracing.max_dda_steps      = 1500;
+    config.ray_tracing.energy_cutoff      = 0.01f;
+    config.ray_tracing.absorptivity       = 0.40f;
 
     // --- Fluid ---
     config.kinematic_viscosity      = 0.065f;
@@ -184,9 +198,11 @@ int main() {
     config.boundaries.thermal_y_min = ThermalBCType::ADIABATIC;
     config.boundaries.thermal_y_max = ThermalBCType::ADIABATIC;
     config.boundaries.thermal_z_min = ThermalBCType::CONVECTIVE;
-    config.boundaries.thermal_z_max = ThermalBCType::ADIABATIC;
+    config.boundaries.thermal_z_max = ThermalBCType::RADIATION;
     config.boundaries.convective_h     = 2000.0f;
     config.boundaries.convective_T_inf = 300.0f;
+    config.boundaries.radiation_emissivity = 0.55f;
+    config.boundaries.radiation_T_ambient  = 300.0f;
 
     // --- CFL ---
     config.cfl_use_adaptive            = true;
@@ -215,7 +231,7 @@ int main() {
     printf("  VOF normal/curvature method: HEIGHT_FUNCTION / PLIC_DIVERGENCE\n\n");
 
     // --- Timing: 1.0 ms run (same as legacy) ---
-    const float t_total  = 1000.0e-6f;
+    const float t_total  = 2000.0e-6f;  // match truth-floor
     const int num_steps  = static_cast<int>(t_total / config.dt);
     const int vtk_every  = static_cast<int>(50.0e-6f / config.dt);
     const int diag_every = 1000;
@@ -246,6 +262,7 @@ int main() {
 
     MultiphysicsSolver solver(config);
     solver.initialize(300.0f, 0.80f);
+    solver.setRegularized(true, 0.5456f);  // match truth-floor
 
     const auto& registry = solver.getFieldRegistry();
 
