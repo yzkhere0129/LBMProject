@@ -2007,7 +2007,8 @@ float VOFSolver::computeTotalMass() const {
     return total_mass;
 }
 
-void VOFSolver::enforceGlobalMassConservation(float target_mass) {
+void VOFSolver::enforceGlobalMassConservation(float target_mass,
+                                               const float* /*d_vz*/) {
     // Compute current mass
     float current_mass = computeTotalMass();
 

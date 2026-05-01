@@ -368,48 +368,25 @@ static __global__ void computeForceMagnitudeKernelLocal(
 __global__ void computeLaserHeatSourceKernel(
     float* d_heat_source,
     const float* fill_level,
-    const float* temperature,    // for plasma shielding cutoff
     LaserSource laser,
     int nx, int ny, int nz,
     float dx,
     float z_surface)
 {
-    // R7 COLUMN-MARCH (OpenFOAM laserMeltFoam updateFLB.H alignment):
-    // Thread mapping: one thread per (i, j) column, marching top-down in Z.
-    // Each metal-side VOF cell absorbs its own fraction `f` of the remaining
-    // beam (`laserFraction`), with carry-over until the beam is depleted.
-    //
-    //   laserFraction = 1.0
-    //   for k = nz-1 downto 0:
-    //     if f[k] > 0.01:
-    //       absorbed  = min(laserFraction, f[k])
-    //       Q_vol[k]  = q_surface * absorbed / dx    [W/m³]
-    //       laserFraction -= absorbed
-    //       if laserFraction <= 0: break
-    //
-    // This is EXACTLY conservative: Σ (Q_vol·dx) = q_surface·(1 - remainder).
-    // No |∂f/∂z| singularity, no discrete integral deficit — the absorption
-    // is exactly ∫α(z)dz integrated cell-by-cell.
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k_init = blockIdx.z * blockDim.z + threadIdx.z;
 
     if (i >= nx || j >= ny || k_init >= nz) return;
-    // 3-D grid repurposed: only the k=0 slice does real column work.
-    // Caller MUST cudaMemset the buffer to zero before launching this kernel
-    // (MultiphysicsSolver::applyLaserSource does so at line ~1595).
     if (k_init != 0) return;
 
     float x = i * dx;
     float y = j * dx;
 
-    // Surface flux q_surface = η · (2P/πr₀²) · exp(-2r²/r₀²)     [W/m²]
-    // = absorptivity × computeIntensity(x,y)
     float q_surface = laser.absorptivity * laser.computeIntensity(x, y);
     if (q_surface <= 0.0f) return;
 
     if (fill_level == nullptr) {
-        // Legacy path: no VOF. Deposit at z_surface band, 1/dx volumetric factor.
         int k_surf = (int)z_surface;
         if (k_surf >= 0 && k_surf < nz) {
             int idx = i + nx * (j + ny * k_surf);
@@ -418,30 +395,16 @@ __global__ void computeLaserHeatSourceKernel(
         return;
     }
 
-    // Column-march top-down (+Z is "up" / laser comes from above).
+    // Column-march top-down
     float laserFraction = 1.0f;
     for (int k = nz - 1; k >= 0; --k) {
         int idx = i + nx * (j + ny * k);
         float f = fill_level[idx];
-
-        // Skip gas / near-vacuum cells; they don't absorb.
         if (f < 0.01f) continue;
 
-        // Optional plasma shield: if this (metal-interface) cell is already
-        // vaporizing, it shields deeper cells. Linear ramp 3300–3800 K.
-        float shield = 1.0f;
-        if (temperature != nullptr) {
-            float T_local = temperature[idx];
-            if (T_local > 3800.0f) shield = 0.0f;
-            else if (T_local > 3300.0f)
-                shield = 1.0f - (T_local - 3300.0f) / 500.0f;
-        }
-
         float absorbed = fminf(laserFraction, f);
-        // Volumetric source: q_surface [W/m²] × absorbed-fraction / dx = W/m³
-        d_heat_source[idx] = q_surface * absorbed * shield / dx;
-
-        laserFraction -= absorbed;  // always deplete (shielded energy is "lost")
+        d_heat_source[idx] = q_surface * absorbed / dx;
+        laserFraction -= absorbed;
         if (laserFraction <= 1e-6f) break;
     }
 }
@@ -1824,11 +1787,9 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
 
         float z_surface = interface_z_;
         const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
-        const float* T_ptr = thermal_ ? thermal_->getTemperature() : nullptr;
         computeLaserHeatSourceKernel<<<blocks, threads>>>(
             d_heat_source,
             fill_ptr,
-            T_ptr,
             *laser_,
             config_.nx, config_.ny, config_.nz,
             config_.dx,
