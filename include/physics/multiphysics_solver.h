@@ -284,6 +284,33 @@ struct MultiphysicsConfig {
         float marangoni_csf_multiplier = 1.0f;  ///< R8: physical default (no compensation); every production app must leave this at 1.0
         float evap_cooling_factor    = 1.0f;    ///< Evaporation cooling scaling (compensate VOF smearing)
         float molar_mass             = 0.0476f;  ///< Molar mass [kg/mol] (Ti6Al4V default)
+
+        // ---- Phase 3 PLIC sharp-delta force flags --------------------------
+        // When true the corresponding force kernel uses the PLIC plane
+        // geometry (cosine kernel surface delta + explicit unit normal)
+        // instead of the legacy |∇f| smearing. Default false preserves the
+        // calibration baselines. Each flag is independent so users can mix-
+        // and-match (e.g. PLIC CSF with legacy Marangoni) for diagnosis.
+        // The caller (MultiphysicsSolver::computeAllForces) calls
+        // vof->recomputePLICReconstruction() once per step before any of
+        // these dispatches when ANY flag is true.
+        bool csf_use_plic_delta       = false;
+        bool marangoni_use_plic_delta = false;
+        bool recoil_use_plic_delta    = false;
+
+        // Phase 4a: PLIC-aware Hertz-Knudsen evaporation mass loss (cosine delta).
+        bool evap_use_plic_delta      = false;
+
+        // Phase 4b: geometric PLIC area evaporation (A_PLIC = dV/dα).
+        // Overrides evap_use_plic_delta when true. Uses the true polygon
+        // area of the PLIC plane: df = -J × A_PLIC × dt / (ρ × dx).
+        bool evap_use_plic_area       = false;
+
+        // Cosine-kernel half-width [lattice units] used by all PLIC
+        // sharp-delta paths (Phase 3 forces and Phase 4 evaporation).
+        // Default 1.5 cells gives a 3-cell-wide band — ~2× tighter than
+        // the legacy |∇f| smearing on a tanh-initialised interface.
+        float plic_h_smooth_lu        = 1.5f;
     };
 
     struct BuoyancyConfig {
@@ -304,6 +331,23 @@ struct MultiphysicsConfig {
         float start_y           = -1.0f;    ///< Initial Y [m] (<0 = auto center)
         float scan_vx           = 0.36f;    ///< Scan velocity X [m/s]
         float scan_vy           = 0.0f;     ///< Scan velocity Y [m/s]
+
+        // Phase 2 of the PLIC upgrade: when true, the laser kernel performs
+        // a top-down column march per (i, j) and deposits the entire absorbed
+        // surface intensity into the first cell with f > F_GAS_THRESHOLD,
+        // weighted by 1/max(f, F_MIN_DEPOSIT) so that ΔT in interface cells
+        // matches the analytic q·dt / (ρ·cp·f·dx). This eliminates the 2-3
+        // cell smearing of the legacy Beer-Lambert volumetric path.
+        // Bulk metal cells below the absorbing cell receive no direct heat
+        // (only conduction); a metallic absorption length << dx makes this a
+        // good approximation. Default false for backward compatibility —
+        // existing tests calibrate against the legacy path.
+        bool plic_aware_column_march = false;
+
+        // Floor for the f-weighted denominator in PLIC laser deposition.
+        // Avoids 1/f blow-up when f is very small (thin meniscus). Should
+        // match the PLIC interface threshold (1e-6) used inside vof_solver.
+        float plic_f_min_deposit = 0.05f;
     };
 
     // ------------------------------------------------------------------ //
@@ -416,6 +460,8 @@ struct MultiphysicsConfig {
     float& laser_start_y           = laser.start_y;
     float& laser_scan_vx           = laser.scan_vx;
     float& laser_scan_vy           = laser.scan_vy;
+    bool&  laser_plic_aware_column_march = laser.plic_aware_column_march;
+    float& laser_plic_f_min_deposit      = laser.plic_f_min_deposit;
 
     // ------------------------------------------------------------------ //
     // Constructor / copy / move
@@ -503,7 +549,9 @@ struct MultiphysicsConfig {
           laser_start_x(laser.start_x),
           laser_start_y(laser.start_y),
           laser_scan_vx(laser.scan_vx),
-          laser_scan_vy(laser.scan_vy)
+          laser_scan_vy(laser.scan_vy),
+          laser_plic_aware_column_march(laser.plic_aware_column_march),
+          laser_plic_f_min_deposit(laser.plic_f_min_deposit)
     {}
 
     MultiphysicsConfig& operator=(const MultiphysicsConfig& o) {
@@ -532,6 +580,32 @@ struct MultiphysicsConfig {
     int   getNz() const { return domain.nz; }
     float getDx() const { return domain.dx; }
     float getDt() const { return numerics.dt; }
+
+    // ------------------------------------------------------------------ //
+    // PLIC-stack convenience preset
+    // ------------------------------------------------------------------ //
+
+    /**
+     * @brief Enable all PLIC sharp-delta paths in one call.
+     *
+     * Sets every Phase 2/3/4 opt-in flag (laser column-march, sharp-delta
+     * CSF / Marangoni / recoil, PLIC evap) and the cosine-kernel half-
+     * width to 1.5 cells.
+     *
+     * MultiphysicsSolver::initialize() detects that at least one PLIC flag
+     * is set and automatically calls
+     *   vof_->setNormalReconstructionMethod(HEIGHT_FUNCTION)
+     *   vof_->setCurvatureMethod(PLIC_DIVERGENCE)
+     * so no manual follow-up on the VOFSolver is needed.
+     */
+    void enableFullPLICStack(float h_smooth_lu = 1.5f) {
+        laser.plic_aware_column_march    = true;
+        surface.csf_use_plic_delta       = true;
+        surface.marangoni_use_plic_delta = true;
+        surface.recoil_use_plic_delta    = true;
+        surface.evap_use_plic_delta      = true;
+        surface.plic_h_smooth_lu         = h_smooth_lu;
+    }
 
     /**
      * @brief Validate configuration for LBM stability, physics consistency,
@@ -677,6 +751,18 @@ public:
 
     /// True if ray tracing laser is active
     bool hasRayTracing() const { return ray_tracing_laser_ != nullptr; }
+
+    /**
+     * @brief Get the underlying VOFSolver instance.
+     *
+     * Exposed for test fixtures and advanced callers that need to configure
+     * Phase 1+ PLIC reconstruction modes (normal method, curvature method,
+     * advection scheme) before stepping. Returns nullptr if VOF is disabled
+     * in the config. Production code should prefer the SurfaceConfig flags
+     * for surface-force PLIC routing.
+     */
+    VOFSolver*       getVOFSolver()       { return vof_.get(); }
+    const VOFSolver* getVOFSolver() const { return vof_.get(); }
 
     /// Deposited power from last ray tracing step [W]
     float getRayTracingDepositedPower() const;

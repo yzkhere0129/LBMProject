@@ -8,7 +8,6 @@
 #include <cuda_runtime.h>
 #include <cmath>
 #include <algorithm>
-#include <iostream>
 #include <stdexcept>
 #include <vector>
 
@@ -1222,11 +1221,8 @@ __global__ void computeMassReductionKernel(
 }
 
 /**
- * @brief Global mass conservation correction kernel (legacy uniform scaling)
- * @note Scales all fill levels uniformly to enforce exact mass conservation.
- * @warning Concentrates redistributed mass in interface cells regardless of
- *          physical context — known to worsen LPBF centerline depression.
- *          Prefer the v_z-weighted overload of enforceGlobalMassConservation.
+ * @brief Global mass conservation correction kernel
+ * @note Scales all fill levels uniformly to enforce exact mass conservation
  */
 __global__ void enforceGlobalMassConservationKernel(
     float* fill_level,
@@ -1245,289 +1241,12 @@ __global__ void enforceGlobalMassConservationKernel(
 }
 
 // ============================================================================
-// A1: v_z-Weighted Additive Mass Correction (2026-04-26)
-// ============================================================================
-// Replaces uniform multiplicative scaling with physics-aware redistribution:
-// mass deficit is deposited preferentially at interface cells whose top
-// surface flows upward (the capillary back-flow zone trying to refill the
-// trailing groove), and removed preferentially from cells flowing downward.
-// Diagnosed Phase-2 failure: uniform scale dumps reclaimed mass on already-
-// over-deposited splash deposits + side ridges, deepening the centerline.
-//
-// Pass 1: reduce W = Σ max(sign(Δm) * v_z, 0) over interface cells.
-// Pass 2: apply f += (Δm/W) * max(sign(Δm) * v_z, 0) with clamp.
-// ============================================================================
-
-/**
- * @brief Pass 1 — compute Σw over interface cells.
- * @param fill_level   VOF fill level
- * @param velocity_z   Vertical velocity [m/s]
- * @param sign_dm      +1.0f for mass deficit, -1.0f for mass excess
- * @param partial_sums One float per block (host completes the reduction)
- * @param num_cells    Total cell count
- */
-__global__ void computeVzWeightSumKernel(
-    const float* __restrict__ fill_level,
-    const float* __restrict__ velocity_z,
-    float sign_dm,
-    float* __restrict__ partial_sums,
-    int num_cells)
-{
-    extern __shared__ float sdata[];
-    int tid = threadIdx.x;
-    int idx = blockIdx.x * blockDim.x + tid;
-
-    float w = 0.0f;
-    if (idx < num_cells) {
-        float f = fill_level[idx];
-        // Interface cells only — same threshold as countInterfaceCellsKernel
-        // and applyMassCorrectionKernel (B2 fix 2026-04-27, was strict 0/1).
-        // Saturated bulk (f≤0.01 or f≥0.99) has unreliable gradients/normals.
-        if (f > 0.01f && f < 0.99f) {
-            w = fmaxf(sign_dm * velocity_z[idx], 0.0f);
-        }
-    }
-    sdata[tid] = w;
-    __syncthreads();
-
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) sdata[tid] += sdata[tid + s];
-        __syncthreads();
-    }
-
-    if (tid == 0) partial_sums[blockIdx.x] = sdata[0];
-}
-
-/**
- * @brief Pass 2 — apply v_z-weighted additive correction.
- * @param fill_level   VOF fill level (modified in-place)
- * @param velocity_z   Vertical velocity [m/s]
- * @param sign_dm      +1.0f for deficit, -1.0f for excess (same as pass 1)
- * @param delta_per_W  (target_mass - current_mass) / W  (cells per unit weight)
- * @param num_cells    Total cell count
- */
-__global__ void applyVzWeightedMassCorrectionKernel(
-    float* fill_level,
-    const float* __restrict__ velocity_z,
-    float sign_dm,
-    float delta_per_W,
-    int num_cells)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_cells) return;
-
-    float f = fill_level[idx];
-    // B2 fix (2026-04-27): match Pass-1 threshold and applyMassCorrectionKernel.
-    if (f <= 0.01f || f >= 0.99f) return;      // skip near-pure cells
-
-    float w = fmaxf(sign_dm * velocity_z[idx], 0.0f);
-    if (w <= 0.0f) return;                     // wrong flow direction
-
-    float f_new = f + delta_per_W * w;
-    fill_level[idx] = fmaxf(0.0f, fminf(1.0f, f_new));
-}
-
-// ============================================================================
-// B1: Inward-Flux-Weighted Additive Mass Correction (2026-04-27)
-// ============================================================================
-// Track-B replaces Track-A's max(v_z, 0) weight with the un-normalised
-// interface inward-flux:
-//
-//   w_i = max( sign(Δm) * (∇f · v),  0 )    [SIGN CORRECTION 2026-04-27]
-//
-// where f=1 inside liquid → ∇f points TOWARD liquid → outward unit normal is
-// n = -∇f/|∇f|. Math expert's `max(-n·v, 0)` translates to `max(+∇f·v, 0)` in
-// this convention (NOT `max(-∇f·v, 0)`, which would invert the physics).
-//
-// computed inline from 6 face-neighbour fill-levels via central differences.
-// The unnormalised gradient form (recommended by cfd-math-expert and
-// validated against actual Phase-2 VTK by vtk-data-analyzer) keeps the
-// natural |∇f| amplitude factor — sharp groove edges have larger |∇f|
-// than gentle side ridges, automatically biasing the correction toward
-// real refill sites and away from over-deposited ridge cells.
-//
-// Why inline ∇f rather than reading d_interface_normal_:
-//   1. Normals are stale at advect time (reconstructInterface runs later)
-//   2. Stored normals are normalized — discards |∇f| factor that is the
-//      key discriminator (verified empirically: normalized form gives
-//      side/center ratio 0.50, unnormalized gives 0.23)
-//   3. Removes a pointer dependency from the API (no float3* needed)
-//
-// Pass 1: reduce W = Σ max(sign(Δm) * (∇f·v), 0) over interface cells.
-// Pass 2: apply f += (Δm/W) * w_i with clamp.
-// ============================================================================
-
-/**
- * @brief Compute -∇f·v at cell (i,j,k) via central differences from 6 neighbors.
- * @param fill_level Device array of fill_level values
- * @param i, j, k    Cell indices
- * @param nx, ny, nz Domain dims
- * @param dx         Grid spacing [m]
- * @param vx, vy, vz Velocity at this cell
- * @param bc_x, bc_y, bc_z Boundary types (0=PERIODIC, 1=WALL)
- * @return -∇f·v [1/s · m/s = 1/s with f dimensionless]
- *
- * Boundary handling: for WALL, use one-sided difference at the edge cell;
- * for PERIODIC, wrap.
- */
-__device__ inline float fluxWeightAtCell(
-    const float* __restrict__ fill_level,
-    int i, int j, int k, int nx, int ny, int nz, float dx,
-    float vx, float vy, float vz,
-    int bc_x, int bc_y, int bc_z)
-{
-    auto wrap = [](int q, int qmax, int bc) -> int {
-        if (q < 0)      return (bc == 0) ? (qmax - 1) : 0;       // PERIODIC : WALL
-        if (q >= qmax)  return (bc == 0) ? 0          : (qmax - 1);
-        return q;
-    };
-    int ip = wrap(i + 1, nx, bc_x), im = wrap(i - 1, nx, bc_x);
-    int jp = wrap(j + 1, ny, bc_y), jm = wrap(j - 1, ny, bc_y);
-    int kp = wrap(k + 1, nz, bc_z), km = wrap(k - 1, nz, bc_z);
-    float fxp = fill_level[ip + nx * (j  + ny * k )];
-    float fxm = fill_level[im + nx * (j  + ny * k )];
-    float fyp = fill_level[i  + nx * (jp + ny * k )];
-    float fym = fill_level[i  + nx * (jm + ny * k )];
-    float fzp = fill_level[i  + nx * (j  + ny * kp)];
-    float fzm = fill_level[i  + nx * (j  + ny * km)];
-    float gx = (fxp - fxm) * (0.5f / dx);
-    float gy = (fyp - fym) * (0.5f / dx);
-    float gz = (fzp - fzm) * (0.5f / dx);
-    // ∇f · v  (positive = inflow into liquid, since f=1 in liquid means
-    // ∇f points TOWARD liquid; outward normal n = -∇f/|∇f|; math expert's
-    // max(-n·v, 0) becomes max(+∇f·v, 0) in this convention).
-    // Negative = outflow from liquid (recoil splash); zeroed by the caller's
-    // fmaxf guard to give w=0 on side ridges.
-    return (gx * vx + gy * vy + gz * vz);
-}
-
-/**
- * @brief Pass 1 — Track-C reduce W = Σ max(sign_dm * (∇f·v), 0) over interface cells.
- *
- * Track-C augments Track-B with two geometric gates that zero w before accumulation:
- *   Gate 1 (trailing-band x-mask): skip cells ahead of the laser spot, where recoil
- *     dominates and ∇f·v falsely appears inward.
- *     Active when laser_x_lu >= 0; skips cell i > laser_x_lu - trailing_margin_lu.
- *   Gate 2 (z-floor gate): skip elevated cells (side ridges, splash deposits) that
- *     should never be refill targets.
- *     Active when z_substrate_lu >= 0; skips cell k > z_substrate_lu + z_offset_lu.
- *
- * Both gates cost 2 integer compares per thread and have zero impact when disabled
- * (laser_x_lu < 0 or z_substrate_lu < 0).
- */
-__global__ void computeFluxWeightSumKernel(
-    const float* __restrict__ fill_level,
-    const float* __restrict__ velocity_x,
-    const float* __restrict__ velocity_y,
-    const float* __restrict__ velocity_z,
-    float sign_dm,
-    float dx,
-    int nx, int ny, int nz,
-    int bc_x, int bc_y, int bc_z,
-    float* __restrict__ partial_sums,
-    int num_cells,
-    float laser_x_lu,        ///< Current laser x in lattice units; <0 = gate disabled
-    float trailing_margin_lu, ///< x-exclusion half-width [lu]; cells with i > laser_x_lu-margin excluded
-    float z_substrate_lu,     ///< Substrate top index [lu]; <0 = gate disabled
-    float z_offset_lu)        ///< Extra allowance above substrate [lu] before exclusion kicks in
-{
-    extern __shared__ float sdata[];
-    int tid = threadIdx.x;
-    int idx = blockIdx.x * blockDim.x + tid;
-
-    float w = 0.0f;
-    if (idx < num_cells) {
-        float f = fill_level[idx];
-        if (f > 0.01f && f < 0.99f) {
-            int i = idx % nx;
-            int j = (idx / nx) % ny;
-            int k = idx / (nx * ny);
-
-            // Gate 1: trailing-band x-mask — exclude active laser zone
-            if (laser_x_lu >= 0.0f && (float)i > laser_x_lu - trailing_margin_lu) {
-                // inside or ahead of laser spot; skip
-            }
-            // Gate 2: z-floor gate — exclude elevated cells above substrate
-            else if (z_substrate_lu >= 0.0f && (float)k > z_substrate_lu + z_offset_lu) {
-                // elevated cell (ridge/splash); skip
-            }
-            else {
-                float vx = velocity_x[idx];
-                float vy = velocity_y[idx];
-                float vz = velocity_z[idx];
-                float ndotv_inward = fluxWeightAtCell(
-                    fill_level, i, j, k, nx, ny, nz, dx, vx, vy, vz,
-                    bc_x, bc_y, bc_z);
-                w = fmaxf(sign_dm * ndotv_inward, 0.0f);
-            }
-        }
-    }
-    sdata[tid] = w;
-    __syncthreads();
-
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) sdata[tid] += sdata[tid + s];
-        __syncthreads();
-    }
-    if (tid == 0) partial_sums[blockIdx.x] = sdata[0];
-}
-
-/**
- * @brief Pass 2 — Track-C apply (Δm/W) * max(sign_dm * (∇f·v), 0) per cell.
- * Same geometric gates as computeFluxWeightSumKernel (must be identical to keep
- * the Pass-1 / Pass-2 cell sets consistent).
- */
-__global__ void applyFluxWeightedMassCorrectionKernel(
-    float* fill_level,
-    const float* __restrict__ velocity_x,
-    const float* __restrict__ velocity_y,
-    const float* __restrict__ velocity_z,
-    float sign_dm,
-    float delta_per_W,
-    float dx,
-    int nx, int ny, int nz,
-    int bc_x, int bc_y, int bc_z,
-    int num_cells,
-    float laser_x_lu,
-    float trailing_margin_lu,
-    float z_substrate_lu,
-    float z_offset_lu)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_cells) return;
-
-    float f = fill_level[idx];
-    if (f <= 0.01f || f >= 0.99f) return;
-
-    int i = idx % nx;
-    int j = (idx / nx) % ny;
-    int k = idx / (nx * ny);
-
-    // Gate 1: trailing-band x-mask
-    if (laser_x_lu >= 0.0f && (float)i > laser_x_lu - trailing_margin_lu) return;
-    // Gate 2: z-floor gate
-    if (z_substrate_lu >= 0.0f && (float)k > z_substrate_lu + z_offset_lu) return;
-
-    float vx = velocity_x[idx];
-    float vy = velocity_y[idx];
-    float vz = velocity_z[idx];
-    float ndotv_inward = fluxWeightAtCell(
-        fill_level, i, j, k, nx, ny, nz, dx, vx, vy, vz,
-        bc_x, bc_y, bc_z);
-    float w = fmaxf(sign_dm * ndotv_inward, 0.0f);
-    if (w <= 0.0f) return;
-
-    float f_new = f + delta_per_W * w;
-    fill_level[idx] = fmaxf(0.0f, fminf(1.0f, f_new));
-}
-
-// ============================================================================
 // VOFSolver Implementation
 // ============================================================================
 
 VOFSolver::VOFSolver(int nx, int ny, int nz, float dx,
                      BoundaryType bc_x, BoundaryType bc_y, BoundaryType bc_z)
-    : nx_(nx), ny_(ny), nz_(nz), num_cells_(static_cast<long long>(nx) * ny * nz), dx_(dx),  // F-12 (audit pass 1)
+    : nx_(nx), ny_(ny), nz_(nz), num_cells_(nx * ny * nz), dx_(dx),
       bc_x_(bc_x), bc_y_(bc_y), bc_z_(bc_z),
       advection_scheme_(VOFAdvectionScheme::UPWIND),  // Default: first-order upwind
       tvd_limiter_(TVDLimiter::VAN_LEER),             // Default: van Leer limiter
@@ -1588,39 +1307,12 @@ void VOFSolver::freeMemory() {
     if (d_interface_normal_) cudaFree(d_interface_normal_);
     if (d_curvature_) cudaFree(d_curvature_);
     if (d_fill_level_tmp_) cudaFree(d_fill_level_tmp_);
-    // Bug-3 fix (2026-04-26): release cached scratch buffers.
-    if (d_mass_partial_sums_) {
-        cudaFree(d_mass_partial_sums_);
-        d_mass_partial_sums_ = nullptr;
-        d_mass_partial_sums_size_ = 0;
-    }
-    if (d_interface_partial_counts_) {
-        cudaFree(d_interface_partial_counts_);
-        d_interface_partial_counts_ = nullptr;
-        d_interface_partial_counts_size_ = 0;
-    }
-    // F3-02 fix (audit pass 3, 2026-04-27): free hoisted PLIC/TVD reduction
-    // buffers (formerly function-local statics — see header).
-    if (d_block_max_advect_) {
-        cudaFree(d_block_max_advect_);
-        d_block_max_advect_ = nullptr;
-        d_block_max_advect_size_ = 0;
-    }
-    if (d_block_max_advectTVD_) {
-        cudaFree(d_block_max_advectTVD_);
-        d_block_max_advectTVD_ = nullptr;
-        d_block_max_advectTVD_size_ = 0;
-    }
 }
 
 void VOFSolver::initialize(const float* fill_level) {
     CUDA_CHECK(cudaMemcpy(d_fill_level_, fill_level, num_cells_ * sizeof(float),
                cudaMemcpyHostToDevice));
-
-    // B4 fix (2026-04-27): reset mass-correction state on (re)initialize so
-    // multi-instance / re-initialise tests don't inherit a stale baseline.
-    mass_reference_ = -1.0f;
-    mass_correction_call_count_ = 0;
+    plicMarkDirty();
 
     // Initialize cell flags based on fill level
     convertCells();
@@ -1647,6 +1339,7 @@ void VOFSolver::initializeDroplet(float center_x, float center_y,
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
 
     // Update cell flags and interface properties
     convertCells();
@@ -1657,26 +1350,6 @@ void VOFSolver::initializeDroplet(float center_x, float center_y,
 void VOFSolver::setInterfaceCompression(bool enabled, float coefficient) {
     interface_compression_enabled_ = enabled;
     C_compress_coeff_ = coefficient;
-
-    // F-13 (code-audit pass 1, 2026-04-27): warn callers that
-    // applyInterfaceCompressionKernel uses periodic-only neighbor indexing
-    // (i_m = (i>0)?i-1:nx-1, etc.). Enabling on non-periodic BCs reads
-    // wrong data at boundary cells — wraps to opposite face instead of
-    // respecting WALL/SYMMETRY. Currently no production caller enables
-    // compression (only Zalesak/RT tests, which are periodic), so the bug
-    // is dormant. If production ever enables this with WALL BCs, the kernel
-    // must be rewritten to take bc_x_/bc_y_/bc_z_ as parameters.
-    if (enabled && (bc_x_ != BoundaryType::PERIODIC ||
-                    bc_y_ != BoundaryType::PERIODIC ||
-                    bc_z_ != BoundaryType::PERIODIC)) {
-        std::cerr << "[VOFSolver WARNING] interface compression enabled with "
-                  << "non-periodic BC (bc_x=" << static_cast<int>(bc_x_)
-                  << ", bc_y=" << static_cast<int>(bc_y_)
-                  << ", bc_z=" << static_cast<int>(bc_z_) << "). "
-                  << "applyInterfaceCompressionKernel uses periodic-only "
-                  << "indexing — boundary cells will read wrong data. "
-                  << "Disable compression or use periodic BCs.\n";
-    }
 }
 
 void VOFSolver::advectFillLevel(const float* velocity_x,
@@ -1695,24 +1368,22 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     // Fix: dynamically compute n_subs = ceil(CFL / CFL_target) and split
     // the advection into n_subs sub-steps of dt_sub = dt / n_subs.
     if (advection_scheme_ == VOFAdvectionScheme::PLIC) {
-        // Compute max CFL from velocity field (GPU reduction already exists)
+        // Compute max CFL from velocity field (GPU reduction).
+        // Per-instance reduction buffer (was function-level static — H1 fix).
         const int rt = 256;
         const int rb = (num_cells_ + rt - 1) / rt;
 
-        // F3-02 fix: use class member instead of function-local static
-        if (d_block_max_advect_size_ < rb) {
-            if (d_block_max_advect_) cudaFree(d_block_max_advect_);
-            CUDA_CHECK(cudaMalloc(&d_block_max_advect_, rb * sizeof(float)));
-            d_block_max_advect_size_ = rb;
+        if (static_cast<int>(reduction_block_max_.size()) < rb) {
+            reduction_block_max_ = lbm::utils::CudaBuffer<float>(rb);
         }
-        float* d_block_max = d_block_max_advect_;  // Local alias for kernel call
 
         maxVelocityMagnitudeKernel<<<rb, rt, rt * sizeof(float)>>>(
-            velocity_x, velocity_y, velocity_z, d_block_max, num_cells_);
+            velocity_x, velocity_y, velocity_z,
+            reduction_block_max_.get(), num_cells_);
         CUDA_CHECK_KERNEL();
 
         std::vector<float> h_bmax(rb);
-        CUDA_CHECK(cudaMemcpy(h_bmax.data(), d_block_max,
+        CUDA_CHECK(cudaMemcpy(h_bmax.data(), reduction_block_max_.get(),
                               rb * sizeof(float), cudaMemcpyDeviceToHost));
         float v_max = 0.0f;
         for (int i = 0; i < rb; ++i)
@@ -1723,12 +1394,11 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
         int n_subs = std::max(1, static_cast<int>(std::ceil(cfl / cfl_target)));
         float dt_sub = dt / n_subs;
 
-        static int call_count = 0;
-        if (call_count % 500 == 0 || n_subs > 1) {
+        if (plic_substep_call_count_ % 500 == 0 || n_subs > 1) {
             printf("[VOF PLIC] Call %d: v_max=%.4f, CFL=%.3f, n_subs=%d, dt_sub=%.2e\n",
-                   call_count, v_max, cfl, n_subs, dt_sub);
+                   plic_substep_call_count_, v_max, cfl, n_subs, dt_sub);
         }
-        call_count++;
+        plic_substep_call_count_++;
 
         for (int sub = 0; sub < n_subs; ++sub) {
             advectFillLevelPLIC(velocity_x, velocity_y, velocity_z, dt_sub);
@@ -1753,22 +1423,20 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     const int reduction_threads = 256;
     const int reduction_blocks = (num_cells_ + reduction_threads - 1) / reduction_threads;
 
-    // F3-02 fix: class member instead of function-local static (was causing
-    // dangling GPU pointer on second VOFSolver construction)
-    if (d_block_max_advectTVD_size_ < reduction_blocks) {
-        if (d_block_max_advectTVD_) cudaFree(d_block_max_advectTVD_);
-        CUDA_CHECK(cudaMalloc(&d_block_max_advectTVD_, reduction_blocks * sizeof(float)));
-        d_block_max_advectTVD_size_ = reduction_blocks;
+    // Lazy-allocate reduction buffer as a per-instance class member (H1 fix).
+    // Was a function-level static, which caused two VOFSolver instances to race
+    // on cudaFree+cudaMalloc when grid sizes differed.
+    if (static_cast<int>(reduction_block_max_.size()) < reduction_blocks) {
+        reduction_block_max_ = lbm::utils::CudaBuffer<float>(reduction_blocks);
     }
-    float* d_block_max = d_block_max_advectTVD_;  // Local alias for kernel call
 
     maxVelocityMagnitudeKernel<<<reduction_blocks, reduction_threads,
                                   reduction_threads * sizeof(float)>>>(
-        velocity_x, velocity_y, velocity_z, d_block_max, num_cells_);
+        velocity_x, velocity_y, velocity_z, reduction_block_max_.get(), num_cells_);
     CUDA_CHECK_KERNEL();
 
     std::vector<float> h_block_max(reduction_blocks);
-    CUDA_CHECK(cudaMemcpy(h_block_max.data(), d_block_max,
+    CUDA_CHECK(cudaMemcpy(h_block_max.data(), reduction_block_max_.get(),
                           reduction_blocks * sizeof(float), cudaMemcpyDeviceToHost));
 
     float v_max = 0.0f;
@@ -1839,19 +1507,14 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     float dt_sub = dt / static_cast<float>(n_substeps);
     float cfl_sub = vof_cfl / static_cast<float>(n_substeps);
 
-    // Diagnostic: print VOF advection info periodically
-    static int call_count = 0;
-    static float prev_mass = -1.0f;
-    static int prev_substeps = 1;
-    static bool scheme_reported = false;
-
-    if (call_count % 500 == 0 && call_count < 5000) {
-        // Compute current mass
+    // Diagnostic: print VOF advection info periodically.
+    // Counters are class members (H1-followup 2026-04-30) so multiple
+    // VOFSolver instances do not share diagnostic state.
+    if (advect_call_count_ % 500 == 0 && advect_call_count_ < 5000) {
         float mass = computeTotalMass();
-        float mass_change = (prev_mass > 0) ? (mass - prev_mass) : 0.0f;
+        float mass_change = (advect_prev_mass_ > 0) ? (mass - advect_prev_mass_) : 0.0f;
 
-        // Report scheme on first call
-        if (!scheme_reported) {
+        if (!advect_scheme_reported_) {
             const char* scheme_name = (advection_scheme_ == VOFAdvectionScheme::UPWIND) ? "UPWIND" : "TVD";
             const char* limiter_names[] = {"MINMOD", "VAN_LEER", "SUPERBEE", "MC"};
             const char* limiter_name = limiter_names[static_cast<int>(tvd_limiter_)];
@@ -1860,21 +1523,20 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
                 printf(" (limiter: %s)", limiter_name);
             }
             printf("\n");
-            scheme_reported = true;
+            advect_scheme_reported_ = true;
         }
 
         printf("[VOF ADVECT] Call %d: v_max=%.6f, CFL=%.6f, n_sub=%d, CFL_sub=%.3f, mass=%.1f (delta=%.3f)\n",
-               call_count, v_max, vof_cfl, n_substeps, cfl_sub, mass, mass_change);
-        prev_mass = mass;
+               advect_call_count_, v_max, vof_cfl, n_substeps, cfl_sub, mass, mass_change);
+        advect_prev_mass_ = mass;
     }
 
-    // Warn if subcycling activated/deactivated
-    if (n_substeps != prev_substeps && call_count % 100 == 0) {
+    if (n_substeps != advect_prev_substeps_ && advect_call_count_ % 100 == 0) {
         printf("[VOF SUBCYCLE] Step %d: CFL=%.3f requires %d substeps (dt_sub=%.2e s, CFL_sub=%.3f)\n",
-               call_count, vof_cfl, n_substeps, dt_sub, cfl_sub);
+               advect_call_count_, vof_cfl, n_substeps, dt_sub, cfl_sub);
     }
-    prev_substeps = n_substeps;
-    call_count++;
+    advect_prev_substeps_ = n_substeps;
+    advect_call_count_++;
 
     if (vof_cfl > 0.5f) {
         printf("WARNING: VOF CFL violation: %.3f > 0.5 (v_max=%.2e, dt=%.2e s, dx=%.2e m)\n",
@@ -1943,12 +1605,72 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     //
     // NOTE: Only applied if mass_correction_enabled_ = true (default: false)
     // ========================================================================
-    // Mass-correction (Track-A v_z OR Track-B inline-∇f flux weight).
-    // velocity_x/y/z are passed to advection so they're in scope here.
-    if (mass_correction_use_flux_weight_) {
-        applyMassCorrectionInline(velocity_x, velocity_y, velocity_z);  // Track-B
-    } else {
-        applyMassCorrectionInline(velocity_z);                          // Track-A
+    if (mass_correction_enabled_) {
+        // Compute current mass
+        float mass_current = computeTotalMass();
+
+        // Initialize reference mass on first call
+        if (mass_reference_ < 0.0f) {
+            mass_reference_ = mass_current;
+        }
+
+        // Compute mass error
+        float mass_error = mass_reference_ - mass_current;
+        float mass_error_fraction = (mass_reference_ > 0.0f)
+            ? fabsf(mass_error) / mass_reference_
+            : 0.0f;
+
+        // Apply correction if mass loss is significant
+        const float CORRECTION_THRESHOLD = 1e-6f;  // 0.0001% threshold
+        if (fabsf(mass_error) > CORRECTION_THRESHOLD) {
+            // Count interface cells for redistribution
+            int blockSize_1d = 256;
+            int gridSize_1d = (num_cells_ + blockSize_1d - 1) / blockSize_1d;
+
+            // Allocate temporary storage for reduction
+            int* d_partial_counts;
+            CUDA_CHECK(cudaMalloc(&d_partial_counts, gridSize_1d * sizeof(int)));
+
+            // Count interface cells
+            countInterfaceCellsKernel<<<gridSize_1d, blockSize_1d>>>(
+                d_fill_level_, d_partial_counts, num_cells_);
+            CUDA_CHECK_KERNEL();
+
+            // Copy partial counts to host and sum
+            std::vector<int> h_partial_counts(gridSize_1d);
+            CUDA_CHECK(cudaMemcpy(h_partial_counts.data(), d_partial_counts,
+                      gridSize_1d * sizeof(int), cudaMemcpyDeviceToHost));
+            int interface_count = 0;
+            for (int i = 0; i < gridSize_1d; ++i) {
+                interface_count += h_partial_counts[i];
+            }
+
+            // Apply correction if interface cells exist
+            if (interface_count > 0) {
+                applyMassCorrectionKernel<<<gridSize, blockSize>>>(
+                    d_fill_level_, mass_error, nx_, ny_, nz_,
+                    interface_count, mass_correction_damping_);
+                CUDA_CHECK_KERNEL();
+                CUDA_CHECK(cudaDeviceSynchronize());
+
+                // Diagnostic output (periodic)
+                if (advect_call_count_ % 500 == 0) {
+                    float mass_after = computeTotalMass();
+                    float correction_applied = mass_after - mass_current;
+                    printf("[VOF MASS CORRECTION] ΔM=%.3e (%.3f%%), N_int=%d, corrected=%.3e\n",
+                           mass_error, mass_error_fraction * 100.0f,
+                           interface_count, correction_applied);
+                }
+            } else {
+                // Warning: cannot correct mass without interface cells
+                if (mass_error_fraction > 0.01f && advect_call_count_ % 1000 == 0) {
+                    printf("[VOF MASS WARNING] Cannot correct %.1f%% mass loss - no interface cells!\n",
+                           mass_error_fraction * 100.0f);
+                }
+            }
+
+            CUDA_CHECK(cudaFree(d_partial_counts));
+        }
     }
 
     // ========================================================================
@@ -2000,6 +1722,7 @@ void VOFSolver::advectFillLevel(const float* velocity_x,
     }
 
     // NOTE: d_fill_level_ now contains final result (advected + optionally compressed + mass corrected)
+    plicMarkDirty();
 }
 
 void VOFSolver::reconstructInterface() {
@@ -2015,16 +1738,194 @@ void VOFSolver::reconstructInterface() {
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+// ============================================================================
+// Phase 3a PLIC curvature: Cummins-Francois-Kothe height-function curvature.
+// ============================================================================
+// For a height surface H(u, v) = (interface position along the dominant axis
+// as a function of the two lateral coordinates u, v):
+//
+//     κ = -(H_uu (1 + H_v²) + H_vv (1 + H_u²) - 2 H_u H_v H_uv)
+//          / (1 + H_u² + H_v²)^{3/2}
+//
+// We work directly with the column heights h(u, v) — which have h = (const) ±
+// H depending on the sign of the dominant gradient. The signs of H_u, H_v get
+// flipped in the formula by the (h ↔ H) sign, and the squared terms are
+// invariant; the cross term H_u H_v H_uv has two sign flips that cancel; and
+// the linear terms H_uu, H_vv pick up a single sign. The net effect is that
+// the bracket evaluated with h-derivatives matches H-derivatives up to an
+// overall sign s_dom = -sign(g_dominant). With our outward-normal convention,
+// κ > 0 for a convex liquid drop (sphere → 2/R) when we write
+//
+//     κ = +s_dom · (h_uu(1+h_v²) + h_vv(1+h_u²) - 2 h_u h_v h_uv)
+//                  / (1 + h_u² + h_v²)^{3/2}.
+//
+// Why this beats divergence-of-normal: the n̂ field is zero in bulk cells,
+// so a central-difference divergence at an interface cell next to bulk
+// suffers an artificial O(1/dx) jump. Column heights, by contrast, are
+// continuous across the interface band and naturally smooth.
+//
+// Reference: Cummins, Francois & Kothe (2005). Estimating curvature from
+// volume fractions. Computers & Structures 83, 425-434, eq. (7).
+// ============================================================================
+__global__ void computeCurvaturePLICKernel(
+    const float* __restrict__ fill,
+    float* __restrict__ kappa_out,
+    float dx,
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+    int idx = i + nx * (j + ny * k);
+
+    float f = fill[idx];
+    if (f <= 0.0f || f >= 1.0f) {
+        kappa_out[idx] = 0.0f;
+        return;
+    }
+
+#define IDX_BC(ii, jj, kk) \
+    ( ((bc_x == 0) ? (((ii) % nx + nx) % nx) : max(0, min(nx-1, (ii)))) \
+      + nx * ( \
+            ((bc_y == 0) ? (((jj) % ny + ny) % ny) : max(0, min(ny-1, (jj)))) \
+            + ny * ((bc_z == 0) ? (((kk) % nz + nz) % nz) : max(0, min(nz-1, (kk)))) \
+        ) )
+#define FILL_BC(ii, jj, kk) fill[IDX_BC(ii, jj, kk)]
+
+    // Identify dominant axis by Parker-Youngs gradient magnitude — same
+    // procedure as the HF normal kernel so the column orientation is
+    // consistent across normal and curvature.
+    int im = (bc_x == 0) ? ((i > 0)    ? i-1 : nx-1) : max(0,    i-1);
+    int ip = (bc_x == 0) ? ((i < nx-1) ? i+1 : 0)    : min(nx-1, i+1);
+    int jm = (bc_y == 0) ? ((j > 0)    ? j-1 : ny-1) : max(0,    j-1);
+    int jp = (bc_y == 0) ? ((j < ny-1) ? j+1 : 0)    : min(ny-1, j+1);
+    int km = (bc_z == 0) ? ((k > 0)    ? k-1 : nz-1) : max(0,    k-1);
+    int kp = (bc_z == 0) ? ((k < nz-1) ? k+1 : 0)    : min(nz-1, k+1);
+
+    auto FG = [&](int ii, int jj, int kk) -> float { return FILL_BC(ii, jj, kk); };
+
+    float gx = (FG(ip,j,k) - FG(im,j,k));
+    float gy = (FG(i,jp,k) - FG(i,jm,k));
+    float gz = (FG(i,j,kp) - FG(i,j,km));
+    float ax = fabsf(gx), ay = fabsf(gy), az = fabsf(gz);
+
+    constexpr int W = 4;            // 9-point column (matches HF normal kernel)
+    constexpr int LEN = 2 * W + 1;
+    float h[3][3];
+
+    // Build column heights along the dominant axis. The lateral 3×3 stencil
+    // is the same shape as the HF-normal kernel.
+    auto colX = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        for (int di = -W; di <= W; ++di) s += FILL_BC(ic + di, jc, kc);
+        return s;
+    };
+    auto colY = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        for (int dj = -W; dj <= W; ++dj) s += FILL_BC(ic, jc + dj, kc);
+        return s;
+    };
+    auto colZ = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        for (int dk = -W; dk <= W; ++dk) s += FILL_BC(ic, jc, kc + dk);
+        return s;
+    };
+
+    bool axis_x = (ax >= ay && ax >= az);
+    bool axis_y = (!axis_x) && (ay >= az);
+    if (axis_x) {
+        for (int dj = -1; dj <= 1; ++dj)
+            for (int dk = -1; dk <= 1; ++dk)
+                h[dj+1][dk+1] = colX(i, j + dj, k + dk);
+    } else if (axis_y) {
+        for (int di = -1; di <= 1; ++di)
+            for (int dk = -1; dk <= 1; ++dk)
+                h[di+1][dk+1] = colY(i + di, j, k + dk);
+    } else {
+        for (int di = -1; di <= 1; ++di)
+            for (int dj = -1; dj <= 1; ++dj)
+                h[di+1][dj+1] = colZ(i + di, j + dj, k);
+    }
+
+    // Validity: central column must straddle the interface; otherwise we
+    // cannot trust the second derivatives. 0 falls back to LEGACY values
+    // already in kappa_out (here: 0 — caller must combine with legacy κ).
+    const float low = 0.5f, high = static_cast<float>(LEN) - 0.5f;
+    if (h[1][1] <= low || h[1][1] >= high) {
+        kappa_out[idx] = 0.0f;
+        return;
+    }
+
+    // First and second derivatives of h on the 3×3 stencil. Lattice-unit
+    // spacing (dx=1 between lateral cells); the physical 1/dx factor is
+    // applied at the end.
+    float h_u   = 0.5f * (h[2][1] - h[0][1]);
+    float h_v   = 0.5f * (h[1][2] - h[1][0]);
+    float h_uu  = h[2][1] - 2.0f * h[1][1] + h[0][1];
+    float h_vv  = h[1][2] - 2.0f * h[1][1] + h[1][0];
+    float h_uv  = 0.25f * (h[2][2] - h[2][0] - h[0][2] + h[0][0]);
+
+    float denom = 1.0f + h_u * h_u + h_v * h_v;
+    float denom32 = sqrtf(denom) * denom;
+    float numer = h_uu * (1.0f + h_v * h_v)
+                + h_vv * (1.0f + h_u * h_u)
+                - 2.0f * h_u * h_v * h_uv;
+
+    // Derivation. Two parametrisations of the surface depending on which
+    // side carries the liquid:
+    //
+    //   gradient·dominant > 0  (liquid above interface):
+    //     n̂ = ( H_u,  H_v, -1) / σ      ⟹ ∇·n̂ = +bracket_H / σ³
+    //     h ∝ -H  ⟹ bracket_h = -bracket_H
+    //     κ = ∇·n̂ = +bracket_H / σ³ = -bracket_h / σ³
+    //
+    //   gradient·dominant < 0  (liquid below interface):
+    //     n̂ = (-H_u, -H_v, +1) / σ      ⟹ ∇·n̂ = -bracket_H / σ³
+    //     h ∝ +H  ⟹ bracket_h = +bracket_H
+    //     κ = ∇·n̂ = -bracket_H / σ³ = -bracket_h / σ³
+    //
+    // Both cases collapse to the same formula:
+    //
+    //     κ = -bracket_h / σ³           (no s_dom factor)
+    //
+    // The dominant-axis sign (s_dom = -sign(g_dominant)) is handled
+    // automatically through the column-height construction.
+    //
+    // Verified numerically against analytic 2/R on R=48 sphere (top, bottom,
+    // sides) — see test_plic_curvature.cu.
+    float kappa = -numer / denom32;
+    kappa_out[idx] = kappa / dx;
+
+#undef FILL_BC
+#undef IDX_BC
+}
+
 void VOFSolver::computeCurvature() {
     dim3 blockSize(8, 8, 8);
     dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
                   (ny_ + blockSize.y - 1) / blockSize.y,
                   (nz_ + blockSize.z - 1) / blockSize.z);
 
-    computeCurvatureKernel<<<gridSize, blockSize>>>(
-        d_fill_level_, d_interface_normal_, d_curvature_, dx_, nx_, ny_, nz_);
+    if (curvature_method_ == CurvatureMethod::PLIC_DIVERGENCE) {
+        // Cummins-Francois-Kothe height-function curvature. Does not use the
+        // cached PLIC normal field — operates directly on fill_level via
+        // 9-point columns + 3×3 lateral stencil. Sign convention matches
+        // the divergence-of-outward-normal definition: κ = +2/R for a
+        // convex liquid sphere in gas.
+        int bcs[3] = { static_cast<int>(bc_x_),
+                       static_cast<int>(bc_y_),
+                       static_cast<int>(bc_z_) };
+        computeCurvaturePLICKernel<<<gridSize, blockSize>>>(
+            d_fill_level_, d_curvature_, dx_,
+            nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+    } else {
+        computeCurvatureKernel<<<gridSize, blockSize>>>(
+            d_fill_level_, d_interface_normal_, d_curvature_,
+            dx_, nx_, ny_, nz_);
+    }
     CUDA_CHECK_KERNEL();
-
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
@@ -2081,509 +1982,54 @@ float VOFSolver::computeTotalMass() const {
     int blockSize = 256;
     int gridSize = (num_cells_ + blockSize - 1) / blockSize;
 
-    // Bug-3 fix (2026-04-26): lazy-cache scratch buffer instead of allocating
-    // every call. computeTotalMass is invoked up to 3× per advection step.
-    if (d_mass_partial_sums_size_ < gridSize) {
-        if (d_mass_partial_sums_) cudaFree(d_mass_partial_sums_);
-        CUDA_CHECK(cudaMalloc(&d_mass_partial_sums_, gridSize * sizeof(float)));
-        d_mass_partial_sums_size_ = gridSize;
-    }
+    // Allocate partial sums
+    float* d_partial_sums;
+    CUDA_CHECK(cudaMalloc(&d_partial_sums, gridSize * sizeof(float)));
 
     // First reduction: compute partial sums
     computeMassReductionKernel<<<gridSize, blockSize, blockSize * sizeof(float)>>>(
-        d_fill_level_, d_mass_partial_sums_, num_cells_);
+        d_fill_level_, d_partial_sums, num_cells_);
     CUDA_CHECK_KERNEL();
 
     // Copy partial sums to host and finish reduction on CPU
     std::vector<float> h_partial_sums(gridSize);
-    CUDA_CHECK(cudaMemcpy(h_partial_sums.data(), d_mass_partial_sums_, gridSize * sizeof(float),
+    CUDA_CHECK(cudaMemcpy(h_partial_sums.data(), d_partial_sums, gridSize * sizeof(float),
                cudaMemcpyDeviceToHost));
 
-    // Final reduction on CPU using double precision + Kahan compensation.
-    // Sprint-1 fix (2026-04-25): old code used FP32 sequential accumulation;
-    // for ~3.8M cells the relative error was O(N)·ε_mach ≈ 4×10⁻¹, completely
-    // washing out the GPU tree-reduction precision and making the 0.001%
-    // mass-drift target unmeasurable in diagnostics.
-    double total_mass_dbl = 0.0;
-    double kahan_c = 0.0;
+    CUDA_CHECK(cudaFree(d_partial_sums));
+
+    // Final reduction on CPU
+    float total_mass = 0.0f;
     for (float sum : h_partial_sums) {
-        double y = static_cast<double>(sum) - kahan_c;
-        double t = total_mass_dbl + y;
-        kahan_c = (t - total_mass_dbl) - y;
-        total_mass_dbl = t;
+        total_mass += sum;
     }
-    return static_cast<float>(total_mass_dbl);
+
+    return total_mass;
 }
 
-// ============================================================================
-// A1 inline helper — shared by TVD and PLIC advection paths.
-// Replaces the duplicated correction blocks (Bug-4 dedupe, 2026-04-26).
-// ============================================================================
-void VOFSolver::applyMassCorrectionInline(const float* d_vz) {
-    if (!mass_correction_enabled_) return;
-
-    // B1 fix (2026-04-27): explicit sync before reading d_fill_level_.
-    // Callers (advectFillLevel TVD/PLIC) end with cudaDeviceSynchronize but
-    // the ordering was implicit. Make it explicit so future call sites are safe.
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    float mass_current = computeTotalMass();
-    if (mass_reference_ < 0.0f) {
-        mass_reference_ = mass_current;   // first-call initialization
-        return;                           // nothing to correct yet
-    }
-
-    float delta_m = mass_reference_ - mass_current;     // positive when mass lost
-    float mass_error_fraction = (mass_reference_ > 0.0f)
-        ? fabsf(delta_m) / mass_reference_ : 0.0f;
-
-    constexpr float CORRECTION_THRESHOLD = 1e-6f;       // absolute (Σf units)
-    if (fabsf(delta_m) <= CORRECTION_THRESHOLD) return;
-
-    int blockSize = 256;
-    int gridSize  = (num_cells_ + blockSize - 1) / blockSize;
-
-    // ---- A1 attempt: v_z-weighted additive correction ----
-    double W_dbl = 0.0;
-    if (d_vz != nullptr) {
-        if (d_mass_partial_sums_size_ < gridSize) {
-            if (d_mass_partial_sums_) cudaFree(d_mass_partial_sums_);
-            CUDA_CHECK(cudaMalloc(&d_mass_partial_sums_, gridSize * sizeof(float)));
-            d_mass_partial_sums_size_ = gridSize;
-        }
-        float sign_dm = (delta_m >= 0.0f) ? 1.0f : -1.0f;
-
-        computeVzWeightSumKernel<<<gridSize, blockSize, blockSize * sizeof(float)>>>(
-            d_fill_level_, d_vz, sign_dm, d_mass_partial_sums_, num_cells_);
-        CUDA_CHECK_KERNEL();
-
-        std::vector<float> h_partial(gridSize);
-        CUDA_CHECK(cudaMemcpy(h_partial.data(), d_mass_partial_sums_,
-                              gridSize * sizeof(float), cudaMemcpyDeviceToHost));
-        double kc = 0.0;
-        for (float p : h_partial) {
-            double y = static_cast<double>(p) - kc;
-            double t = W_dbl + y;
-            kc = (t - W_dbl) - y;
-            W_dbl = t;
-        }
-
-        if (W_dbl > 1e-12) {
-            float delta_per_W = static_cast<float>(static_cast<double>(delta_m) / W_dbl);
-            applyVzWeightedMassCorrectionKernel<<<gridSize, blockSize>>>(
-                d_fill_level_, d_vz, sign_dm, delta_per_W, num_cells_);
-            CUDA_CHECK_KERNEL();
-            CUDA_CHECK(cudaDeviceSynchronize());
-
-            if (mass_correction_call_count_ % 500 == 0) {
-                float mass_after = computeTotalMass();
-                printf("[VOF MASS CORRECTION A1-vz] ΔM=%.3e (%.4f%%), W=%.3e, "
-                       "applied=%.3e\n",
-                       delta_m, mass_error_fraction * 100.0f,
-                       W_dbl, mass_after - mass_current);
-            }
-            mass_correction_call_count_++;
-            return;
-        }
-        // W ≈ 0 → fall through to uniform additive fallback
-    }
-
-    // ---- Fallback: uniform additive over interface cells ----
-    if (d_interface_partial_counts_size_ < gridSize) {
-        if (d_interface_partial_counts_) cudaFree(d_interface_partial_counts_);
-        CUDA_CHECK(cudaMalloc(&d_interface_partial_counts_, gridSize * sizeof(int)));
-        d_interface_partial_counts_size_ = gridSize;
-    }
-    countInterfaceCellsKernel<<<gridSize, blockSize>>>(
-        d_fill_level_, d_interface_partial_counts_, num_cells_);
-    CUDA_CHECK_KERNEL();
-
-    std::vector<int> h_counts(gridSize);
-    CUDA_CHECK(cudaMemcpy(h_counts.data(), d_interface_partial_counts_,
-                          gridSize * sizeof(int), cudaMemcpyDeviceToHost));
-    long long interface_count = 0;
-    for (int c : h_counts) interface_count += c;
-
-    if (interface_count > 0) {
-        dim3 mc_block(8, 8, 8);
-        dim3 mc_grid((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
-        applyMassCorrectionKernel<<<mc_grid, mc_block>>>(
-            d_fill_level_, delta_m, nx_, ny_, nz_,
-            static_cast<int>(interface_count), mass_correction_damping_);
-        CUDA_CHECK_KERNEL();
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        if (mass_correction_call_count_ % 500 == 0) {
-            float mass_after = computeTotalMass();
-            const char* tag = (d_vz != nullptr) ? "A1-fallback-uniform" : "uniform";
-            printf("[VOF MASS CORRECTION %s] ΔM=%.3e (%.4f%%), N_int=%lld, "
-                   "applied=%.3e\n",
-                   tag, delta_m, mass_error_fraction * 100.0f,
-                   interface_count, mass_after - mass_current);
-        }
-    } else if (mass_error_fraction > 0.01f &&
-               mass_correction_call_count_ % 1000 == 0) {
-        printf("[VOF MASS WARNING] Cannot correct %.1f%% mass loss — "
-               "no interface cells.\n", mass_error_fraction * 100.0f);
-    }
-    mass_correction_call_count_++;
-}
-
-// ============================================================================
-// Track-B helper — w = max(sign(Δm)·(-∇f·v), 0) inline-gradient flux weight.
-// ============================================================================
-void VOFSolver::applyMassCorrectionInline(const float* d_vx,
-                                           const float* d_vy,
-                                           const float* d_vz) {
-    if (!mass_correction_enabled_) return;
-    if (d_vx == nullptr || d_vy == nullptr || d_vz == nullptr) return;
-
-    // B1 fix: explicit sync before reading d_fill_level_.
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    float mass_current = computeTotalMass();
-    if (mass_reference_ < 0.0f) {
-        mass_reference_ = mass_current;
-        return;
-    }
-
-    float delta_m = mass_reference_ - mass_current;
-    float mass_error_fraction = (mass_reference_ > 0.0f)
-        ? fabsf(delta_m) / mass_reference_ : 0.0f;
-    constexpr float CORRECTION_THRESHOLD = 1e-6f;
-    if (fabsf(delta_m) <= CORRECTION_THRESHOLD) return;
-
-    int blockSize = 256;
-    int gridSize  = (num_cells_ + blockSize - 1) / blockSize;
-
-    // Damping is applied to delta_m (softer correction) rather than to the
-    // weight, so cell discrimination is preserved while the magnitude shrinks.
-    float damped_dm = mass_correction_damping_ * delta_m;
-    float sign_dm   = (damped_dm >= 0.0f) ? 1.0f : -1.0f;
-
-    // ---- Pass 1: reduce W = Σ max(sign_dm·(-∇f·v), 0) over interface cells ----
-    if (d_mass_partial_sums_size_ < gridSize) {
-        if (d_mass_partial_sums_) cudaFree(d_mass_partial_sums_);
-        CUDA_CHECK(cudaMalloc(&d_mass_partial_sums_, gridSize * sizeof(float)));
-        d_mass_partial_sums_size_ = gridSize;
-    }
-    int bc_x_i = static_cast<int>(bc_x_);
-    int bc_y_i = static_cast<int>(bc_y_);
-    int bc_z_i = static_cast<int>(bc_z_);
-    computeFluxWeightSumKernel<<<gridSize, blockSize, blockSize * sizeof(float)>>>(
-        d_fill_level_, d_vx, d_vy, d_vz, sign_dm, dx_,
-        nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i,
-        d_mass_partial_sums_, num_cells_,
-        mass_correction_laser_x_lu_, mass_correction_trailing_margin_lu_,
-        mass_correction_z_substrate_lu_, mass_correction_z_offset_lu_);
-    CUDA_CHECK_KERNEL();
-
-    std::vector<float> h_partial(gridSize);
-    CUDA_CHECK(cudaMemcpy(h_partial.data(), d_mass_partial_sums_,
-                          gridSize * sizeof(float), cudaMemcpyDeviceToHost));
-    double W_dbl = 0.0, kc = 0.0;
-    for (float p : h_partial) {
-        double y = static_cast<double>(p) - kc;
-        double t = W_dbl + y;
-        kc = (t - W_dbl) - y;
-        W_dbl = t;
-    }
-
-    if (W_dbl > 1e-12) {
-        float delta_per_W = static_cast<float>(static_cast<double>(damped_dm) / W_dbl);
-        applyFluxWeightedMassCorrectionKernel<<<gridSize, blockSize>>>(
-            d_fill_level_, d_vx, d_vy, d_vz, sign_dm, delta_per_W,
-            dx_, nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i, num_cells_,
-            mass_correction_laser_x_lu_, mass_correction_trailing_margin_lu_,
-            mass_correction_z_substrate_lu_, mass_correction_z_offset_lu_);
-        CUDA_CHECK_KERNEL();
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        if (mass_correction_call_count_ % 500 == 0) {
-            float mass_after = computeTotalMass();
-            printf("[VOF MASS CORRECTION C-flux] ΔM=%.3e (%.4f%%), W=%.3e, "
-                   "applied=%.3e (damp=%.2f, laser_x=%.1f, z_sub=%.1f)\n",
-                   delta_m, mass_error_fraction * 100.0f,
-                   W_dbl, mass_after - mass_current, mass_correction_damping_,
-                   mass_correction_laser_x_lu_, mass_correction_z_substrate_lu_);
-        }
-        mass_correction_call_count_++;
-        return;
-    }
-    // W ≈ 0 → fall through to uniform additive over interface cells
-
-    if (d_interface_partial_counts_size_ < gridSize) {
-        if (d_interface_partial_counts_) cudaFree(d_interface_partial_counts_);
-        CUDA_CHECK(cudaMalloc(&d_interface_partial_counts_, gridSize * sizeof(int)));
-        d_interface_partial_counts_size_ = gridSize;
-    }
-    countInterfaceCellsKernel<<<gridSize, blockSize>>>(
-        d_fill_level_, d_interface_partial_counts_, num_cells_);
-    CUDA_CHECK_KERNEL();
-
-    std::vector<int> h_counts(gridSize);
-    CUDA_CHECK(cudaMemcpy(h_counts.data(), d_interface_partial_counts_,
-                          gridSize * sizeof(int), cudaMemcpyDeviceToHost));
-    long long interface_count = 0;
-    for (int c : h_counts) interface_count += c;
-
-    if (interface_count > 0) {
-        dim3 mc_block(8, 8, 8);
-        dim3 mc_grid((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
-        applyMassCorrectionKernel<<<mc_grid, mc_block>>>(
-            d_fill_level_, damped_dm, nx_, ny_, nz_,
-            static_cast<int>(interface_count), 1.0f /* damping=1: full additive */);
-        CUDA_CHECK_KERNEL();
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        if (mass_correction_call_count_ % 500 == 0) {
-            float mass_after = computeTotalMass();
-            printf("[VOF MASS CORRECTION B1-fallback-uniform] ΔM=%.3e (%.4f%%), "
-                   "N_int=%lld, applied=%.3e\n",
-                   delta_m, mass_error_fraction * 100.0f,
-                   interface_count, mass_after - mass_current);
-        }
-    }
-    mass_correction_call_count_++;
-}
-
-// ============================================================================
-// Track-C public entry point — exercises gates with caller-supplied params.
-// Designed so unit tests can drive the Track-C kernels with synthetic fields
-// and arbitrary gate values, without going through advectFillLevel().
-// ============================================================================
-void VOFSolver::enforceMassConservationFlux(
-    float target_mass,
-    const float* d_vx, const float* d_vy, const float* d_vz,
-    float laser_x_lu, float trailing_margin_lu,
-    float z_substrate_lu, float z_offset_lu)
-{
-    if (d_vx == nullptr || d_vy == nullptr || d_vz == nullptr) return;
-
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    float mass_current = computeTotalMass();
-    float delta_m = target_mass - mass_current;
-    if (fabsf(delta_m) <= 1e-6f) return;
-
-    int blockSize = 256;
-    int gridSize  = (num_cells_ + blockSize - 1) / blockSize;
-
-    if (d_mass_partial_sums_size_ < gridSize) {
-        if (d_mass_partial_sums_) cudaFree(d_mass_partial_sums_);
-        CUDA_CHECK(cudaMalloc(&d_mass_partial_sums_, gridSize * sizeof(float)));
-        d_mass_partial_sums_size_ = gridSize;
-    }
-
-    float sign_dm  = (delta_m >= 0.0f) ? 1.0f : -1.0f;
-    int bc_x_i = static_cast<int>(bc_x_);
-    int bc_y_i = static_cast<int>(bc_y_);
-    int bc_z_i = static_cast<int>(bc_z_);
-
-    computeFluxWeightSumKernel<<<gridSize, blockSize, blockSize * sizeof(float)>>>(
-        d_fill_level_, d_vx, d_vy, d_vz, sign_dm, dx_,
-        nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i,
-        d_mass_partial_sums_, num_cells_,
-        laser_x_lu, trailing_margin_lu, z_substrate_lu, z_offset_lu);
-    CUDA_CHECK_KERNEL();
-
-    std::vector<float> h_partial(gridSize);
-    CUDA_CHECK(cudaMemcpy(h_partial.data(), d_mass_partial_sums_,
-                          gridSize * sizeof(float), cudaMemcpyDeviceToHost));
-    double W_dbl = 0.0, kc = 0.0;
-    for (float p : h_partial) {
-        double y = static_cast<double>(p) - kc;
-        double t = W_dbl + y;
-        kc = (t - W_dbl) - y;
-        W_dbl = t;
-    }
-
-    if (W_dbl > 1e-12) {
-        float delta_per_W = static_cast<float>(static_cast<double>(delta_m) / W_dbl);
-        applyFluxWeightedMassCorrectionKernel<<<gridSize, blockSize>>>(
-            d_fill_level_, d_vx, d_vy, d_vz, sign_dm, delta_per_W,
-            dx_, nx_, ny_, nz_, bc_x_i, bc_y_i, bc_z_i, num_cells_,
-            laser_x_lu, trailing_margin_lu, z_substrate_lu, z_offset_lu);
-        CUDA_CHECK_KERNEL();
-        CUDA_CHECK(cudaDeviceSynchronize());
-        return;
-    }
-
-    // Fallback: uniform additive over all interface cells (gates don't apply here —
-    // this is the safety net for the degenerate case W=0, not a physics path).
-    if (d_interface_partial_counts_size_ < gridSize) {
-        if (d_interface_partial_counts_) cudaFree(d_interface_partial_counts_);
-        CUDA_CHECK(cudaMalloc(&d_interface_partial_counts_, gridSize * sizeof(int)));
-        d_interface_partial_counts_size_ = gridSize;
-    }
-    countInterfaceCellsKernel<<<gridSize, blockSize>>>(
-        d_fill_level_, d_interface_partial_counts_, num_cells_);
-    CUDA_CHECK_KERNEL();
-
-    std::vector<int> h_counts(gridSize);
-    CUDA_CHECK(cudaMemcpy(h_counts.data(), d_interface_partial_counts_,
-                          gridSize * sizeof(int), cudaMemcpyDeviceToHost));
-    long long n_int = 0;
-    for (int c : h_counts) n_int += c;
-    if (n_int > 0) {
-        dim3 mc_block(8, 8, 8);
-        dim3 mc_grid((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
-        applyMassCorrectionKernel<<<mc_grid, mc_block>>>(
-            d_fill_level_, delta_m, nx_, ny_, nz_,
-            static_cast<int>(n_int), 1.0f);
-        CUDA_CHECK_KERNEL();
-        CUDA_CHECK(cudaDeviceSynchronize());
-    }
-}
-
-void VOFSolver::enforceGlobalMassConservation(float target_mass,
-                                              const float* d_vz) {
-    // Bug-2 fix (2026-04-26): guard against zero-division.
-    // target_mass == 0 happens if caller passes uninitialized state;
-    // current_mass == 0 happens if the entire domain is gas (e.g. before fill).
-    if (target_mass <= 0.0f) return;
-
+void VOFSolver::enforceGlobalMassConservation(float target_mass) {
+    // Compute current mass
     float current_mass = computeTotalMass();
-    if (current_mass <= 0.0f) return;
 
-    // Check if correction is needed (only if relative error > 0.1%)
-    float mass_error_abs = current_mass - target_mass;       // signed
-    float mass_error_rel = fabsf(mass_error_abs) / target_mass;
-    if (mass_error_rel < 0.001f) return;
+    // Check if correction is needed (only if error > 0.1%)
+    float mass_error = fabsf(current_mass - target_mass) / target_mass;
+    if (mass_error < 0.001f) {
+        return;  // Mass error is acceptable, no correction needed
+    }
 
+    // Compute scale factor
+    float scale_factor = target_mass / current_mass;
+
+    // Apply scaling to all fill levels
     int blockSize = 256;
-    int gridSize  = (num_cells_ + blockSize - 1) / blockSize;
+    int gridSize = (num_cells_ + blockSize - 1) / blockSize;
 
-    // ------------------------------------------------------------------------
-    // Backward-compat path: no velocity field → uniform multiplicative scaling.
-    // ------------------------------------------------------------------------
-    if (d_vz == nullptr) {
-        float scale_factor = target_mass / current_mass;
-        enforceGlobalMassConservationKernel<<<gridSize, blockSize>>>(
-            d_fill_level_, scale_factor, num_cells_);
-        CUDA_CHECK_KERNEL();
-        CUDA_CHECK(cudaDeviceSynchronize());
-        return;
-    }
-
-    // ------------------------------------------------------------------------
-    // A1 path: v_z-weighted additive correction.
-    //   delta_m = target - current  (positive when mass was lost)
-    //   sign_dm = sign(delta_m); use +v_z to refill, -v_z to drain
-    // ------------------------------------------------------------------------
-    float delta_m = target_mass - current_mass;             // signed
-    float sign_dm = (delta_m >= 0.0f) ? 1.0f : -1.0f;
-
-    // Pass 1 — reduce W = Σ max(sign_dm * v_z, 0) over interface cells.
-    if (d_mass_partial_sums_size_ < gridSize) {
-        if (d_mass_partial_sums_) cudaFree(d_mass_partial_sums_);
-        CUDA_CHECK(cudaMalloc(&d_mass_partial_sums_, gridSize * sizeof(float)));
-        d_mass_partial_sums_size_ = gridSize;
-    }
-
-    computeVzWeightSumKernel<<<gridSize, blockSize, blockSize * sizeof(float)>>>(
-        d_fill_level_, d_vz, sign_dm, d_mass_partial_sums_, num_cells_);
+    enforceGlobalMassConservationKernel<<<gridSize, blockSize>>>(
+        d_fill_level_, scale_factor, num_cells_);
     CUDA_CHECK_KERNEL();
 
-    std::vector<float> h_partial(gridSize);
-    CUDA_CHECK(cudaMemcpy(h_partial.data(), d_mass_partial_sums_,
-                          gridSize * sizeof(float), cudaMemcpyDeviceToHost));
-
-    // Kahan-compensated CPU finish (matches computeTotalMass style).
-    double W_dbl = 0.0, kc = 0.0;
-    for (float p : h_partial) {
-        double y = static_cast<double>(p) - kc;
-        double t = W_dbl + y;
-        kc = (t - W_dbl) - y;
-        W_dbl = t;
-    }
-
-    // ------------------------------------------------------------------------
-    // Fallback: if no cells with the right flow direction, redistribute mass
-    // uniformly over interface cells via the existing applyMassCorrectionKernel.
-    // This avoids the multiplicative scaling failure mode entirely.
-    // ------------------------------------------------------------------------
-    if (W_dbl < 1e-12) {
-        // Count interface cells via existing helper for uniform additive fallback.
-        int* d_counts = nullptr;
-        if (d_interface_partial_counts_size_ < gridSize) {
-            if (d_interface_partial_counts_) cudaFree(d_interface_partial_counts_);
-            CUDA_CHECK(cudaMalloc(&d_interface_partial_counts_, gridSize * sizeof(int)));
-            d_interface_partial_counts_size_ = gridSize;
-        }
-        d_counts = d_interface_partial_counts_;
-
-        countInterfaceCellsKernel<<<gridSize, blockSize>>>(
-            d_fill_level_, d_counts, num_cells_);
-        CUDA_CHECK_KERNEL();
-
-        std::vector<int> h_counts(gridSize);
-        CUDA_CHECK(cudaMemcpy(h_counts.data(), d_counts,
-                              gridSize * sizeof(int), cudaMemcpyDeviceToHost));
-        long long n_int = 0;
-        for (int c : h_counts) n_int += c;
-
-        if (n_int > 0) {
-            // Use 3D grid as the legacy applyMassCorrectionKernel expects.
-            dim3 mc_block(8, 8, 8);
-            dim3 mc_grid((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
-            applyMassCorrectionKernel<<<mc_grid, mc_block>>>(
-                d_fill_level_, delta_m, nx_, ny_, nz_,
-                static_cast<int>(n_int), 1.0f /* damping=1: full additive */);
-            CUDA_CHECK_KERNEL();
-        }
-        CUDA_CHECK(cudaDeviceSynchronize());
-        return;
-    }
-
-    // Pass 2 — apply weighted additive correction.
-    // delta_m carries its sign; w_i is non-negative, so the product follows
-    // sign(delta_m). delta_per_W = |delta_m| / W when sign_dm=+1, else
-    // -|delta_m|/W; equivalently delta_m / W (because |delta_m| = sign_dm * delta_m).
-    float delta_per_W = static_cast<float>(static_cast<double>(delta_m) / W_dbl);
-
-    applyVzWeightedMassCorrectionKernel<<<gridSize, blockSize>>>(
-        d_fill_level_, d_vz, sign_dm, delta_per_W, num_cells_);
-    CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
-}
-
-// ============================================================================
-// Track-B public entry — wraps the private 3-velocity helper with a
-// target-mass mode (sets mass_reference_ from target so a one-shot test can
-// drive the kernel without relying on first-call initialisation chain).
-// ============================================================================
-void VOFSolver::enforceGlobalMassConservation(float target_mass,
-                                              const float* d_vx,
-                                              const float* d_vy,
-                                              const float* d_vz)
-{
-    if (target_mass <= 0.0f) return;
-    if (d_vx == nullptr || d_vy == nullptr || d_vz == nullptr) {
-        // No velocities → fall back to legacy uniform-scale path.
-        enforceGlobalMassConservation(target_mass, /*d_vz=*/(const float*)nullptr);
-        return;
-    }
-
-    // Set mass_reference_ to target so the private helper sees correct delta_m.
-    // The helper uses delta_m = mass_reference_ - mass_current, so mass_reference_
-    // = target gives the standard "current → target" semantics.
-    // Damping is forced to 1.0 here (full correction in one shot) — the public
-    // API is for one-shot correction (called by tests / by external code that
-    // wants exact correction); the per-step inline correction in the advection
-    // loop uses the configurable damping (typically 0.5-0.7) for stability.
-    bool  was_enabled  = mass_correction_enabled_;
-    float saved_ref    = mass_reference_;
-    float saved_damp   = mass_correction_damping_;
-    mass_correction_enabled_ = true;
-    mass_reference_          = target_mass;
-    mass_correction_damping_ = 1.0f;
-
-    applyMassCorrectionInline(d_vx, d_vy, d_vz);
-
-    mass_correction_enabled_ = was_enabled;
-    mass_reference_          = saved_ref;
-    mass_correction_damping_ = saved_damp;
+    plicMarkDirty();
 }
 
 // ============================================================================
@@ -2626,16 +2072,16 @@ __global__ void applyEvaporationMassLossKernel(
     int idx = i + nx * (j + ny * k);
 
     float f = fill_level[idx];
-    float J_vol = J_evap[idx];   // R7: volumetric [kg/(m³·s)] (|∇f|-weighted)
+    float J = J_evap[idx];
 
     // Skip cells with no material or no evaporation
-    if (f <= 0.0f || J_vol <= 0.0f) {
+    if (f <= 0.0f || J <= 0.0f) {
         return;
     }
 
-    // R7 OPENFOAM-ALIGNED: J_evap carries volumetric mass-loss rate.
-    // df = -J_vol · dt / ρ   (no /dx; |∇f| already provided that factor).
-    float df = -J_vol * dt / rho;
+    // Compute fill level change
+    // df = -J_evap * dt / (rho * dx)
+    float df = -J * dt / (rho * dx);
 
     // ============================================================
     // Stability limiter: max 2% reduction per timestep
@@ -2666,6 +2112,92 @@ __global__ void applyEvaporationMassLossKernel(
     fill_level[idx] = fmaxf(0.0f, fminf(1.0f, f_new));
 }
 
+// ============================================================================
+// Phase 4a: PLIC-aware Hertz-Knudsen evaporation mass loss.
+// ============================================================================
+// Replaces df = -J · dt / (ρ · dx) (which assumes A_surface = dx²,
+// i.e. a horizontal interface) with
+//
+//     df = -J · δ_h(d) · dt / ρ
+//
+// where δ_h(d) is the cosine kernel surface delta evaluated at the signed
+// distance from the cell centre to the PLIC plane. Two improvements:
+//
+//   1. The delta is non-zero across a 3-cell band (h_smooth = 1.5 lu by
+//      default) — the same band the Phase 3b/c/d forces act on. This
+//      avoids the legacy kernel's "any f>0 cell with J>0 loses mass"
+//      which can leak mass from deep-bulk cells if J was accidentally
+//      non-zero there.
+//
+//   2. For an axis-aligned interface, δ_h(0) = 1/(h_smooth_lu · dx) and
+//      the 3-cell sum over d ∈ {-1, 0, +1} integrates to ≈ 1/dx, so the
+//      total cell-stack mass loss matches the legacy formula. For a
+//      tilted plane, δ_h still integrates to ~1/dx along the column
+//      (cosine kernel is partition-of-unity), giving the same total
+//      mass loss but distributed across cells along the plane normal —
+//      more physical than dumping it all in the f-positive cell.
+//
+// Bulk cells (f ≈ 0 or f ≈ 1) get zero deposit because plicCosineDelta
+// returns 0 for |d| ≥ h_smooth and the cell centre is far from the plane
+// in those cases.
+// ============================================================================
+__global__ void applyEvaporationMassLossPLICKernel(
+    float* fill_level,
+    const float* J_evap,
+    InterfaceGeometryView view,
+    float rho, float dx, float dt, float h_smooth_lu)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= view.nx || j >= view.ny || k >= view.nz) return;
+    int idx = i + view.nx * (j + view.ny * k);
+
+    float f = fill_level[idx];
+    float J = J_evap[idx];
+    if (J <= 0.0f) return;
+
+    // BKZ partition-of-unity surface delta = |∇f| (replaces cosine δ_h
+    // that broke when restricted to f∈(eps, 1-eps); see CSF kernel
+    // header for the full rationale). Computing |∇f| via central
+    // differences naturally restricts mass loss to the interface band
+    // (|∇f| = 0 in deep bulk and deep gas) AND covers the bulk-band
+    // cells just outside the f-gate, restoring the Σ|∇f|·dV ≈ A_surface
+    // invariant.
+    auto cd = [&](int axis) -> float {
+        int ip_, im_;
+        if (axis == 0) {
+            ip_ = (i + 1 < view.nx) ? (i + 1) + view.nx * (j + view.ny * k) : idx;
+            im_ = (i > 0)            ? (i - 1) + view.nx * (j + view.ny * k) : idx;
+        } else if (axis == 1) {
+            ip_ = (j + 1 < view.ny) ? i + view.nx * ((j + 1) + view.ny * k) : idx;
+            im_ = (j > 0)            ? i + view.nx * ((j - 1) + view.ny * k) : idx;
+        } else {
+            ip_ = (k + 1 < view.nz) ? i + view.nx * (j + view.ny * (k + 1)) : idx;
+            im_ = (k > 0)            ? i + view.nx * (j + view.ny * (k - 1)) : idx;
+        }
+        bool one_sided = (ip_ == idx || im_ == idx);
+        float scale = one_sided ? (1.0f / dx) : (0.5f / dx);
+        return (view.d_fill[ip_] - view.d_fill[im_]) * scale;
+    };
+    float gfx = cd(0), gfy = cd(1), gfz = cd(2);
+    float g_mag = sqrtf(gfx*gfx + gfy*gfy + gfz*gfz);
+    if (g_mag < 1e-10f) return;     // deep bulk: no surface here
+
+    (void)h_smooth_lu;              // accepted for API continuity, not used
+
+    // df = -J · |∇f| · dt / ρ. Note: |∇f| has units 1/m, so dt/ρ × 1/m
+    // = dimensionless × s × m³/kg × kg/(m²s) ÷ m = dimensionless. ✓
+    float df = -J * g_mag * dt / rho;
+
+    constexpr float MAX_DF_PER_STEP = 0.02f;
+    if (f > 0.0f && df < -MAX_DF_PER_STEP * f) df = -MAX_DF_PER_STEP * f;
+
+    float f_new = f + df;
+    if (f_new < 1e-9f) f_new = 0.0f;
+    fill_level[idx] = fmaxf(0.0f, fminf(1.0f, f_new));
+}
+
 void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float dt) {
     dim3 blockSize(8, 8, 8);
     dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
@@ -2677,10 +2209,11 @@ void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float d
     );
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
 
-    // Diagnostic: Print evaporation mass loss info periodically
-    static int evap_call_count = 0;
-    if (evap_call_count % 500 == 0 && evap_call_count < 5000) {
+    // Diagnostic: Print evaporation mass loss info periodically.
+    // Counter is a class member (H1-followup 2026-04-30) so per-instance state.
+    if (evap_call_count_ % 500 == 0 && evap_call_count_ < 5000) {
         // Sample J_evap to check if evaporation is active
         int top_layer_start = (nz_ - 1) * nx_ * ny_;
         int sample_size = std::min(nx_ * ny_, 10000);
@@ -2698,10 +2231,111 @@ void VOFSolver::applyEvaporationMassLoss(const float* J_evap, float rho, float d
 
         if (active_cells > 0) {
             printf("[VOF EVAP] Call %d: active_cells=%d, max_J=%.4e kg/(m^2*s), df_max=%.6f\n",
-                   evap_call_count, active_cells, max_J, max_J * dt / (rho * dx_));
+                   evap_call_count_, active_cells, max_J, max_J * dt / (rho * dx_));
         }
     }
-    evap_call_count++;
+    evap_call_count_++;
+}
+
+// ============================================================================
+// Phase 4a: PLIC-aware evaporation mass loss — host wrapper.
+// ============================================================================
+void VOFSolver::applyEvaporationMassLossPLIC(const float* J_evap, float rho,
+                                              float dt, float h_smooth_lu) {
+    recomputePLICReconstruction();   // ensure cache is fresh
+    auto view = getInterfaceGeometry();
+    if (!view.plic_ready) {
+        // No interface yet — fall back to the legacy kernel.
+        applyEvaporationMassLoss(J_evap, rho, dt);
+        return;
+    }
+
+    dim3 blockSize(8, 8, 8);
+    dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
+                  (ny_ + blockSize.y - 1) / blockSize.y,
+                  (nz_ + blockSize.z - 1) / blockSize.z);
+
+    applyEvaporationMassLossPLICKernel<<<gridSize, blockSize>>>(
+        d_fill_level_, J_evap, view, rho, dx_, dt, h_smooth_lu);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
+}
+
+// ============================================================================
+// Phase 4b: geometric PLIC area evaporation kernel.
+// ============================================================================
+// Uses the true area of the PLIC polygon inside the cell (A_PLIC = dV/dα)
+// rather than the cosine-kernel delta.  Mass flux per cell:
+//
+//   dm = J_evap × (A_PLIC × dx²) × dt        [kg]
+//   dV = dm / ρ                               [m³]
+//   df = -dV / dx³ = -J × A_PLIC × dt / (ρ × dx)
+//
+// For an axis-aligned interface A_PLIC = 1 → df = -J·dt/(ρ·dx), identical to
+// the legacy formula.  For a tilted plane A_PLIC > 1, giving the 1/cos(θ)
+// enhancement specified in roadmap §3 Phase 4.
+// ============================================================================
+__global__ void applyEvaporationMassLossPLICAreaKernel(
+    float* fill_level,
+    const float* J_evap,
+    InterfaceGeometryView view,
+    float rho, float dx, float dt)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= view.nx || j >= view.ny || k >= view.nz) return;
+    int idx = i + view.nx * (j + view.ny * k);
+
+    float f = fill_level[idx];
+    float J = J_evap[idx];
+    if (f <= 0.0f || J <= 0.0f) return;
+
+    // Restrict to interface cells only (same guard as the delta variant).
+    if (!plicIsInterfaceCell(idx, view, 1e-3f)) return;
+
+    float n_x = view.d_normal_x[idx];
+    float n_y = view.d_normal_y[idx];
+    float n_z = view.d_normal_z[idx];
+    if ((n_x*n_x + n_y*n_y + n_z*n_z) < 0.25f) return;
+
+    float alpha = view.d_alpha[idx];
+    float A_plic = plicCellSurfaceArea(n_x, n_y, n_z, alpha);
+    if (A_plic <= 0.0f) return;
+
+    // df = -J × A_PLIC × dt / (ρ × dx)
+    // (A_PLIC is dimensionless lattice-unit area; multiply by dx² / dx³ = 1/dx)
+    float df = -J * A_plic * dt / (rho * dx);
+
+    // 2% per-step stability limiter (same as legacy and delta variants).
+    constexpr float MAX_DF_PER_STEP = 0.02f;
+    if (df < -MAX_DF_PER_STEP * f) df = -MAX_DF_PER_STEP * f;
+
+    float f_new = f + df;
+    if (f_new < 1e-9f) f_new = 0.0f;
+    fill_level[idx] = fmaxf(0.0f, fminf(1.0f, f_new));
+}
+
+void VOFSolver::applyEvaporationMassLossPLICArea(const float* J_evap, float rho,
+                                                  float dt) {
+    recomputePLICReconstruction();
+    auto view = getInterfaceGeometry();
+    if (!view.plic_ready) {
+        applyEvaporationMassLoss(J_evap, rho, dt);
+        return;
+    }
+
+    dim3 blockSize(8, 8, 8);
+    dim3 gridSize((nx_ + blockSize.x - 1) / blockSize.x,
+                  (ny_ + blockSize.y - 1) / blockSize.y,
+                  (nz_ + blockSize.z - 1) / blockSize.z);
+
+    applyEvaporationMassLossPLICAreaKernel<<<gridSize, blockSize>>>(
+        d_fill_level_, J_evap, view, rho, dx_, dt);
+    CUDA_CHECK_KERNEL();
+    CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
 }
 
 // ============================================================================
@@ -2834,6 +2468,7 @@ void VOFSolver::applySolidificationShrinkage(const float* dfl_dt, float beta, fl
     CUDA_CHECK_KERNEL();
 
     CUDA_CHECK(cudaDeviceSynchronize());
+    plicMarkDirty();
 }
 
 // ============================================================================
@@ -3039,11 +2674,30 @@ __global__ void countInterfaceCellsKernel(
 // Caller must apply symmetry if alpha > S/2.
 __device__ __forceinline__ float plicVolumeFirstHalf(float alpha,
                                                       float m1, float m2, float m3) {
-    // 2D degenerate case (m3 ≈ 0, e.g. quasi-2D or thin-slab domain)
+    // Precondition: m1 >= m2 >= m3 >= 0. Caller (sort step in plicVolumeInBox /
+    // computePlicAlphaKernel) guarantees ordering. Inputs are absolute values.
+    //
+    // Scardovelli & Zaleski 2000, eq. 28 inclusion-exclusion formula valid for
+    // alpha in [0, S/2]; symmetry V(α) = 1 - V(S-α) handles the upper half.
+
+    // 2D degenerate case (m3 ≈ 0, e.g. quasi-2D or thin-slab domain).
+    // The 3D denominator 6*m1*m2*m3 → 0 when m3 vanishes; switch to a 2D law.
     if (m3 < 1e-8f) {
         float S2 = m1 + m2;
         if (alpha >= S2) return 1.0f;
         if (alpha <= 0.0f) return 0.0f;
+
+        // 1D degenerate case within 2D fallback (m2 ≈ 0 too, e.g. slab normal
+        // is axis-aligned). Without this guard, the 2*m1*m2 denominator blows
+        // up to NaN. m1 is the largest component; if m2 vanishes, m1 must be
+        // bounded away from zero (otherwise the original normal had |n|≈0 and
+        // the upstream Youngs kernel would have set it to (1,0,0) fallback).
+        // H2 fix: division-by-zero guard.
+        if (m2 < 1e-8f) {
+            // 1D slab: V = alpha / m1, clamped.
+            return fmaxf(0.0f, fminf(1.0f, alpha / fmaxf(m1, 1e-30f)));
+        }
+
         float vol2d;
         if (alpha <= m2) {
             vol2d = (alpha * alpha) / (2.0f * m1 * m2);
@@ -3246,6 +2900,305 @@ __global__ void computePlicNormalsKernel(
         ny_out[idx] = -gy / mag;
         nz_out[idx] = -gz / mag;
     }
+}
+
+// ============================================================================
+// Kernel 1b: Height-Function PLIC normal (Cummins-Francois-Kothe 2005)
+// ============================================================================
+// Algorithm:
+//   1. Compute Parker-Youngs gradient (gx, gy, gz) — used only to pick the
+//      dominant axis. The dominant-axis choice is robust under O(h/R) noise
+//      because (h/R) << 1 in resolved interfaces.
+//   2. Along the dominant axis (say x), build 9 column-height values
+//        h(j', k') = Σ_{di = -W..+W} f(i + di, j', k')
+//      for (j', k') in the 3×3 lateral stencil around (j, k). With W = 3 the
+//      column spans 7 cells and reliably brackets the interface for radii
+//      R ≳ 5 cells.
+//   3. Central differences in the lateral plane:
+//        ∂h/∂y ≈ ½ (h(j+1,k) − h(j−1,k))
+//        ∂h/∂z ≈ ½ (h(j,k+1) − h(j,k−1))
+//   4. Convert to interface normal. With sign sx = -sign(gx) so that
+//      n̂ points liquid → gas, the unnormalized normal is
+//        n_unscaled = (sx, -sx · ∂h/∂y, -sx · ∂h/∂z)
+//      then normalize to unit length.
+//   5. Validity check: the central-column sum h(j, k) must lie strictly
+//      between {0.5, 2W+0.5} (i.e. the column has crossed the interface
+//      and is not entirely empty / full). When the check fails the cell
+//      falls back to the Youngs normal — this happens at domain corners
+//      and at sub-cell radii of curvature.
+//
+// Accuracy: angular error scales as (h/R)² on smooth curved interfaces vs
+// O(h/R) for Youngs. Required to satisfy the roadmap §3 Phase 1 spec
+// (ε < 1e-3 on a sphere of analytic radius).
+//
+// Cost: ~63 fill reads per cell (9 columns × 7 cells) plus the Youngs
+// 27-point evaluation = ~90 reads. Roughly 3× Youngs cost; only used for
+// PLIC reconstruction, not for every advection sub-sweep unless explicitly
+// requested via setNormalReconstructionMethod(HEIGHT_FUNCTION).
+//
+// Reference: Cummins, Francois & Kothe (2005). Estimating curvature from
+// volume fractions. Computers & Structures 83, 425-434.
+// ============================================================================
+__global__ void computePlicNormalsHFKernel(
+    const float* __restrict__ fill,
+    float* __restrict__ nx_out,
+    float* __restrict__ ny_out,
+    float* __restrict__ nz_out,
+    int nx, int ny, int nz,
+    int bc_x, int bc_y, int bc_z)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+
+    int idx = i + nx * (j + ny * k);
+    float f = fill[idx];
+
+    // Bulk cells: no plane needed.
+    if (f <= 0.0f || f >= 1.0f) {
+        nx_out[idx] = 0.0f;
+        ny_out[idx] = 0.0f;
+        nz_out[idx] = 0.0f;
+        return;
+    }
+
+    // BC-aware index helper. ii/jj/kk may be OOB; clamp or wrap.
+#define IDX_BC(ii, jj, kk) \
+    ( ((bc_x == 0) ? (((ii) % nx + nx) % nx) : max(0, min(nx-1, (ii)))) \
+      + nx * ( \
+            ((bc_y == 0) ? (((jj) % ny + ny) % ny) : max(0, min(ny-1, (jj)))) \
+            + ny * ((bc_z == 0) ? (((kk) % nz + nz) % nz) : max(0, min(nz-1, (kk)))) \
+        ) )
+#define FILL_BC(ii, jj, kk) fill[IDX_BC(ii, jj, kk)]
+
+    // ------------------------------------------------------------------------
+    // Step 1: Parker-Youngs gradient → dominant axis selection
+    // ------------------------------------------------------------------------
+    int im = (bc_x == 0) ? ((i > 0)    ? i-1 : nx-1) : max(0,    i-1);
+    int ip = (bc_x == 0) ? ((i < nx-1) ? i+1 : 0)    : min(nx-1, i+1);
+    int jm = (bc_y == 0) ? ((j > 0)    ? j-1 : ny-1) : max(0,    j-1);
+    int jp = (bc_y == 0) ? ((j < ny-1) ? j+1 : 0)    : min(ny-1, j+1);
+    int km = (bc_z == 0) ? ((k > 0)    ? k-1 : nz-1) : max(0,    k-1);
+    int kp = (bc_z == 0) ? ((k < nz-1) ? k+1 : 0)    : min(nz-1, k+1);
+
+    auto FY = [&](int ii, int jj, int kk) -> float {
+        return FILL_BC(ii, jj, kk);
+    };
+
+    float gx = 0.0f;
+    gx += 2.0f * (FY(ip,j,k)  - FY(im,j,k));
+    gx += 1.0f * (FY(ip,jp,k) - FY(im,jp,k));
+    gx += 1.0f * (FY(ip,jm,k) - FY(im,jm,k));
+    gx += 1.0f * (FY(ip,j,kp) - FY(im,j,kp));
+    gx += 1.0f * (FY(ip,j,km) - FY(im,j,km));
+    gx += 0.5f * (FY(ip,jp,kp) - FY(im,jp,kp));
+    gx += 0.5f * (FY(ip,jp,km) - FY(im,jp,km));
+    gx += 0.5f * (FY(ip,jm,kp) - FY(im,jm,kp));
+    gx += 0.5f * (FY(ip,jm,km) - FY(im,jm,km));
+
+    float gy = 0.0f;
+    gy += 2.0f * (FY(i,jp,k)  - FY(i,jm,k));
+    gy += 1.0f * (FY(ip,jp,k) - FY(ip,jm,k));
+    gy += 1.0f * (FY(im,jp,k) - FY(im,jm,k));
+    gy += 1.0f * (FY(i,jp,kp) - FY(i,jm,kp));
+    gy += 1.0f * (FY(i,jp,km) - FY(i,jm,km));
+    gy += 0.5f * (FY(ip,jp,kp) - FY(ip,jm,kp));
+    gy += 0.5f * (FY(ip,jp,km) - FY(ip,jm,km));
+    gy += 0.5f * (FY(im,jp,kp) - FY(im,jm,kp));
+    gy += 0.5f * (FY(im,jp,km) - FY(im,jm,km));
+
+    float gz = 0.0f;
+    gz += 2.0f * (FY(i,j,kp)  - FY(i,j,km));
+    gz += 1.0f * (FY(ip,j,kp) - FY(ip,j,km));
+    gz += 1.0f * (FY(im,j,kp) - FY(im,j,km));
+    gz += 1.0f * (FY(i,jp,kp) - FY(i,jp,km));
+    gz += 1.0f * (FY(i,jm,kp) - FY(i,jm,km));
+    gz += 0.5f * (FY(ip,jp,kp) - FY(ip,jp,km));
+    gz += 0.5f * (FY(ip,jm,kp) - FY(ip,jm,km));
+    gz += 0.5f * (FY(im,jp,kp) - FY(im,jp,km));
+    gz += 0.5f * (FY(im,jm,kp) - FY(im,jm,km));
+
+    float gmag = sqrtf(gx*gx + gy*gy + gz*gz);
+    if (gmag < 1e-8f) {
+        nx_out[idx] = 1.0f;
+        ny_out[idx] = 0.0f;
+        nz_out[idx] = 0.0f;
+        return;
+    }
+
+    // Pre-compute Youngs normal as fallback target.
+    float ny_x_y = -gx / gmag;
+    float ny_y_y = -gy / gmag;
+    float ny_z_y = -gz / gmag;
+
+    float ax = fabsf(gx), ay = fabsf(gy), az = fabsf(gz);
+
+    // ------------------------------------------------------------------------
+    // Step 2-4: Column-height normal along dominant axis
+    // ------------------------------------------------------------------------
+    // Column half-width: 4 cells → 9-point column. Captures interface for
+    // R ≳ 6 cells before the column saturates (h ≈ 0 or h ≈ 9), and reduces
+    // the HF→Youngs fallback rate near sphere "polar caps" where the column
+    // direction is nearly tangent to the surface — those cells dominate the
+    // mean-angular-error budget.
+    constexpr int W = 4;
+    constexpr int LEN = 2 * W + 1;          // 9
+
+    float h[3][3];
+    bool  hf_ok = false;
+    float n_x = ny_x_y, n_y = ny_y_y, n_z = ny_z_y;  // Youngs fallback
+
+    auto buildColumnX = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        #pragma unroll
+        for (int di = -W; di <= W; ++di) s += FILL_BC(ic + di, jc, kc);
+        return s;
+    };
+    auto buildColumnY = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        #pragma unroll
+        for (int dj = -W; dj <= W; ++dj) s += FILL_BC(ic, jc + dj, kc);
+        return s;
+    };
+    auto buildColumnZ = [&](int ic, int jc, int kc) -> float {
+        float s = 0.0f;
+        #pragma unroll
+        for (int dk = -W; dk <= W; ++dk) s += FILL_BC(ic, jc, kc + dk);
+        return s;
+    };
+
+    // Sign convention derivation (for x-dominant case; y/z analogous by index
+    // permutation):
+    //
+    //   Let H(y,z) = interface position along x. Define s_x = -sign(gx) so that
+    //   n̂ liquid→gas has x-component = s_x (if gx > 0, f increases with x →
+    //   liquid at +x → n̂ points to -x, so s_x = -1).
+    //
+    //   The level-set function is F = (x - H) for gx > 0 (liquid above F=0)
+    //   or F = (H - x) for gx < 0 (liquid below F=0). In both cases the
+    //   liquid→gas normal is parallel to (s_x, ∂H/∂y, ∂H/∂z) up to a global
+    //   sign that the s_x already absorbed. Hence
+    //
+    //       n̂ ∝ (s_x, ∂H/∂y, ∂H/∂z)        before normalisation.
+    //
+    //   Column heights and H relate by sign:
+    //     gx > 0: h = const - H  ⟹  ∂h/∂y = -∂H/∂y  ⟹  ∂H/∂y = -hy
+    //     gx < 0: h = H - const  ⟹  ∂h/∂y = +∂H/∂y  ⟹  ∂H/∂y = +hy
+    //   Combined: ∂H/∂y = -s_x · hy. Substituting:
+    //
+    //       n̂ ∝ (s_x, -s_x · hy, -s_x · hz).
+    //
+    //   The global factor s_x is absorbed by normalisation, so the
+    //   numerically-stable form (avoids the spurious sign flip the earlier
+    //   draft had) is simply:
+    //
+    //       n_x = s_x,    n_y = -hy,    n_z = -hz
+    //
+    //   for x-dominant. y-dominant: n = (-hx, s_y, -hz). z-dominant: n =
+    //   (-hx, -hy, s_z).
+
+    // Parker-Youngs weighted central difference on the 3×3 column-height
+    // stencil: averaging three parallel central differences (center weight 2,
+    // edge weight 1, sum 4) reduces outliers near the dominant-axis switch
+    // line (45° orientations where two of |gx|, |gy|, |gz| are nearly equal).
+    //   weightedCD_first  = (1/8) [ 2(h[2][1]-h[0][1]) + (h[2][0]-h[0][0]) + (h[2][2]-h[0][2]) ]
+    //   weightedCD_second = (1/8) [ 2(h[1][2]-h[1][0]) + (h[0][2]-h[0][0]) + (h[2][2]-h[2][0]) ]
+    // Inlined below to avoid CUDA lambda-with-array-parameter issues.
+
+    if (ax >= ay && ax >= az) {
+        // x-dominant: column along x, gradient in (y, z).
+        for (int dj = -1; dj <= 1; ++dj)
+            for (int dk = -1; dk <= 1; ++dk)
+                h[dj+1][dk+1] = buildColumnX(i, j + dj, k + dk);
+
+        const float low = 0.5f, high = static_cast<float>(LEN) - 0.5f;
+        if (h[1][1] > low && h[1][1] < high) {
+            float hy = (1.0f / 8.0f) * (
+                  2.0f * (h[2][1] - h[0][1])
+                +        (h[2][0] - h[0][0])
+                +        (h[2][2] - h[0][2]));
+            float hz = (1.0f / 8.0f) * (
+                  2.0f * (h[1][2] - h[1][0])
+                +        (h[0][2] - h[0][0])
+                +        (h[2][2] - h[2][0]));
+            float sx = (gx > 0.0f) ? -1.0f : 1.0f;
+            float n_x_raw = sx;
+            float n_y_raw = -hy;
+            float n_z_raw = -hz;
+            float m = sqrtf(n_x_raw*n_x_raw + n_y_raw*n_y_raw + n_z_raw*n_z_raw);
+            if (m > 1e-8f) {
+                n_x = n_x_raw / m;
+                n_y = n_y_raw / m;
+                n_z = n_z_raw / m;
+                hf_ok = true;
+            }
+        }
+    } else if (ay >= ax && ay >= az) {
+        // y-dominant: column along y, gradient in (x, z).
+        for (int di = -1; di <= 1; ++di)
+            for (int dk = -1; dk <= 1; ++dk)
+                h[di+1][dk+1] = buildColumnY(i + di, j, k + dk);
+
+        const float low = 0.5f, high = static_cast<float>(LEN) - 0.5f;
+        if (h[1][1] > low && h[1][1] < high) {
+            float hx = (1.0f / 8.0f) * (
+                  2.0f * (h[2][1] - h[0][1])
+                +        (h[2][0] - h[0][0])
+                +        (h[2][2] - h[0][2]));
+            float hz = (1.0f / 8.0f) * (
+                  2.0f * (h[1][2] - h[1][0])
+                +        (h[0][2] - h[0][0])
+                +        (h[2][2] - h[2][0]));
+            float sy = (gy > 0.0f) ? -1.0f : 1.0f;
+            float n_x_raw = -hx;
+            float n_y_raw = sy;
+            float n_z_raw = -hz;
+            float m = sqrtf(n_x_raw*n_x_raw + n_y_raw*n_y_raw + n_z_raw*n_z_raw);
+            if (m > 1e-8f) {
+                n_x = n_x_raw / m;
+                n_y = n_y_raw / m;
+                n_z = n_z_raw / m;
+                hf_ok = true;
+            }
+        }
+    } else {
+        // z-dominant: column along z, gradient in (x, y).
+        for (int di = -1; di <= 1; ++di)
+            for (int dj = -1; dj <= 1; ++dj)
+                h[di+1][dj+1] = buildColumnZ(i + di, j + dj, k);
+
+        const float low = 0.5f, high = static_cast<float>(LEN) - 0.5f;
+        if (h[1][1] > low && h[1][1] < high) {
+            float hx = (1.0f / 8.0f) * (
+                  2.0f * (h[2][1] - h[0][1])
+                +        (h[2][0] - h[0][0])
+                +        (h[2][2] - h[0][2]));
+            float hy = (1.0f / 8.0f) * (
+                  2.0f * (h[1][2] - h[1][0])
+                +        (h[0][2] - h[0][0])
+                +        (h[2][2] - h[2][0]));
+            float sz = (gz > 0.0f) ? -1.0f : 1.0f;
+            float n_x_raw = -hx;
+            float n_y_raw = -hy;
+            float n_z_raw = sz;
+            float m = sqrtf(n_x_raw*n_x_raw + n_y_raw*n_y_raw + n_z_raw*n_z_raw);
+            if (m > 1e-8f) {
+                n_x = n_x_raw / m;
+                n_y = n_y_raw / m;
+                n_z = n_z_raw / m;
+                hf_ok = true;
+            }
+        }
+    }
+
+    // hf_ok=false silently uses Youngs values from above — no separate write.
+    nx_out[idx] = n_x;
+    ny_out[idx] = n_y;
+    nz_out[idx] = n_z;
+
+#undef FILL_BC
+#undef IDX_BC
 }
 
 // ============================================================================
@@ -3655,27 +3608,7 @@ __global__ void updateVofFromFluxKernel(
     // (∇·u ~ O(Ma²)) cause systematic mass loss of ~3% over 4000 steps.
     // The δ term compensates for the cell "stretching" due to divergence,
     // keeping the volume fraction consistent with the actual fluid volume.
-    //
-    // WALL FIX: At wall-adjacent cells, the wall face velocity is forced to 0
-    // by interpolateFaceVelocityKernel, but the interior face retains the
-    // physical velocity. This creates artificial divergence (δ ≠ 0) that acts
-    // as a mass sink/source. Fix: mirror the interior face velocity to the
-    // wall face for the divergence computation only. The flux at the wall
-    // face is already correctly zero, so this only affects the δ term.
-    float u_div_plus = u_plus, u_div_minus = u_minus;
-    if (bc_dir != 0) {
-        if (dir == 0) {
-            if (i == 0)      u_div_minus = u_div_plus;   // x_min wall
-            if (i == nx - 1) u_div_plus  = u_div_minus;  // x_max wall
-        } else if (dir == 1) {
-            if (j == 0)      u_div_minus = u_div_plus;   // y_min wall
-            if (j == ny - 1) u_div_plus  = u_div_minus;  // y_max wall
-        } else {
-            if (k == 0)      u_div_minus = u_div_plus;   // z_min wall
-            if (k == nz - 1) u_div_plus  = u_div_minus;  // z_max wall
-        }
-    }
-    float delta = dt * (u_div_plus - u_div_minus) / dx;
+    float delta = dt * (u_plus - u_minus) / dx;
     float f_new = f * (1.0f + delta) - (flux_plus - flux_minus);
 
     fill_new[idx] = f_new;
@@ -3763,13 +3696,28 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
 
     const float* vel_ptrs[3] = { d_ux, d_uy, d_uz };
 
-    // Strang splitting: alternate XYZ / YXZ order each step
+    // 3-way symmetric Strang rotation (H3 fix).
+    // The previous XY-swap-only version (XYZ ↔ YXZ) always put Z last, leaving
+    // a persistent z-bias that grew with the number of timesteps. Cycling through
+    // all 6 permutations of {x,y,z} ensures every axis gets equal "first" and
+    // "last" exposure on the timescale of 6 calls, restoring the symmetry that
+    // a true Strang split is supposed to provide.
+    //
+    //   phase 0: X Y Z   phase 3: Z Y X
+    //   phase 1: Y Z X   phase 4: X Z Y
+    //   phase 2: Z X Y   phase 5: Y X Z
+    static const int kStrangPermutations[6][3] = {
+        {0, 1, 2},   // XYZ
+        {1, 2, 0},   // YZX
+        {2, 0, 1},   // ZXY
+        {2, 1, 0},   // ZYX  (reverse of phase 0)
+        {0, 2, 1},   // XZY
+        {1, 0, 2},   // YXZ  (reverse of phase 2)
+    };
     int sweeps[3];
-    if (plic_strang_x_first_) {
-        sweeps[0] = 0; sweeps[1] = 1; sweeps[2] = 2;
-    } else {
-        sweeps[0] = 1; sweeps[1] = 0; sweeps[2] = 2;
-    }
+    sweeps[0] = kStrangPermutations[plic_strang_phase_][0];
+    sweeps[1] = kStrangPermutations[plic_strang_phase_][1];
+    sweeps[2] = kStrangPermutations[plic_strang_phase_][2];
 
     // Work on d_fill_level_ / d_fill_level_tmp_ ping-pong
     float* src = d_fill_level_;
@@ -3789,11 +3737,18 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         dim3 face_block(256);
         dim3 face_grid((face_N + 255) / 256);
 
-        // Step 1: Compute Youngs normals from current fill
-        computePlicNormalsKernel<<<grd3, blk3>>>(
-            src,
-            plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
-            nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+        // Step 1: Compute interface normals from current fill (Youngs or HF).
+        if (normal_method_ == NormalReconstructionMethod::HEIGHT_FUNCTION) {
+            computePlicNormalsHFKernel<<<grd3, blk3>>>(
+                src,
+                plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+                nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+        } else {
+            computePlicNormalsKernel<<<grd3, blk3>>>(
+                src,
+                plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+                nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+        }
         CUDA_CHECK_KERNEL();
 
         // Step 2: Invert alpha from volume fraction + normal
@@ -3842,9 +3797,9 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    // Diagnostic: measure mass before and after clamp to quantify loss
-    static int plic_call = 0;
-    if (plic_call % 500 == 0) {
+    // Diagnostic: measure mass before and after clamp to quantify loss.
+    // Counter promoted from function-level static to class member (H1 fix).
+    if (plic_call_count_ % 500 == 0) {
         float mass_before = computeTotalMass();
         plicFinalClampKernel<<<(N + 255) / 256, 256>>>(d_fill_level_, N);
         CUDA_CHECK_KERNEL();
@@ -3853,14 +3808,14 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         float clamp_loss = mass_before - mass_after;
         printf("[PLIC CLAMP] Call %d: mass_before=%.1f, mass_after=%.1f, "
                "clamp_deleted=%.4f (%.4f%%)\n",
-               plic_call, mass_before, mass_after,
+               plic_call_count_, mass_before, mass_after,
                clamp_loss, clamp_loss / mass_before * 100.0f);
     } else {
         plicFinalClampKernel<<<(N + 255) / 256, 256>>>(d_fill_level_, N);
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
     }
-    plic_call++;
+    plic_call_count_++;
 
     // WALL BOUNDARY SEALING: zero-gradient on fill_level at WALL faces.
     // Seals Y-walls and Z-min to prevent side fragmentation.
@@ -3878,15 +3833,130 @@ void VOFSolver::advectFillLevelPLIC(const float* d_ux, const float* d_uy,
         }
     }
 
-    // Mass-correction (Track-A v_z OR Track-B inline-∇f) shared with TVD path.
-    if (mass_correction_use_flux_weight_) {
-        applyMassCorrectionInline(d_ux, d_uy, d_uz);   // Track-B
-    } else {
-        applyMassCorrectionInline(d_uz);               // Track-A
+    // Legacy mass correction (disabled by default):
+    if (mass_correction_enabled_) {
+        float mass_current = computeTotalMass();
+        if (mass_reference_ < 0.0f) mass_reference_ = mass_current;
+        float mass_error = mass_reference_ - mass_current;
+
+        if (fabsf(mass_error) > 1e-6f) {
+            int blockSize_1d = 256;
+            int gridSize_1d = (N + blockSize_1d - 1) / blockSize_1d;
+
+            int* d_partial_counts;
+            CUDA_CHECK(cudaMalloc(&d_partial_counts, gridSize_1d * sizeof(int)));
+
+            countInterfaceCellsKernel<<<gridSize_1d, blockSize_1d>>>(
+                d_fill_level_, d_partial_counts, N);
+            CUDA_CHECK_KERNEL();
+
+            std::vector<int> h_partial_counts(gridSize_1d);
+            CUDA_CHECK(cudaMemcpy(h_partial_counts.data(), d_partial_counts,
+                      gridSize_1d * sizeof(int), cudaMemcpyDeviceToHost));
+            int interface_count = 0;
+            for (int i = 0; i < gridSize_1d; ++i)
+                interface_count += h_partial_counts[i];
+
+            CUDA_CHECK(cudaFree(d_partial_counts));
+
+            if (interface_count > 0) {
+                // FIX: applyMassCorrectionKernel uses 3D indexing (i,j,k)
+                dim3 mc_block(8, 8, 8);
+                dim3 mc_grid((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
+                applyMassCorrectionKernel<<<mc_grid, mc_block>>>(
+                    d_fill_level_, mass_error, nx_, ny_, nz_,
+                    interface_count, mass_correction_damping_);
+                CUDA_CHECK_KERNEL();
+                CUDA_CHECK(cudaDeviceSynchronize());
+            }
+        }
     }
 
-    // Alternate Strang sweep order for next call
-    plic_strang_x_first_ = !plic_strang_x_first_;
+    // Advance to the next 6-cycle Strang permutation.
+    plic_strang_phase_ = (plic_strang_phase_ + 1) % 6;
+
+    // Final reconstruction pass on the post-advection fill so that downstream
+    // physics modules can read a (n̂, α) cache consistent with d_fill_level_.
+    // The reconstructions inside the Strang loop were against intermediate
+    // sweep states — they are stale by the time control returns here.
+    plicMarkDirty();
+    recomputePLICReconstruction();
+}
+
+// ============================================================================
+// VOFSolver::recomputePLICReconstruction()  (Phase 1 PLIC upgrade)
+// ============================================================================
+// Runs the Youngs normal kernel and the alpha-inversion kernel on the current
+// d_fill_level_ field, populating plic_nx_/ny_/nz_/alpha_. No-op if the cache
+// is already consistent (plic_dirty_ == false).
+//
+// Idempotent and safe to call multiple times. Lazy-allocates PLIC buffers on
+// first invocation. Synchronous: returns only after both kernels complete.
+// ============================================================================
+void VOFSolver::recomputePLICReconstruction() {
+    if (!plic_dirty_) return;
+
+    plicAllocateIfNeeded();
+
+    int N = num_cells_;
+    int bcs[3] = { static_cast<int>(bc_x_),
+                   static_cast<int>(bc_y_),
+                   static_cast<int>(bc_z_) };
+
+    dim3 blk3(8, 8, 8);
+    dim3 grd3((nx_ + 7) / 8, (ny_ + 7) / 8, (nz_ + 7) / 8);
+
+    if (normal_method_ == NormalReconstructionMethod::HEIGHT_FUNCTION) {
+        computePlicNormalsHFKernel<<<grd3, blk3>>>(
+            d_fill_level_,
+            plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+            nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+    } else {
+        computePlicNormalsKernel<<<grd3, blk3>>>(
+            d_fill_level_,
+            plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+            nx_, ny_, nz_, bcs[0], bcs[1], bcs[2]);
+    }
+    CUDA_CHECK_KERNEL();
+
+    dim3 cell_block(256);
+    dim3 cell_grid((N + 255) / 256);
+    computePlicAlphaKernel<<<cell_grid, cell_block>>>(
+        d_fill_level_,
+        plic_nx_.get(), plic_ny_.get(), plic_nz_.get(),
+        plic_alpha_.get(),
+        N);
+    CUDA_CHECK_KERNEL();
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    plic_dirty_ = false;
+}
+
+// ============================================================================
+// VOFSolver::getInterfaceGeometry()  (Phase 1 PLIC upgrade)
+// ============================================================================
+// Returns a read-only InterfaceGeometryView pointing at the per-cell PLIC
+// arrays. `plic_ready` is true iff the cache is consistent with d_fill_level_.
+//
+// When `plic_ready == false`, downstream callers MUST NOT dereference
+// d_alpha / d_normal_*. The arrays may be uninitialized (fresh VOFSolver,
+// no advection yet) or stale (fill modified after last reconstruction).
+// ============================================================================
+InterfaceGeometryView VOFSolver::getInterfaceGeometry() const {
+    InterfaceGeometryView v;
+    v.d_normal_x = plic_nx_.get();
+    v.d_normal_y = plic_ny_.get();
+    v.d_normal_z = plic_nz_.get();
+    v.d_alpha    = plic_alpha_.get();
+    v.d_fill     = d_fill_level_;
+    v.plic_ready = !plic_dirty_;
+    v.nx = nx_;
+    v.ny = ny_;
+    v.nz = nz_;
+    v.n  = num_cells_;
+    v.dx = dx_;
+    return v;
 }
 
 } // namespace physics

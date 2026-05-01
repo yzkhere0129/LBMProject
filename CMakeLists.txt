@@ -170,77 +170,22 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(sim_line_scan_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_line_scan_316L lbm_physics lbm_io CUDA::cudart)
 
-    # Night-protocol Phase-1 (mushy 200K→23K + spot 50→39 μm)
-    add_executable(sim_linescan_phase1 apps/sim_linescan_phase1.cu)
-    set_target_properties(sim_linescan_phase1 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_phase1 lbm_physics lbm_io CUDA::cudart)
-
-    # Track-A dry run: Phase-1 with dt/4 to test LPBF coupling at τ=0.54
-    add_executable(dry_run_quarter_dt apps/dry_run_quarter_dt.cu)
-    set_target_properties(dry_run_quarter_dt PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(dry_run_quarter_dt lbm_physics lbm_io CUDA::cudart)
-
-    # Night-protocol Phase-2 (Phase-1 + VOF mass correction)
-    add_executable(sim_linescan_phase2 apps/sim_linescan_phase2.cu)
-    set_target_properties(sim_linescan_phase2 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_phase2 lbm_physics lbm_io CUDA::cudart)
-
-    # Mini Phase-2 — fast Track-C iteration (≤2h on RTX 3050)
-    add_executable(sim_linescan_phase2_mini apps/sim_linescan_phase2_mini.cu)
-    set_target_properties(sim_linescan_phase2_mini PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_phase2_mini lbm_physics lbm_io CUDA::cudart)
-
-    # Night-protocol Phase-3 (Phase-1 + lower viscosity τ→0.55)
-    add_executable(sim_linescan_phase3 apps/sim_linescan_phase3.cu)
-    set_target_properties(sim_linescan_phase3 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_phase3 lbm_physics lbm_io CUDA::cudart)
-
-    # Dawn-3: dσ/dT sensitivity
-    add_executable(sim_linescan_dawn3 apps/sim_linescan_dawn3.cu)
-    set_target_properties(sim_linescan_dawn3 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_dawn3 lbm_physics lbm_io CUDA::cudart)
-
-    # Night-protocol Phase-4 final 2 ms validation
-    add_executable(sim_linescan_phase4 apps/sim_linescan_phase4.cu)
-    set_target_properties(sim_linescan_phase4 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_phase4 lbm_physics lbm_io CUDA::cudart)
-
-    # R8 Stage 1: ny=200 + nz=150 + bulk_boiling_cooling enabled, t=2000μs full
-    add_executable(sim_round8_stage1 apps/sim_round8_stage1.cu)
-    set_target_properties(sim_round8_stage1 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_round8_stage1 lbm_physics lbm_io CUDA::cudart)
-
-    # R8 Stage 2: Stage 1 + Regularized BGK at τ=0.5456 (physical 316L viscosity)
-    add_executable(sim_round8_stage2 apps/sim_round8_stage2.cu)
-    set_target_properties(sim_round8_stage2 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_round8_stage2 lbm_physics lbm_io CUDA::cudart)
-
-    # Phase-4-corrected: same Track-C config but ny=110 (vs Phase-4's 75) to
-    # eliminate y-wall ridge artifact. Memory budget: 1100×110×75 = 9.075M cells
-    # × 440 B = 3.99 GB (just under 4GB cap). interface_z=60 (substrate top),
-    # pool 100μm + 30μm gas above + 20μm below.
-    add_executable(sim_linescan_phase4_corrected apps/sim_linescan_phase4_corrected.cu)
-    set_target_properties(sim_linescan_phase4_corrected PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_phase4_corrected lbm_physics lbm_io CUDA::cudart)
-
-    # Phase-5 integration: Track-C iter-4 + emissivity 0.55 + ray bounces=5
-    add_executable(sim_linescan_phase5 apps/sim_linescan_phase5.cu)
-    set_target_properties(sim_linescan_phase5 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_phase5 lbm_physics lbm_io CUDA::cudart)
-
-    # Sprint-3 perturbative tests
-    add_executable(sim_linescan_S3A1 apps/sim_linescan_S3A1.cu)
-    set_target_properties(sim_linescan_S3A1 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_S3A1 lbm_physics lbm_io CUDA::cudart)
-
-    add_executable(sim_linescan_S3A3 apps/sim_linescan_S3A3.cu)
-    set_target_properties(sim_linescan_S3A3 PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(sim_linescan_S3A3 lbm_physics lbm_io CUDA::cudart)
+    # LPBF line scan with PLIC full-stack (apples-to-apples vs sim_line_scan_316L)
+    add_executable(sim_line_scan_316L_plic apps/sim_line_scan_316L_plic.cu)
+    set_target_properties(sim_line_scan_316L_plic PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(sim_line_scan_316L_plic lbm_physics lbm_io CUDA::cudart)
 
     # LPBF powder bed simulation (316L, realistic powder layer)
     add_executable(sim_powder_bed_316L apps/sim_powder_bed_316L.cu)
     set_target_properties(sim_powder_bed_316L PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(sim_powder_bed_316L lbm_physics lbm_io CUDA::cudart)
+
+    # PLIC vs legacy diagnostic — runs a tiny LPBF setup in both modes
+    # and prints a comparison. Useful for quickly verifying the PLIC stack
+    # before running a full benchmark.
+    add_executable(diag_plic_smoke apps/diag_plic_smoke.cu)
+    set_target_properties(diag_plic_smoke PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(diag_plic_smoke lbm_physics lbm_io CUDA::cudart)
 
     # Powder bed LPBF demo
     add_executable(demo_powder_bed_lpbf apps/demo_powder_bed_lpbf.cu)

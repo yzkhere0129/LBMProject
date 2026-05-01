@@ -56,6 +56,8 @@ add_cuda_test(test_flux_limiter_overhead performance/test_flux_limiter_overhead.
 # Unit tests - Physics/Laser
 add_cuda_test(test_laser_source unit/laser/test_laser_source.cu)
 add_cuda_test(test_ray_tracing_laser unit/laser/test_ray_tracing_laser.cu)
+# Phase 2 PLIC upgrade — laser column-march deposition
+add_cuda_test(test_plic_laser_column unit/laser/test_plic_laser_column.cu)
 
 # Unit tests - Physics/Materials
 add_cuda_test(test_materials unit/materials/test_materials.cu)
@@ -118,6 +120,22 @@ add_cuda_test(test_vof_interface_compression unit/vof/test_vof_interface_compres
 add_cuda_test(test_vof_mass_correction_weighted unit/vof/test_vof_mass_correction_weighted.cu)
 add_cuda_test(test_vof_mass_correction_flux unit/vof/test_vof_mass_correction_flux.cu)
 add_cuda_test(test_track_b_lpbf_probe unit/vof/test_track_b_lpbf_probe.cu)
+
+# Phase 1 PLIC upgrade — InterfaceGeometryView API + dirty-flag tests
+add_cuda_test(test_plic_normal_vs_analytic unit/vof/test_plic_normal_vs_analytic.cu)
+add_cuda_test(test_plic_alpha_inversion    unit/vof/test_plic_alpha_inversion.cu)
+add_cuda_test(test_plic_dirty_flag         unit/vof/test_plic_dirty_flag.cu)
+add_cuda_test(test_plic_curvature          unit/vof/test_plic_curvature.cu)
+add_cuda_test(test_plic_csf_force          unit/vof/test_plic_csf_force.cu)
+add_cuda_test(test_plic_marangoni_recoil   unit/vof/test_plic_marangoni_recoil.cu)
+add_cuda_test(test_plic_evaporation        unit/vof/test_plic_evaporation.cu)
+add_cuda_test(test_plic_evap_area          unit/vof/test_plic_evap_area.cu)
+
+# Physics-pinning tests (not tautological — check direction, magnitude, integral)
+add_cuda_test(test_plic_marangoni_direction unit/vof/test_plic_marangoni_direction.cu)
+add_cuda_test(test_plic_recoil_magnitude    unit/vof/test_plic_recoil_magnitude.cu)
+add_cuda_test(test_plic_csf_laplace         unit/vof/test_plic_csf_laplace.cu)
+add_cuda_test(test_plic_laser_column_dT     unit/vof/test_plic_laser_column_dT.cu)
 
 # ============================================================================
 # COMPREHENSIVE VOF TEST SUITE (80% → 95% coverage target)

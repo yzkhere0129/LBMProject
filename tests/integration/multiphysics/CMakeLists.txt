@@ -222,6 +222,13 @@ set_tests_properties(test_minimal_config PROPERTIES
     TIMEOUT 60
     LABELS "integration;multiphysics;config;minimal")
 
+# Phase 6: end-to-end PLIC stack stability smoke test.
+add_multiphysics_test(test_plic_full_stack
+    test_plic_full_stack.cu)
+set_tests_properties(test_plic_full_stack PROPERTIES
+    TIMEOUT 120
+    LABELS "integration;multiphysics;plic")
+
 # ============================================================================
 # REGRESSION TESTS
 # ============================================================================

@@ -446,6 +446,84 @@ __global__ void computeLaserHeatSourceKernel(
     }
 }
 
+// ============================================================================
+// Phase 2 PLIC-aware laser kernel: top-down column march, sharp deposit
+// ============================================================================
+// One thread per (i, j) column. The thread:
+//   1. Zeros the entire column's d_heat_source.
+//   2. Evaluates the surface intensity I(x, y) = absorptivity · I_Gaussian(x,y).
+//   3. Marches k from nz-1 (top) down to 0, looking for the first cell with
+//      f > F_GAS_THRESHOLD.
+//   4. When found, writes the entire absorbed power into that cell with
+//      Q_vol = I_xy / (dx · max(f, F_MIN_DEPOSIT)).
+//      The 1/f weighting cancels the f factor that would otherwise smear
+//      ΔT = Q · dt / (ρ · cp · f) into a smaller-than-correct temperature
+//      rise; with this scaling the cell heats as if its full mass (ρ · f ·
+//      dx³) absorbed the entire incident intensity over its dx² footprint.
+//   5. Stops the column march. Cells below the absorbing cell receive no
+//      direct heat — only conduction. This is physically correct for
+//      metallic absorption depths (~10 nm) much smaller than the grid
+//      resolution (typically dx ≥ 1 μm in LPBF).
+//
+// vs. the legacy per-cell Beer-Lambert kernel above:
+//   - Legacy: every cell at depth d gets Q = α·I·β·exp(-β·d)·f. Energy is
+//     spread over ~10 cells (penetration depth ≈ 10 μm = 5 cells at dx=2 μm),
+//     producing a temperature smear that washes out the keyhole cap and
+//     widens Pool W by ~30 % vs F3D ground truth.
+//   - PLIC column march: all energy lands in one cell. Conduction handles
+//     downstream propagation. No smearing.
+//
+// Caller must call vof->recomputePLICReconstruction() before launch when the
+// PLIC plane is to be used for sub-cell sub-positioning. The current Phase 2
+// kernel only consumes fill_level and does not read the plane data, so the
+// reconstruction is not strictly required — but Phase 3 will need it.
+// ============================================================================
+__global__ void computeLaserHeatSourcePLICColumnKernel(
+    float* d_heat_source,
+    const float* fill_level,
+    LaserSource laser,
+    int nx, int ny, int nz,
+    float dx,
+    float f_min_deposit)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= nx || j >= ny) return;
+
+    // Zero the entire column first so that no stale value remains in cells
+    // below the absorbing cell (or in cells of all-gas columns).
+    for (int k = 0; k < nz; ++k) {
+        int idx = i + nx * (j + ny * k);
+        d_heat_source[idx] = 0.0f;
+    }
+
+    float x = i * dx;
+    float y = j * dx;
+
+    // Surface intensity [W/m²] including absorptivity. Beer-Lambert depth
+    // attenuation is intentionally NOT applied here — the column march
+    // implements the sharp-deposit boundary directly.
+    float I_xy = laser.computeIntensity(x, y) * laser.absorptivity;
+    if (I_xy < 1e-10f) return;
+
+    constexpr float F_GAS_THRESHOLD = 1e-3f;
+
+    // March top → bottom. Stop at first cell with meaningful metal content.
+    for (int k = nz - 1; k >= 0; --k) {
+        int idx = i + nx * (j + ny * k);
+        float f = (fill_level != nullptr) ? fill_level[idx] : 1.0f;
+        if (f < F_GAS_THRESHOLD) continue;
+
+        // Deposit. Q_vol = I_xy / (dx · max(f, f_min_deposit)).
+        // ΔT per step = Q_vol · dt / (ρ · cp · f) gives the correct
+        // temperature rise for the cell's metal mass.
+        float f_eff = fmaxf(f, f_min_deposit);
+        d_heat_source[idx] = I_xy / (dx * f_eff);
+        return;
+    }
+    // All-gas column: nothing to deposit (heat_source already zeroed).
+}
+
 /**
  * @brief Convert volumetric force [N/m³] to lattice units
  * F_lattice = F_physical * (dt² / dx)
@@ -1087,6 +1165,21 @@ MultiphysicsSolver::MultiphysicsSolver(const MultiphysicsConfig& config)
                       << ", track=" << track_name
                       << ")" << std::endl;
         }
+
+        // Auto-activate PLIC normal/curvature methods whenever any PLIC path
+        // is enabled.  Keeps the SurfaceConfig flags as the single source of
+        // truth and eliminates the foot-gun of forgetting the two VOFSolver
+        // calls after enableFullPLICStack().
+        const bool any_plic_path =
+            config_.laser.plic_aware_column_march ||
+            config_.surface.csf_use_plic_delta    ||
+            config_.surface.marangoni_use_plic_delta ||
+            config_.surface.recoil_use_plic_delta ||
+            config_.surface.evap_use_plic_delta;
+        if (any_plic_path) {
+            vof_->setNormalReconstructionMethod(NormalReconstructionMethod::HEIGHT_FUNCTION);
+            vof_->setCurvatureMethod(CurvatureMethod::PLIC_DIVERGENCE);
+        }
     }
 
     // Surface tension (optional - add in Step 3)
@@ -1583,14 +1676,24 @@ void MultiphysicsSolver::step(float dt) {
                                           dt, config_.dx,
                                           config_.evap_cooling_factor);
 
-        // VOF mass loss: apply full physical HKL mass flux.
-        // F-06 (code-audit pass 1, 2026-04-27): the prior block multiplied the
-        // device array by a constexpr 1.0f via a GPU→CPU→GPU round-trip — a
-        // ~190 MB×3 host transfer per step on the 8M-cell production grid.
-        // The scale was a no-op; removed. To re-introduce a non-1.0 scale,
-        // do it in-kernel rather than round-tripping through host.
-        vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
-                                       config_.material.rho_liquid, dt);
+        // Apply mass loss to VOF fill_level.
+        // Priority: area (Phase 4b) > delta (Phase 4a) > legacy.
+        if (config_.surface.evap_use_plic_area) {
+            vof_->applyEvaporationMassLossPLICArea(
+                d_evap_mass_flux_,
+                config_.material.rho_liquid,
+                dt);
+        } else if (config_.surface.evap_use_plic_delta) {
+            vof_->applyEvaporationMassLossPLIC(
+                d_evap_mass_flux_,
+                config_.material.rho_liquid,
+                dt,
+                config_.surface.plic_h_smooth_lu);
+        } else {
+            vof_->applyEvaporationMassLoss(d_evap_mass_flux_,
+                                           config_.material.rho_liquid,
+                                           dt);
+        }
 
         // Diagnostic: Print evaporation info every 100 steps
         if (current_step_ % 100 == 0) {
@@ -1686,6 +1789,28 @@ void MultiphysicsSolver::applyLaserSource(float dt) {
                    ray_tracing_laser_->getInputPower(),
                    ray_tracing_laser_->getEnergyError());
         }
+    } else if (config_.laser.plic_aware_column_march) {
+        // ============================================================
+        // Phase 2: PLIC-aware column march, sharp single-cell deposit
+        // ============================================================
+        // 2D launch (one thread per (i, j) column). The kernel walks the
+        // column top-down internally; no z-slab thread parallelism here.
+        dim3 threads(16, 16);
+        dim3 blocks(
+            (config_.nx + threads.x - 1) / threads.x,
+            (config_.ny + threads.y - 1) / threads.y
+        );
+        const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
+        computeLaserHeatSourcePLICColumnKernel<<<blocks, threads>>>(
+            d_heat_source,
+            fill_ptr,
+            *laser_,
+            config_.nx, config_.ny, config_.nz,
+            config_.dx,
+            config_.laser.plic_f_min_deposit
+        );
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
     } else {
         // ============================================================
         // Beer-Lambert path: volumetric Gaussian projection (original)
@@ -2569,17 +2694,46 @@ void MultiphysicsSolver::computeTotalForce() {
         }
     }
 
+    // ============================================================
+    // Phase 3/5: ensure PLIC plane cache is fresh once per step
+    // ============================================================
+    // Whenever ANY surface force is configured to consume the PLIC plane
+    // geometry, we refresh the (n̂, α) cache here — once — so that all
+    // three force kernels below see consistent data. Costs ~5–20 μs on
+    // a 100³ grid (dirty-flag short-circuits subsequent calls).
+    const bool any_plic_force =
+        (config_.surface.csf_use_plic_delta && config_.enable_surface_tension) ||
+        (config_.surface.marangoni_use_plic_delta && config_.enable_marangoni) ||
+        (config_.surface.recoil_use_plic_delta && config_.enable_recoil_pressure);
+    if (any_plic_force && vof_) {
+        vof_->recomputePLICReconstruction();
+    }
+
     // 2b. Surface tension force (CSF model)
     if (config_.enable_surface_tension && surface_tension_ && vof_) {
         const float* fill_level = vof_->getFillLevel();
         const float* curvature = vof_->getCurvature();
 
         if (fill_level && curvature) {
-            force_accumulator_->addSurfaceTensionForce(
-                curvature, fill_level,
-                config_.surface_tension_coeff,
-                config_.nx, config_.ny, config_.nz,
-                config_.dx);
+            if (config_.surface.csf_use_plic_delta) {
+                // Phase 3b: σ·κ·n̂·δ_h(d). The curvature must be the HF
+                // version — using legacy κ here re-introduces the noise
+                // the sharp delta amplifies. We do not silently swap the
+                // method; the caller should setCurvatureMethod(PLIC_DIVERGENCE)
+                // when enabling csf_use_plic_delta.
+                force_accumulator_->addSurfaceTensionForcePLIC(
+                    vof_->getInterfaceGeometry(),
+                    curvature,
+                    config_.surface_tension_coeff,
+                    config_.dx,
+                    config_.surface.plic_h_smooth_lu);
+            } else {
+                force_accumulator_->addSurfaceTensionForce(
+                    curvature, fill_level,
+                    config_.surface_tension_coeff,
+                    config_.nx, config_.ny, config_.nz,
+                    config_.dx);
+            }
         }
     }
 
@@ -2626,28 +2780,26 @@ void MultiphysicsSolver::computeTotalForce() {
             // Marangoni must act at the VOF gas-metal interface (where ∇f ≠ 0),
             // NOT gated by the thermal phase state. Solid surface suppression
             // is already handled by Darcy damping (K > 0 where fl < 1).
-            // Apply CSF compensation multiplier (default 4.0×) to counteract
-            // the |∇f| integral deficit from discrete 2-cell VOF interface.
-            float dsigma_compensated = config_.dsigma_dT * config_.marangoni_csf_multiplier;
-            force_accumulator_->addMarangoniForce(
-                d_T_smoothed_, fill_level, nullptr, normals,
-                dsigma_compensated,
-                config_.nx, config_.ny, config_.nz,
-                config_.dx,
-                1.0f);
+            if (config_.surface.marangoni_use_plic_delta) {
+                force_accumulator_->addMarangoniForcePLIC(
+                    d_T_smoothed_, /*liquid_fraction=*/nullptr,
+                    vof_->getInterfaceGeometry(),
+                    config_.dsigma_dT,
+                    config_.dx,
+                    config_.surface.plic_h_smooth_lu);
+            } else {
+                force_accumulator_->addMarangoniForce(
+                    d_T_smoothed_, fill_level, nullptr, normals,
+                    config_.dsigma_dT,
+                    config_.nx, config_.ny, config_.nz,
+                    config_.dx,
+                    1.0f);
+            }
         }
     }
 
-    // 2d. Recoil pressure force (evaporation-driven)
-    // NOTE: Intentionally moved to step 2h (after fl masking).
-    // Reason: maskForceByLiquidFractionKernel (step 2g) fires whenever
-    // enable_surface_tension || enable_marangoni, which is true in all
-    // production runs.  This mask multiplied the recoil force by fl,
-    // suppressing it at partially-melted interface cells (fl < 1) — the
-    // exact location where recoil must be largest.  By placing the recoil
-    // call after the mask, only Marangoni + surface-tension forces receive
-    // the fl-suppression treatment, which is their intended semantic.
-    // See: recoil_code_audit.md Rank-2 finding.
+    // 2d. Recoil pressure force — intentionally at step 2h (after fl masking)
+    // to avoid maskForceByLiquidFractionKernel suppressing recoil at interface cells.
 
     // 2e. Darcy damping — semi-implicit treatment (NOT added to force arrays)
     //
@@ -2776,15 +2928,26 @@ void MultiphysicsSolver::computeTotalForce() {
                             : config_.surface.molar_mass;
             const float P_atm = 101325.0f;
 
-            force_accumulator_->addRecoilPressureForce(
-                temperature, fill_level, normals,
-                T_boil, L_v, M, P_atm,
-                config_.recoil_coefficient,
-                config_.recoil_smoothing_width,
-                config_.recoil_max_pressure,
-                config_.nx, config_.ny, config_.nz,
-                config_.dx,
-                config_.recoil_force_multiplier);
+            if (config_.surface.recoil_use_plic_delta) {
+                force_accumulator_->addRecoilPressureForcePLIC(
+                    temperature, vof_->getInterfaceGeometry(),
+                    T_boil, L_v, M, P_atm,
+                    config_.recoil_coefficient,
+                    config_.recoil_max_pressure,
+                    config_.dx,
+                    config_.surface.plic_h_smooth_lu,
+                    config_.recoil_force_multiplier);
+            } else {
+                force_accumulator_->addRecoilPressureForce(
+                    temperature, fill_level, normals,
+                    T_boil, L_v, M, P_atm,
+                    config_.recoil_coefficient,
+                    config_.recoil_smoothing_width,
+                    config_.recoil_max_pressure,
+                    config_.nx, config_.ny, config_.nz,
+                    config_.dx,
+                    config_.recoil_force_multiplier);
+            }
         }
     }
 
@@ -3122,27 +3285,39 @@ float MultiphysicsSolver::getLaserAbsorbedPower() const {
     CUDA_CHECK(cudaMalloc(&d_heat_source, num_cells * sizeof(float)));
     CudaFreeGuard guard{d_heat_source};
 
-    // Compute volumetric heat source from laser (same as applyLaserSource)
-    dim3 threads(8, 8, 8);
-    dim3 blocks(
-        (config_.nx + threads.x - 1) / threads.x,
-        (config_.ny + threads.y - 1) / threads.y,
-        (config_.nz + threads.z - 1) / threads.z
-    );
-
-    float z_surface = interface_z_;
+    // Compute volumetric heat source from laser (same dispatch as applyLaserSource).
     const float* fill_ptr = vof_ ? vof_->getFillLevel() : nullptr;
-
-    const float* T_diag = thermal_ ? thermal_->getTemperature() : nullptr;
-    computeLaserHeatSourceKernel<<<blocks, threads>>>(
-        d_heat_source,
-        fill_ptr,
-        T_diag,
-        *laser_,
-        config_.nx, config_.ny, config_.nz,
-        config_.dx,
-        z_surface
-    );
+    if (config_.laser.plic_aware_column_march) {
+        dim3 threads(16, 16);
+        dim3 blocks(
+            (config_.nx + threads.x - 1) / threads.x,
+            (config_.ny + threads.y - 1) / threads.y
+        );
+        computeLaserHeatSourcePLICColumnKernel<<<blocks, threads>>>(
+            d_heat_source,
+            fill_ptr,
+            *laser_,
+            config_.nx, config_.ny, config_.nz,
+            config_.dx,
+            config_.laser.plic_f_min_deposit
+        );
+    } else {
+        dim3 threads(8, 8, 8);
+        dim3 blocks(
+            (config_.nx + threads.x - 1) / threads.x,
+            (config_.ny + threads.y - 1) / threads.y,
+            (config_.nz + threads.z - 1) / threads.z
+        );
+        float z_surface = interface_z_;
+        computeLaserHeatSourceKernel<<<blocks, threads>>>(
+            d_heat_source,
+            fill_ptr,
+            *laser_,
+            config_.nx, config_.ny, config_.nz,
+            config_.dx,
+            z_surface
+        );
+    }
     CUDA_CHECK_KERNEL();
     CUDA_CHECK(cudaDeviceSynchronize());
 

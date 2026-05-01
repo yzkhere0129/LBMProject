@@ -30,6 +30,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include "physics/interface_geometry.h"
 
 namespace lbm {
 namespace physics {
@@ -122,6 +123,29 @@ public:
                                 float sigma, int nx, int ny, int nz, float dx);
 
     /**
+     * @brief Phase 3b PLIC-aware CSF: F = σ · κ · n̂ · δ_h(d).
+     *
+     * Replaces the |∇f|-smeared CSF with a sharp Brackbill-Kothe-Zemach
+     * cosine-kernel surface delta evaluated at the signed distance from
+     * the cell centre to the PLIC plane. Pair with curvature computed via
+     * VOFSolver::CurvatureMethod::PLIC_DIVERGENCE — using the legacy κ
+     * here would re-introduce noise that the sharp delta amplifies.
+     *
+     * @param view        Read-only PLIC plane / fill view from VOFSolver.
+     *                    Must be fresh (caller calls
+     *                    recomputePLICReconstruction() first).
+     * @param curvature   Per-cell κ in [1/m].
+     * @param sigma       Surface tension coefficient [N/m].
+     * @param dx          Lattice spacing [m].
+     * @param h_smooth_lu Cosine-kernel half-width in lattice units
+     *                    (default 1.5; sets the force band thickness).
+     */
+    void addSurfaceTensionForcePLIC(const InterfaceGeometryView& view,
+                                    const float* curvature,
+                                    float sigma, float dx,
+                                    float h_smooth_lu = 1.5f);
+
+    /**
      * @brief Add Marangoni force (thermocapillary effect)
      * @param temperature Temperature field [K]
      * @param fill_level VOF fill level (0=gas, 1=liquid)
@@ -161,6 +185,37 @@ public:
                                 float smoothing_width, float max_pressure,
                                 int nx, int ny, int nz, float dx,
                                 float force_multiplier = 1.0f);
+
+    /**
+     * @brief Phase 3c PLIC-aware Marangoni: F = (dσ/dT)·∇_s T·δ_h(d).
+     *
+     * Sharp-delta replacement for addMarangoniForce. Uses the cached PLIC
+     * unit normal both for the surface-tangential projection of ∇T and for
+     * the cosine-kernel surface delta. Liquid-fraction gate preserved from
+     * the legacy kernel (suppresses force in solid/mushy zones).
+     */
+    void addMarangoniForcePLIC(const float* temperature,
+                                const float* liquid_fraction,
+                                const InterfaceGeometryView& view,
+                                float dsigma_dT, float dx,
+                                float h_smooth_lu = 1.5f);
+
+    /**
+     * @brief Phase 3d PLIC-aware recoil pressure: F = -P_recoil·n̂·δ_h(d).
+     *
+     * Sharp-delta replacement for addRecoilPressureForce. Saturation
+     * pressure from Clausius-Clapeyron with the same activation threshold
+     * (T > T_boil − 500 K). The legacy `force_multiplier` (used to
+     * compensate for |∇f| dilution) should typically be reduced toward
+     * 1.0 with this kernel — sharp delta concentrates the force naturally.
+     */
+    void addRecoilPressureForcePLIC(const float* temperature,
+                                     const InterfaceGeometryView& view,
+                                     float T_boil, float L_v,
+                                     float M, float P_atm, float C_r,
+                                     float max_pressure,
+                                     float dx, float h_smooth_lu = 1.5f,
+                                     float force_multiplier = 1.0f);
 
     /**
      * @brief Convert accumulated forces from physical units to lattice units

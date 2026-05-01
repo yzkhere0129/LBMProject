@@ -31,6 +31,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 #include "utils/cuda_memory.h"
+#include "physics/interface_geometry.h"
 
 namespace lbm {
 namespace physics {
@@ -62,6 +63,56 @@ enum class TVDLimiter : uint8_t {
     VAN_LEER = 1,   ///< Balanced accuracy and stability (recommended)
     SUPERBEE = 2,   ///< Least diffusive, most compressive
     MC = 3          ///< Monotonized Central, good for smooth flows
+};
+
+/**
+ * @brief PLIC normal reconstruction algorithm.
+ *
+ * Affects the kernel that VOFSolver uses to estimate the per-cell unit
+ * interface normal n̂ inside `recomputePLICReconstruction()` and inside
+ * the Strang-split sweeps in `advectFillLevelPLIC()`. The choice trades
+ * implementation simplicity / robustness against accuracy on curved
+ * interfaces.
+ *
+ *   - YOUNGS: Parker-Youngs 3×3×3 weighted central differences. Default.
+ *     Exact for axis-aligned planar interfaces (round-off only). Angular
+ *     error on a sphere of radius R is O(h/R) — the algorithm is first
+ *     order on curved surfaces. Robust at boundaries and for under-resolved
+ *     features. Cost: ~30 reads per cell.
+ *
+ *   - HEIGHT_FUNCTION: 7-point column heights along the Youngs-determined
+ *     dominant axis, with central differences for the two non-dominant
+ *     normal components. Angular error on a sphere is O((h/R)²) — second
+ *     order on curved surfaces. Falls back to Youngs in cells where the
+ *     column does not bracket a clean liquid→gas transition. Required to
+ *     hit the roadmap §3 Phase 1 acceptance gate of ε<1e-3 on a curved
+ *     interface. Cost: ~70 reads per cell.
+ *
+ * Reference for HEIGHT_FUNCTION:
+ *   Cummins, Francois & Kothe (2005). Estimating curvature from volume
+ *   fractions. Computers & Structures 83, 425-434. (height-function
+ *   kernel; PLIC normals derived from the same column-height construct.)
+ */
+enum class NormalReconstructionMethod : uint8_t {
+    YOUNGS          = 0,
+    HEIGHT_FUNCTION = 1
+};
+
+/**
+ * @brief Curvature reconstruction algorithm.
+ *
+ * Phase 3a of the PLIC upgrade. The default LEGACY_HF path is the existing
+ * height-function-on-fill kernel, which differentiates the smoothed fill
+ * level twice — robust but smeared and prone to ~10% κ errors on a
+ * resolved sphere. PLIC_DIVERGENCE computes κ = -∇·n̂ via central
+ * differences on the per-cell unit normal stored in plic_nx_/ny_/nz_; with
+ * HEIGHT_FUNCTION normals it gives the standard O((h/R)²) Cummins-Francois-
+ * Kothe accuracy, which is required to pair with sharp surface deltas in
+ * Phase 3b without amplifying κ noise.
+ */
+enum class CurvatureMethod : uint8_t {
+    LEGACY_HF       = 0,   ///< height-function on fill_level (current behaviour)
+    PLIC_DIVERGENCE = 1    ///< -∇·n̂ on the PLIC unit-normal field
 };
 
 /**
@@ -305,6 +356,35 @@ public:
     void applyEvaporationMassLoss(const float* J_evap, float rho, float dt);
 
     /**
+     * @brief Phase 4a PLIC-aware evaporation: df = -J · δ_h(d) · dt / ρ.
+     *
+     * Sharp-delta replacement for applyEvaporationMassLoss that uses the
+     * cached PLIC plane geometry. Mass loss is concentrated in the cosine-
+     * kernel band around the PLIC interface (default 3 cells). Bulk cells
+     * (deep in the metal where T may be high but no surface is exposed)
+     * receive no mass loss — fixing a known artefact of the legacy kernel
+     * which removed mass anywhere f > 0 ∧ J > 0.
+     *
+     * Caller does NOT need to call recomputePLICReconstruction() first;
+     * this method does it internally if the cache is dirty.
+     */
+    void applyEvaporationMassLossPLIC(const float* J_evap, float rho,
+                                       float dt, float h_smooth_lu = 1.5f);
+
+    /**
+     * @brief Phase 4b geometric PLIC area evaporation: df = -J × A_PLIC × dt / (ρ × dx).
+     *
+     * Uses the true polygon area of the PLIC plane inside the cell
+     * (A_PLIC = dV/dα, dimensionless lattice-unit area) instead of the
+     * cosine-kernel surface delta.  For an axis-aligned interface A_PLIC = 1
+     * and the formula reduces to the legacy result; for a tilted plane
+     * A_PLIC > 1, giving the 1/cos(θ) enhancement specified in roadmap §3 Phase 4.
+     *
+     * Falls back to applyEvaporationMassLoss() when PLIC is not ready.
+     */
+    void applyEvaporationMassLossPLICArea(const float* J_evap, float rho, float dt);
+
+    /**
      * @brief Apply solidification shrinkage to fill level
      * @param dfl_dt Liquid fraction rate of change [1/s] (device pointer)
      * @param beta Shrinkage factor = 1 - rho_liquid/rho_solid
@@ -438,6 +518,86 @@ public:
      */
     float getReferenceMass() const { return mass_reference_; }
 
+    // ========================================================================
+    // PLIC Interface Geometry API (Phase 1 of PLIC upgrade)
+    // ========================================================================
+    //
+    // Phase 1 makes the per-cell PLIC reconstruction (Youngs unit normal +
+    // signed alpha) accessible to downstream physics modules so they can
+    // replace the smeared `|∇f|` kernel-based delta with a sharp interface.
+    //
+    // Storage convention (see include/physics/interface_geometry.h):
+    //   Plane n·X = alpha_signed in cell-corner unit-cube frame [0,1]^3.
+    //   Liquid lives where n·X < alpha_signed. n̂ is unit, points toward gas.
+    //
+    // Lifecycle:
+    //   1. Any call that modifies fill_level (initialize, advect, evap,
+    //      shrinkage, mass correction) sets plic_dirty_ = true and the cached
+    //      arrays may no longer match d_fill_level_.
+    //   2. recomputePLICReconstruction() runs the Youngs + alpha kernels and
+    //      clears the dirty flag. If already clean, returns immediately.
+    //   3. getInterfaceGeometry() returns a view marked plic_ready=true iff
+    //      the cache is current. Callers MUST consult plic_ready before
+    //      reading d_alpha (the underlying buffer may be uninitialized on a
+    //      brand-new VOFSolver that has never run PLIC advection).
+
+    /**
+     * @brief (Re)compute Youngs normal + alpha from the current fill_level.
+     * @note No-op if the cached reconstruction is already consistent with the
+     *       current fill (plic_dirty_ == false). Lazy-allocates the PLIC
+     *       buffers on first use.
+     * @note Cost: 2 kernel launches (~5–20 μs for 100^3 grid). Idempotent.
+     */
+    void recomputePLICReconstruction();
+
+    /**
+     * @brief Get a read-only view of the interface geometry.
+     * @return InterfaceGeometryView with d_normal_x/y/z, d_alpha (nullable),
+     *         d_fill, plic_ready, and grid dimensions.
+     * @note `view.plic_ready == false` iff PLIC reconstruction is stale or
+     *       has never been run. In that case, `view.d_alpha` and the normals
+     *       must NOT be dereferenced; downstream kernels should fall back to
+     *       the legacy `|∇f|`-based path.
+     */
+    InterfaceGeometryView getInterfaceGeometry() const;
+
+    /**
+     * @brief True iff cached PLIC reconstruction matches current fill_level.
+     */
+    bool isPLICReady() const { return !plic_dirty_; }
+
+    /**
+     * @brief Select the normal-reconstruction algorithm used by PLIC paths.
+     * @param method YOUNGS (default, O(h/R) on curves) or HEIGHT_FUNCTION
+     *               (O((h/R)²) on curves; fallback to Youngs in degenerate cells).
+     * @note Marks the cache dirty so the next reconstruction uses the new method.
+     */
+    void setNormalReconstructionMethod(NormalReconstructionMethod method) {
+        normal_method_ = method;
+        plicMarkDirty();
+    }
+
+    /**
+     * @brief Get the active normal-reconstruction algorithm.
+     */
+    NormalReconstructionMethod getNormalReconstructionMethod() const {
+        return normal_method_;
+    }
+
+    /**
+     * @brief Select the curvature-reconstruction algorithm.
+     * @param method LEGACY_HF (default, height-function on fill_level) or
+     *               PLIC_DIVERGENCE (-∇·n̂ on PLIC normals).
+     */
+    void setCurvatureMethod(CurvatureMethod method) {
+        curvature_method_ = method;
+        // PLIC_DIVERGENCE uses the cached PLIC normal field; ensure it is
+        // current next time computeCurvature() runs.
+        plicMarkDirty();
+    }
+
+    CurvatureMethod getCurvatureMethod() const { return curvature_method_; }
+
 private:
     // Domain dimensions
     int nx_, ny_, nz_;
@@ -509,28 +669,56 @@ private:
     lbm::utils::CudaBuffer<float> plic_alpha_;
     lbm::utils::CudaBuffer<float> plic_flux_;        // reusable per-direction face flux
     lbm::utils::CudaBuffer<float> plic_face_vel_;    // reusable per-direction face velocity
-    bool plic_strang_x_first_ = true;
+
+    // 3-way symmetric Strang rotation: cycle through 6 permutations of {x,y,z}
+    //   even step (0,2,4): forward order (XYZ, YZX, ZXY)
+    //   odd  step (1,3,5): reverse order (ZYX, XZY, YXZ)
+    // Counter wraps mod 6 so all three axes spend equal time as the "last sweep".
+    // This eliminates the persistent z-bias that XY-only swap leaves untreated.
+    int plic_strang_phase_ = 0;        // 0..5
+
+    // Persistent per-instance counters (replace function-level statics — H1 fix).
+    // Static counters caused two VOFSolver instances to share state and race on
+    // d_block_max reallocation in the parent advectFillLevel().
+    int plic_call_count_ = 0;          // diagnostic print cadence for PLIC clamp
+    int plic_substep_call_count_ = 0;  // diagnostic print cadence for CFL substepping
+
+    // H1-followup (2026-04-30 audit): 4 more statics in advectFillLevel + 1
+    // in applyEvaporationMassLoss were leaking state across VOFSolver
+    // instances (diag_plic_smoke runs legacy then PLIC back-to-back, and the
+    // "scheme reported" flag from instance 1 suppressed the print on
+    // instance 2). Promoted so each solver has its own diagnostic cadence.
+    int   advect_call_count_       = 0;
+    float advect_prev_mass_        = -1.0f;
+    int   advect_prev_substeps_    = 1;
+    bool  advect_scheme_reported_  = false;
+    int   evap_call_count_         = 0;
+
+    // Per-instance reduction buffers for CFL/v_max computation.
+    // Replace the function-level static d_block_max in advectFillLevel() (H1 fix).
+    lbm::utils::CudaBuffer<float> reduction_block_max_;
+
+    // Active normal-reconstruction algorithm (default YOUNGS for backward
+    // compatibility — HEIGHT_FUNCTION must be opted-in by tests / Phase 3).
+    NormalReconstructionMethod normal_method_ = NormalReconstructionMethod::YOUNGS;
+
+    // Active curvature algorithm (Phase 3a — default keeps legacy behaviour).
+    CurvatureMethod curvature_method_ = CurvatureMethod::LEGACY_HF;
+
+    // PLIC reconstruction freshness flag.
+    // - Set to false on every fill_level write (initialize, advect, evap, etc.).
+    // - Set to true at the end of recomputePLICReconstruction() and after the
+    //   final post-advection reconstruction in advectFillLevelPLIC().
+    // External callers should call recomputePLICReconstruction() before
+    // reading plic_nx_/ny_/nz_/alpha_ via the public InterfaceGeometryView.
+    bool plic_dirty_ = true;
 
     // Utility functions
     void allocateMemory();
     void freeMemory();
     void advectFillLevelPLIC(const float* d_ux, const float* d_uy, const float* d_uz, float dt);
     void plicAllocateIfNeeded();
-
-    /// A1 (Track-A) helper: post-advection global-mass correction with
-    /// w = max(sign(Δm)·v_z, 0) weight. Single-velocity, fast.
-    void applyMassCorrectionInline(const float* d_vz);
-
-    /// B1 (Track-B) helper: post-advection global-mass correction with
-    /// w = max(sign(Δm)·(-∇f·v), 0) weight. ∇f is computed inline via
-    /// central differences from 6 neighbour fill_levels — no normal field
-    /// needed. Better at distinguishing capillary back-fill (toward groove)
-    /// from recoil-driven outward jet (away from liquid surface).
-    /// Falls back to uniform-additive when W ≈ 0.
-    void applyMassCorrectionInline(const float* d_vx, const float* d_vy,
-                                    const float* d_vz);
-
-    int mass_correction_call_count_ = 0;
+    void plicMarkDirty() { plic_dirty_ = true; }
 };
 
 // CUDA kernels for VOF solver
