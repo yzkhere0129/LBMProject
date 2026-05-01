@@ -83,6 +83,79 @@ static MeltPoolMetrics computeMeltPoolDimensions(
     return m;
 }
 
+// Cavity diagnostic (G1): column-wise top-metal detection.
+// For each (i,j) column, scan top-down to find highest k where fill > 0.5.
+// A column is "depressed" if its surface lies below interface_z.
+struct CavityMetrics {
+    float length_um;
+    float depth_um;
+    float x_tail_um;
+    float x_lead_um;
+    float keyhole_length_um;   // depression > 25 μm
+    float keyhole_x_tail_um;
+    float groove_length_um;    // depression 6-25 μm
+    float groove_max_depth_um;
+};
+
+static CavityMetrics computeCavityDimensions(
+    const float* h_fill,
+    int nx, int ny, int nz, float dx, float interface_z,
+    float laser_x_meters)
+{
+    int x_min_all = nx, x_max_all = -1;
+    int z_min_global = static_cast<int>(interface_z);
+    int x_min_kh = nx, x_max_kh = -1;
+    int x_min_gr = nx, x_max_gr = -1;
+    int gr_max_depth_cells = 0;
+    const int kz_orig = static_cast<int>(interface_z);
+    const int gr_thresh = 3;   // > 6 μm
+    const int kh_thresh = 12;  // > 24 μm
+    const int wall_margin = 5;
+    const int i_min_scan = wall_margin;
+    int i_max_scan = static_cast<int>(laser_x_meters / dx) + 25;
+    if (i_max_scan > nx - wall_margin) i_max_scan = nx - wall_margin;
+
+    for (int j = 0; j < ny; ++j) {
+        for (int i = i_min_scan; i < i_max_scan; ++i) {
+            int top_metal_k = -1;
+            for (int k = nz - 1; k >= 0; --k) {
+                int idx = i + nx * (j + ny * k);
+                if (h_fill[idx] > 0.5f) { top_metal_k = k; break; }
+            }
+            if (top_metal_k < 0) continue;
+            int depression = kz_orig - top_metal_k;
+            if (depression > gr_thresh) {
+                x_min_all = std::min(x_min_all, i);
+                x_max_all = std::max(x_max_all, i);
+                z_min_global = std::min(z_min_global, top_metal_k);
+            }
+            if (depression > kh_thresh) {
+                x_min_kh = std::min(x_min_kh, i);
+                x_max_kh = std::max(x_max_kh, i);
+            } else if (depression > gr_thresh) {
+                x_min_gr = std::min(x_min_gr, i);
+                x_max_gr = std::max(x_max_gr, i);
+                if (depression > gr_max_depth_cells) gr_max_depth_cells = depression;
+            }
+        }
+    }
+    CavityMetrics c{};
+    if (x_max_all < 0) return c;
+    c.length_um = (x_max_all - x_min_all + 1) * dx * 1e6f;
+    c.depth_um  = (kz_orig - z_min_global) * dx * 1e6f;
+    c.x_tail_um = x_min_all * dx * 1e6f;
+    c.x_lead_um = x_max_all * dx * 1e6f;
+    if (x_max_kh >= 0) {
+        c.keyhole_length_um = (x_max_kh - x_min_kh + 1) * dx * 1e6f;
+        c.keyhole_x_tail_um = x_min_kh * dx * 1e6f;
+    }
+    if (x_max_gr >= 0) {
+        c.groove_length_um = (x_max_gr - x_min_gr + 1) * dx * 1e6f;
+        c.groove_max_depth_um = gr_max_depth_cells * dx * 1e6f;
+    }
+    return c;
+}
+
 int main() {
     auto wall_start = std::chrono::high_resolution_clock::now();
 
@@ -109,14 +182,17 @@ int main() {
     //   y: 150 →  150 μm  (unchanged; M13b verified W stays within)
     //   z: 100 →  200 μm  (substrate thickness 2× to keep keyhole ~80μm away from base)
     // Cell count: 800 × 75 × 100 = 6 M (2.7× M13b, ~10 min wall expected).
-    config.nx = 800;
-    config.ny = 75;
+    config.nx = 1100;
+    config.ny = 100;   // R14 F1: widen 75→100 (150→200 μm) to remove y-boundary saturation
     config.nz = 100;
     config.dx = 2.0e-6f;
     config.dt = 8.0e-8f;
 
     // --- Material ---
     config.material = MaterialDatabase::get316L();
+    // F3D Mills table: ts1=1674.15, tl1=1697.15 (23K mushy zone)
+    config.material.T_solidus  = 1674.15f;
+    config.material.T_liquidus = 1697.15f;
 
     // --- Physics ---
     config.enable_thermal           = true;
@@ -144,7 +220,7 @@ int main() {
     // --- Moving laser ---
     const float v_scan = 0.8f;  // 800 mm/s
     config.laser_power              = 150.0f;
-    config.laser_spot_radius        = 50.0e-6f;
+    config.laser_spot_radius        = 39.0e-6f;  // F3D dum2=39e-6
     config.laser_absorptivity       = 0.40f;     // fallback for non-RT path
     config.laser_penetration_depth  = 10.0e-6f;
     config.laser_start_x            = 500.0e-6f;  // Sprint-1: 500 μm pre-scan margin (Flow3D px_min=-497.5μm)
@@ -158,7 +234,7 @@ int main() {
     config.ray_tracing.fresnel_n_refract  = 2.9613f;   // 316L @ 1064 nm Mills
     config.ray_tracing.fresnel_k_extinct  = 4.0133f;
     config.ray_tracing.num_rays           = 4096;       // dense enough for 50 μm spot
-    config.ray_tracing.max_bounces        = 5;          // ~70 % effective absorption
+    config.ray_tracing.max_bounces        = 3;          // F3D parity
     config.ray_tracing.max_dda_steps      = 1500;       // domain ~1.2 mm / dx 2 μm → 600 cells, +slack
     config.ray_tracing.energy_cutoff      = 0.01f;
     config.ray_tracing.absorptivity       = 0.40f;      // unused when use_fresnel=true
@@ -215,9 +291,11 @@ int main() {
     config.boundaries.thermal_y_min = ThermalBCType::ADIABATIC;
     config.boundaries.thermal_y_max = ThermalBCType::ADIABATIC;
     config.boundaries.thermal_z_min = ThermalBCType::CONVECTIVE;
-    config.boundaries.thermal_z_max = ThermalBCType::ADIABATIC;
+    config.boundaries.thermal_z_max = ThermalBCType::RADIATION;  // Stefan-Boltzmann on top
     config.boundaries.convective_h     = 2000.0f;
     config.boundaries.convective_T_inf = 300.0f;
+    config.boundaries.radiation_emissivity = 0.55f;  // 316L
+    config.boundaries.radiation_T_ambient  = 300.0f;
 
     // --- CFL ---
     config.cfl_use_adaptive            = true;
@@ -278,6 +356,9 @@ int main() {
     MultiphysicsSolver solver(config);
     solver.initialize(300.0f, 0.80f);
 
+    // Regularized BGK: τ=0.5456 (316L ν_phys=7.6e-7, dx=2μm, dt=80ns)
+    solver.setRegularized(true, 0.5456f);
+
     const auto& registry = solver.getFieldRegistry();
 
     // Host buffers for melt pool metrics
@@ -323,13 +404,18 @@ int main() {
                 h_lf.data(), h_fl.data(),
                 config.nx, config.ny, config.nz, config.dx, interface_z);
 
+            CavityMetrics cav = computeCavityDimensions(
+                h_fl.data(),
+                config.nx, config.ny, config.nz, config.dx, interface_z, laser_x);
+
             float current_mass = solver.getTotalMass();
             float mass_delta = (current_mass - initial_mass) / initial_mass * 100.0f;
 
-            printf("%-6d %7.1f %7.0f %7.3f %7.1f %7.1f %7.1f %9.1f %+7.3f%%\n",
+            printf("%-6d %7.1f %7.0f %7.3f %7.1f %7.1f %7.1f %9.1f %+7.3f%%  cav[L=%.0f D=%.0f KH=%.0f]\n",
                    step, t * 1e6f, T_max, v_max,
                    mp.depth_um, mp.length_um, mp.width_um,
-                   laser_x * 1e6f, mass_delta);
+                   laser_x * 1e6f, mass_delta,
+                   cav.length_um, cav.depth_um, cav.keyhole_length_um);
             fflush(stdout);
 
             if (solver.checkNaN()) {
