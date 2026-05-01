@@ -93,6 +93,7 @@ venv/
 !LBM_Framework_Blueprint.json
 !MATERIAL_DATABASE.yaml
 !PLIC_DELIVERY.md
+!PLIC_DELIVERY_REPORT.md
 !*.sh
 
 # Un-ignore documentation source files
