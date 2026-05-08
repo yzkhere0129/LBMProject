@@ -66,6 +66,38 @@ void computeObstacleForceLU(
     int periodic_x, int periodic_y, int periodic_z,
     float& Fx, float& Fy, float& Fz);
 
+/**
+ * @brief MEM force variant for single-node second-order QBB.
+ *
+ * Same general formula F_link = c_q · (f_in + f_out_new), but f_out_new is
+ * computed via the lbmpy single-node QBB rule (using local equilibrium).
+ * Required when streaming uses fluidStreamingKernelWithSingleNodeQBB so the
+ * force evaluation stays consistent with the BC.
+ */
+void computeObstacleForceLU_SingleNodeQBB(
+    const float* d_f,
+    const unsigned char* d_solid_mask,
+    const float* d_qfrac,
+    float omega,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z,
+    float& Fx, float& Fy, float& Fz);
+
+/**
+ * @brief MEM force variant for 3-cell quadratic Bouzidi.
+ *
+ * Mirrors fluidStreamingKernelWithQuadBouzidi. F_link = c_q · (f_in + f_out_new)
+ * where f_out_new is computed via the BFL 2001 Eq. 12 quadratic formula
+ * (with defensive fallback to BFL linear when upstream stencil missing).
+ */
+void computeObstacleForceLU_QuadBouzidi(
+    const float* d_f,
+    const unsigned char* d_solid_mask,
+    const float* d_qfrac,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z,
+    float& Fx, float& Fy, float& Fz);
+
 } // namespace aero
 } // namespace physics
 } // namespace lbm

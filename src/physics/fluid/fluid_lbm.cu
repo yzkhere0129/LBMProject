@@ -51,7 +51,10 @@ FluidLBM::FluidLBM(int nx, int ny, int nz,
       d_boundary_nodes_(nullptr),
       n_boundary_nodes_(0),
       d_solid_mask_(nullptr),
-      d_qfrac_(nullptr)
+      d_qfrac_(nullptr),
+      qbb_omega_(0.0f),
+      quad_bouzidi_enabled_(false),
+      halfway_wall_faces_(0)
 {
     // Initialize D3Q19 lattice on device
     if (!D3Q19::isInitialized()) {
@@ -514,16 +517,32 @@ void FluidLBM::streaming() {
     int periodic_y = (boundary_y_ == BoundaryType::PERIODIC) ? 1 : 0;
     int periodic_z = (boundary_z_ == BoundaryType::PERIODIC) ? 1 : 0;
 
-    if (d_solid_mask_ && d_qfrac_) {
+    if (d_solid_mask_ && d_qfrac_ && quad_bouzidi_enabled_) {
+        // Interior obstacle + q-fraction + 3-cell quadratic Bouzidi enabled.
+        fluidStreamingKernelWithQuadBouzidi<<<grid, block>>>(
+            d_f_src, d_f_dst, d_solid_mask_, d_qfrac_,
+            halfway_wall_faces_, nx_, ny_, nz_,
+            periodic_x, periodic_y, periodic_z);
+        CUDA_CHECK_KERNEL();
+    } else if (d_solid_mask_ && d_qfrac_ && qbb_omega_ > 0.0f) {
+        // Interior obstacle + q-fraction + single-node QBB enabled (omega set).
+        fluidStreamingKernelWithSingleNodeQBB<<<grid, block>>>(
+            d_f_src, d_f_dst, d_solid_mask_, d_qfrac_, qbb_omega_,
+            halfway_wall_faces_, nx_, ny_, nz_,
+            periodic_x, periodic_y, periodic_z);
+        CUDA_CHECK_KERNEL();
+    } else if (d_solid_mask_ && d_qfrac_) {
         // Interior obstacle present + per-link q-fraction set: BFL curved BC.
         fluidStreamingKernelWithBFL<<<grid, block>>>(
-            d_f_src, d_f_dst, d_solid_mask_, d_qfrac_, nx_, ny_, nz_,
+            d_f_src, d_f_dst, d_solid_mask_, d_qfrac_,
+            halfway_wall_faces_, nx_, ny_, nz_,
             periodic_x, periodic_y, periodic_z);
         CUDA_CHECK_KERNEL();
     } else if (d_solid_mask_) {
         // Interior obstacle present, no q-fraction: stair-step halfway BB.
         fluidStreamingKernelWithSolid<<<grid, block>>>(
-            d_f_src, d_f_dst, d_solid_mask_, nx_, ny_, nz_,
+            d_f_src, d_f_dst, d_solid_mask_,
+            halfway_wall_faces_, nx_, ny_, nz_,
             periodic_x, periodic_y, periodic_z);
         CUDA_CHECK_KERNEL();
     } else if (all_periodic) {
@@ -1108,6 +1127,83 @@ void FluidLBM::setObstacleQ(const float* host_qfrac) {
     }
     std::cout << "FluidLBM: Obstacle q-fraction uploaded ("
               << n_curved << " curved-BC links < 1.0)." << std::endl;
+}
+
+// Switch obstacle BC to single-node second-order QBB (lbmpy formula).
+// omega=0 reverts to BFL linear.
+void FluidLBM::setSingleNodeQBB(float omega) {
+    qbb_omega_ = omega;
+    if (omega > 0.0f) {
+        quad_bouzidi_enabled_ = false;  // mutually exclusive
+        std::cout << "FluidLBM: Single-node second-order QBB enabled with omega="
+                  << omega << " (= 1/tau used in BGK inversion). Streaming will "
+                  << "dispatch to fluidStreamingKernelWithSingleNodeQBB."
+                  << std::endl;
+    } else {
+        std::cout << "FluidLBM: Single-node QBB disabled; reverted to BFL linear."
+                  << std::endl;
+    }
+}
+
+// Switch face wall handling from fullway BB (default, via BoundaryNode list)
+// to halfway BB (handled inside the streaming kernel). When a face's bit is
+// set in face_mask, BOUNCE_BACK BoundaryNodes for that face are removed so
+// they don't double-bounce. VELOCITY/PRESSURE nodes on the same face are
+// preserved.
+void FluidLBM::setHalfwayWallFaces(unsigned int face_mask) {
+    halfway_wall_faces_ = face_mask;
+
+    if (n_boundary_nodes_ == 0) {
+        std::cout << "FluidLBM: setHalfwayWallFaces(0x"
+                  << std::hex << face_mask << std::dec << ") — no nodes to filter."
+                  << std::endl;
+        return;
+    }
+
+    // Pull nodes to host, drop BOUNCE_BACK entries on halfway faces, push back.
+    std::vector<core::BoundaryNode> h_nodes(n_boundary_nodes_);
+    CUDA_CHECK(cudaMemcpy(h_nodes.data(), d_boundary_nodes_,
+                          n_boundary_nodes_ * sizeof(core::BoundaryNode),
+                          cudaMemcpyDeviceToHost));
+
+    std::vector<core::BoundaryNode> kept;
+    kept.reserve(h_nodes.size());
+    int dropped = 0;
+    for (const auto& n : h_nodes) {
+        const bool on_halfway_face = (n.directions & face_mask) != 0;
+        if (on_halfway_face && n.type == core::BoundaryType::BOUNCE_BACK) {
+            ++dropped;
+            continue;  // drop — streaming kernel will halfway-bounce instead
+        }
+        kept.push_back(n);
+    }
+    n_boundary_nodes_ = static_cast<int>(kept.size());
+    if (n_boundary_nodes_ > 0) {
+        CUDA_CHECK(cudaMemcpy(d_boundary_nodes_, kept.data(),
+                              n_boundary_nodes_ * sizeof(core::BoundaryNode),
+                              cudaMemcpyHostToDevice));
+    }
+
+    std::cout << "FluidLBM: Halfway BB enabled on face mask 0x" << std::hex
+              << face_mask << std::dec << " (dropped " << dropped
+              << " BOUNCE_BACK BoundaryNodes; "
+              << n_boundary_nodes_ << " face nodes remain for VELOCITY/PRESSURE)."
+              << std::endl;
+}
+
+// Switch obstacle BC to 3-cell quadratic Bouzidi (BFL 2001 Eq. 12).
+// True O(dx²) at the wall using upstream stencil.
+void FluidLBM::setQuadBouzidi(bool enable) {
+    quad_bouzidi_enabled_ = enable;
+    if (enable) {
+        qbb_omega_ = 0.0f;  // mutually exclusive
+        std::cout << "FluidLBM: 3-cell quadratic Bouzidi enabled. Streaming "
+                  << "will dispatch to fluidStreamingKernelWithQuadBouzidi."
+                  << std::endl;
+    } else {
+        std::cout << "FluidLBM: 3-cell quadratic Bouzidi disabled; reverted "
+                  << "to BFL linear." << std::endl;
+    }
 }
 
 // Compute variable viscosity field from VOF
@@ -2214,6 +2310,7 @@ __global__ void fluidStreamingKernelWithSolid(
     const float* __restrict__ f_src,
     float* __restrict__ f_dst,
     const unsigned char* __restrict__ solid_mask,
+    unsigned int halfway_wall_faces,
     int nx, int ny, int nz,
     int periodic_x, int periodic_y, int periodic_z)
 {
@@ -2226,38 +2323,46 @@ __global__ void fluidStreamingKernelWithSolid(
     int id = idx + idy * nx + idz * nx * ny;
     int n_cells = nx * ny * nz;
 
-    // Skip solid cells: their f is unused.
     if (solid_mask[id] != Streaming::CELL_FLUID) return;
 
     for (int q = 0; q < D3Q19::Q; ++q) {
-        // Raw destination
         int dst_x = idx + ex[q];
         int dst_y = idy + ey[q];
         int dst_z = idz + ez[q];
 
-        bool out_of_domain = false;
+        unsigned int out_face = 0;
 
         if (periodic_x) {
             if (dst_x < 0)  dst_x += nx;
             if (dst_x >= nx) dst_x -= nx;
-        } else if (dst_x < 0 || dst_x >= nx) {
-            out_of_domain = true;
+        } else {
+            if (dst_x < 0)   out_face |= Streaming::BOUNDARY_X_MIN;
+            if (dst_x >= nx) out_face |= Streaming::BOUNDARY_X_MAX;
         }
         if (periodic_y) {
             if (dst_y < 0)  dst_y += ny;
             if (dst_y >= ny) dst_y -= ny;
-        } else if (dst_y < 0 || dst_y >= ny) {
-            out_of_domain = true;
+        } else {
+            if (dst_y < 0)   out_face |= Streaming::BOUNDARY_Y_MIN;
+            if (dst_y >= ny) out_face |= Streaming::BOUNDARY_Y_MAX;
         }
         if (periodic_z) {
             if (dst_z < 0)  dst_z += nz;
             if (dst_z >= nz) dst_z -= nz;
-        } else if (dst_z < 0 || dst_z >= nz) {
-            out_of_domain = true;
+        } else {
+            if (dst_z < 0)   out_face |= Streaming::BOUNDARY_Z_MIN;
+            if (dst_z >= nz) out_face |= Streaming::BOUNDARY_Z_MAX;
         }
 
-        if (out_of_domain) {
-            // Skip — face wall / inlet / outlet handled by BoundaryNode list.
+        if (out_face != 0) {
+            // Out-of-domain link
+            if (out_face & halfway_wall_faces) {
+                // Halfway BB on this face: reflect locally
+                const float f_q = f_src[id + q * n_cells];
+                const int q_opp = opposite[q];
+                f_dst[id + q_opp * n_cells] = f_q;
+            }
+            // Else skip — VELOCITY/PRESSURE BoundaryNodes handle it
             continue;
         }
 
@@ -2265,7 +2370,6 @@ __global__ void fluidStreamingKernelWithSolid(
         const float f_q = f_src[id + q * n_cells];
 
         if (solid_mask[dst_id] != Streaming::CELL_FLUID) {
-            // Interior obstacle: halfway bounce-back.
             const int q_opp = opposite[q];
             f_dst[id + q_opp * n_cells] = f_q;
         } else {
@@ -2302,6 +2406,7 @@ __global__ void fluidStreamingKernelWithBFL(
     float* __restrict__ f_dst,
     const unsigned char* __restrict__ solid_mask,
     const float* __restrict__ qfrac,
+    unsigned int halfway_wall_faces,
     int nx, int ny, int nz,
     int periodic_x, int periodic_y, int periodic_z)
 {
@@ -2321,15 +2426,25 @@ __global__ void fluidStreamingKernelWithBFL(
         int dst_y = idy + ey[q];
         int dst_z = idz + ez[q];
 
-        bool out_of_domain = false;
+        unsigned int out_face = 0;
         if (periodic_x) { if (dst_x < 0) dst_x += nx; if (dst_x >= nx) dst_x -= nx; }
-        else if (dst_x < 0 || dst_x >= nx) out_of_domain = true;
+        else { if (dst_x < 0) out_face |= Streaming::BOUNDARY_X_MIN;
+               if (dst_x >= nx) out_face |= Streaming::BOUNDARY_X_MAX; }
         if (periodic_y) { if (dst_y < 0) dst_y += ny; if (dst_y >= ny) dst_y -= ny; }
-        else if (dst_y < 0 || dst_y >= ny) out_of_domain = true;
+        else { if (dst_y < 0) out_face |= Streaming::BOUNDARY_Y_MIN;
+               if (dst_y >= ny) out_face |= Streaming::BOUNDARY_Y_MAX; }
         if (periodic_z) { if (dst_z < 0) dst_z += nz; if (dst_z >= nz) dst_z -= nz; }
-        else if (dst_z < 0 || dst_z >= nz) out_of_domain = true;
+        else { if (dst_z < 0) out_face |= Streaming::BOUNDARY_Z_MIN;
+               if (dst_z >= nz) out_face |= Streaming::BOUNDARY_Z_MAX; }
 
-        if (out_of_domain) continue;     // face BC list handles it
+        if (out_face != 0) {
+            if (out_face & halfway_wall_faces) {
+                const float f_q_loc = f_src[id + q * n_cells];
+                const int q_opp_loc = opposite[q];
+                f_dst[id + q_opp_loc * n_cells] = f_q_loc;
+            }
+            continue;
+        }
 
         const int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
         const float f1 = f_src[id + q * n_cells];
@@ -2385,6 +2500,256 @@ __global__ void fluidStreamingKernelWithBFL(
                 f_dst[id + q_opp * n_cells] = f1;
             }
         }
+    }
+}
+
+// Streaming with 3-cell quadratic Bouzidi (Bouzidi-Firdaouss-Lallemand 2001).
+//
+// True O(dx²) at the wall, uses upstream stencil along the link direction.
+//
+// Notation (BFL 2001 §V): α = direction toward wall (= q in code), ᾱ = opposite.
+//   q ≤ 1/2 (wall on the FLUID side of midpoint):
+//     f̃_ᾱ_new = q(1+2q)·f̃_α[X]
+//             + (1-2q)(1+2q)·f̃_α[X-e_α]
+//             - q(1-2q)·f̃_α[X-2e_α]
+//
+//   q > 1/2 (wall on the SOLID side of midpoint):
+//     f̃_ᾱ_new = (1/(q(1+2q)))·f̃_α[X]
+//             + ((2q-1)/q)·f̃_ᾱ[X]
+//             - ((2q-1)/(2q+1))·f̃_ᾱ[X-e_α]
+//
+// Defensive fallback to BFL linear if the upstream stencil cell is not fluid
+// (solid neighbour or out-of-domain).
+__global__ void fluidStreamingKernelWithQuadBouzidi(
+    const float* __restrict__ f_src,
+    float* __restrict__ f_dst,
+    const unsigned char* __restrict__ solid_mask,
+    const float* __restrict__ qfrac,
+    unsigned int halfway_wall_faces,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    if (solid_mask[id] != Streaming::CELL_FLUID) return;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        int dst_x = idx + ex[q];
+        int dst_y = idy + ey[q];
+        int dst_z = idz + ez[q];
+
+        unsigned int out_face = 0;
+        if (periodic_x) { if (dst_x < 0) dst_x += nx; if (dst_x >= nx) dst_x -= nx; }
+        else { if (dst_x < 0) out_face |= Streaming::BOUNDARY_X_MIN;
+               if (dst_x >= nx) out_face |= Streaming::BOUNDARY_X_MAX; }
+        if (periodic_y) { if (dst_y < 0) dst_y += ny; if (dst_y >= ny) dst_y -= ny; }
+        else { if (dst_y < 0) out_face |= Streaming::BOUNDARY_Y_MIN;
+               if (dst_y >= ny) out_face |= Streaming::BOUNDARY_Y_MAX; }
+        if (periodic_z) { if (dst_z < 0) dst_z += nz; if (dst_z >= nz) dst_z -= nz; }
+        else { if (dst_z < 0) out_face |= Streaming::BOUNDARY_Z_MIN;
+               if (dst_z >= nz) out_face |= Streaming::BOUNDARY_Z_MAX; }
+
+        if (out_face != 0) {
+            if (out_face & halfway_wall_faces) {
+                const float f_q_loc = f_src[id + q * n_cells];
+                const int q_opp_loc = opposite[q];
+                f_dst[id + q_opp_loc * n_cells] = f_q_loc;
+            }
+            continue;
+        }
+
+        const int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
+        const float f_in = f_src[id + q * n_cells];
+
+        if (solid_mask[dst_id] == Streaming::CELL_FLUID) {
+            f_dst[dst_id + q * n_cells] = f_in;
+            continue;
+        }
+
+        // Solid neighbour → quadratic Bouzidi
+        const int q_opp = opposite[q];
+        float qf = qfrac[id + q * n_cells];
+        const float QMIN = 0.05f, QMAX = 0.95f;
+        if (qf > QMAX) qf = QMAX;
+        if (qf < QMIN) qf = QMIN;
+
+        // Lookup helper: locate upstream-1 cell at X - e_q
+        auto lookup_upstream = [&] (int steps, int& up_id) -> bool {
+            int up_x = idx - steps * ex[q];
+            int up_y = idy - steps * ey[q];
+            int up_z = idz - steps * ez[q];
+            if (periodic_x) { if (up_x < 0) up_x += nx; if (up_x >= nx) up_x -= nx; }
+            else if (up_x < 0 || up_x >= nx) return false;
+            if (periodic_y) { if (up_y < 0) up_y += ny; if (up_y >= ny) up_y -= ny; }
+            else if (up_y < 0 || up_y >= ny) return false;
+            if (periodic_z) { if (up_z < 0) up_z += nz; if (up_z >= nz) up_z -= nz; }
+            else if (up_z < 0 || up_z >= nz) return false;
+            up_id = up_x + up_y * nx + up_z * nx * ny;
+            return solid_mask[up_id] == Streaming::CELL_FLUID;
+        };
+
+        float result;
+
+        if (qf <= 0.5f) {
+            int up1_id = -1, up2_id = -1;
+            const bool have_up1 = lookup_upstream(1, up1_id);
+            const bool have_up2 = lookup_upstream(2, up2_id);
+            if (have_up1 && have_up2) {
+                const float f_up1 = f_src[up1_id + q * n_cells];
+                const float f_up2 = f_src[up2_id + q * n_cells];
+                const float c1 = qf * (1.0f + 2.0f * qf);
+                const float c2 = (1.0f - 2.0f * qf) * (1.0f + 2.0f * qf);
+                const float c3 = -qf * (1.0f - 2.0f * qf);
+                result = c1 * f_in + c2 * f_up1 + c3 * f_up2;
+            } else if (have_up1) {
+                // Fallback: BFL linear
+                const float f_up1 = f_src[up1_id + q * n_cells];
+                result = 2.0f * qf * f_in + (1.0f - 2.0f * qf) * f_up1;
+            } else {
+                // Fallback: halfway BB
+                result = f_in;
+            }
+        } else {
+            int up1_id = -1;
+            const bool have_up1 = lookup_upstream(1, up1_id);
+            if (have_up1) {
+                const float f_out = f_src[id + q_opp * n_cells];
+                const float f_up_opp = f_src[up1_id + q_opp * n_cells];
+                const float c1 = 1.0f / (qf * (1.0f + 2.0f * qf));
+                const float c2 = (2.0f * qf - 1.0f) / qf;
+                const float c3 = -(2.0f * qf - 1.0f) / (2.0f * qf + 1.0f);
+                result = c1 * f_in + c2 * f_out + c3 * f_up_opp;
+            } else {
+                // Fallback: BFL linear
+                const float f_out = f_src[id + q_opp * n_cells];
+                const float inv_2q = 0.5f / qf;
+                result = inv_2q * f_in + (2.0f * qf - 1.0f) * inv_2q * f_out;
+            }
+        }
+
+        f_dst[id + q_opp * n_cells] = result;
+    }
+}
+
+// Streaming with single-node second-order QBB (lbmpy / walberla style).
+//
+// For every fluid cell X and direction q with X+e_q SOLID:
+//   1. Compute local moments (rho, ux, uy, uz) from this cell's 19 PDFs.
+//   2. Compute equilibrium f_eq(q) and f_eq(opp[q]).
+//   3. Apply lbmpy formula:
+//        t1 = (f_in − f_out) + (f_in + f_out − ω·feq_sym) / (1 − ω)
+//        t2 = q · (f_in + f_out) / (1 + q)
+//        f_dst[X, opp[q]] = (1−q)/(1+q) · 0.5 · t1 + t2
+//
+// Single-node = no upstream stencil = always safe regardless of solid topology.
+// Second-order accurate at the wall for any q ∈ (0, 1].
+//
+// Reference: lbmpy boundaries/boundaryconditions.py:245-398
+__global__ void fluidStreamingKernelWithSingleNodeQBB(
+    const float* __restrict__ f_src,
+    float* __restrict__ f_dst,
+    const unsigned char* __restrict__ solid_mask,
+    const float* __restrict__ qfrac,
+    float omega,
+    unsigned int halfway_wall_faces,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    if (solid_mask[id] != Streaming::CELL_FLUID) return;
+
+    // Phase 1: compute local moments by summing this cell's 19 PDFs.
+    // Needed for the equilibrium evaluation in the QBB formula.
+    float rho_local = 0.0f;
+    float mx = 0.0f, my = 0.0f, mz = 0.0f;
+    #pragma unroll
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        float f_q = f_src[id + q * n_cells];
+        rho_local += f_q;
+        mx += ex[q] * f_q;
+        my += ey[q] * f_q;
+        mz += ez[q] * f_q;
+    }
+    const float rho_safe = fmaxf(rho_local, 1e-12f);
+    const float ux = mx / rho_safe;
+    const float uy = my / rho_safe;
+    const float uz = mz / rho_safe;
+
+    // Phase 2: stream + handle each link.
+    const float inv_one_minus_omega = 1.0f / (1.0f - omega);
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        int dst_x = idx + ex[q];
+        int dst_y = idy + ey[q];
+        int dst_z = idz + ez[q];
+
+        unsigned int out_face = 0;
+        if (periodic_x) { if (dst_x < 0) dst_x += nx; if (dst_x >= nx) dst_x -= nx; }
+        else { if (dst_x < 0) out_face |= Streaming::BOUNDARY_X_MIN;
+               if (dst_x >= nx) out_face |= Streaming::BOUNDARY_X_MAX; }
+        if (periodic_y) { if (dst_y < 0) dst_y += ny; if (dst_y >= ny) dst_y -= ny; }
+        else { if (dst_y < 0) out_face |= Streaming::BOUNDARY_Y_MIN;
+               if (dst_y >= ny) out_face |= Streaming::BOUNDARY_Y_MAX; }
+        if (periodic_z) { if (dst_z < 0) dst_z += nz; if (dst_z >= nz) dst_z -= nz; }
+        else { if (dst_z < 0) out_face |= Streaming::BOUNDARY_Z_MIN;
+               if (dst_z >= nz) out_face |= Streaming::BOUNDARY_Z_MAX; }
+
+        if (out_face != 0) {
+            if (out_face & halfway_wall_faces) {
+                const float f_q_loc = f_src[id + q * n_cells];
+                const int q_opp_loc = opposite[q];
+                f_dst[id + q_opp_loc * n_cells] = f_q_loc;
+            }
+            continue;
+        }
+
+        const int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
+        const float f_in = f_src[id + q * n_cells];
+
+        if (solid_mask[dst_id] == Streaming::CELL_FLUID) {
+            f_dst[dst_id + q * n_cells] = f_in;
+            continue;
+        }
+
+        // Solid neighbour → single-node QBB.
+        const int q_opp = opposite[q];
+        float qf = qfrac[id + q * n_cells];
+        // Clamp to [0.05, 0.95] — formula has poles at q=0 and q=-1 only;
+        // numerically the (1+q) and (1-omega) denominators are well-behaved
+        // for any q∈(0,1], but extreme q exposes finite-precision issues.
+        const float QMIN = 0.05f;
+        const float QMAX = 0.95f;
+        if (qf > QMAX) qf = QMAX;
+        if (qf < QMIN) qf = QMIN;
+
+        const float f_out = f_src[id + q_opp * n_cells];
+
+        // Equilibrium at this cell for direction q and opp[q].
+        const float feq_q   = D3Q19::computeEquilibrium(q,   rho_local, ux, uy, uz);
+        const float feq_opp = D3Q19::computeEquilibrium(q_opp, rho_local, ux, uy, uz);
+        const float feq_sym = feq_q + feq_opp;
+
+        // lbmpy formula
+        const float t1 = (f_in - f_out)
+                       + (f_in + f_out - omega * feq_sym) * inv_one_minus_omega;
+        const float t2 = qf * (f_in + f_out) / (1.0f + qf);
+        const float result = ((1.0f - qf) / (1.0f + qf)) * 0.5f * t1 + t2;
+
+        f_dst[id + q_opp * n_cells] = result;
     }
 }
 

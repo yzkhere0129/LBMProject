@@ -573,6 +573,82 @@ public:
     const float* getObstacleQ() const { return d_qfrac_; }
     bool hasObstacleQ() const { return d_qfrac_ != nullptr; }
 
+    /**
+     * @brief Switch the obstacle BC to single-node second-order QBB.
+     *
+     * Replaces the linear-Bouzidi (BFL) obstacle bounce-back with the
+     * lbmpy / walberla-style single-node second-order QBB (Geier-style):
+     *
+     *   t1 = (f_in − f_out) + (f_in + f_out − ω·[f_eq(q) + f_eq(opp[q])])
+     *                        / (1 − ω)
+     *   t2 = q · (f_in + f_out) / (1 + q)
+     *   f_dst[X, opp[q]] = (1−q)/(1+q) · 0.5 · t1 + t2
+     *
+     * Uses ONLY the boundary fluid cell's own populations + local equilibrium —
+     * no upstream stencil, GPU friendly. Second-order accurate at the wall
+     * for any q ∈ (0, 1] (BFL is only first-order). Required to enter the
+     * Schäfer-Turek strict DFG band [3.22, 3.24] at moderate resolution.
+     *
+     * Pre-conditions: setSolidMask() AND setObstacleQ() must already have been
+     * called. After this, streaming() dispatches to the QBB single-node kernel.
+     * Pass omega=0 to revert to BFL linear.
+     *
+     * Reference:
+     *   - lbmpy/boundaries/boundaryconditions.py:245-398 (QuadraticBounceBack)
+     *   - walberla apps/showcases/FlowAroundSphere/FlowAroundSphere.py
+     *
+     * @param omega Relaxation rate to use in the BGK inversion (= 1/tau for
+     *              BGK, = omega+ for TRT). Pass 0 to disable QBB and revert
+     *              to BFL.
+     */
+    void setSingleNodeQBB(float omega);
+
+    /**
+     * @brief Get the omega used by single-node QBB (0 = QBB disabled).
+     */
+    float getQBBOmega() const { return qbb_omega_; }
+
+    /**
+     * @brief Switch the obstacle BC to 3-cell quadratic Bouzidi (BFL 2001).
+     *
+     * True O(dx²) at the wall using a 3-cell upstream stencil. Uses BFL
+     * linear as defensive fallback when the upstream stencil cell is solid
+     * or out-of-domain.
+     *
+     * Pre-conditions: setSolidMask() AND setObstacleQ() must already have been
+     * called. Mutually exclusive with setSingleNodeQBB() — calling this clears
+     * qbb_omega_.
+     *
+     * @param enable true to enable, false to revert to BFL linear.
+     */
+    void setQuadBouzidi(bool enable);
+
+    bool hasQuadBouzidi() const { return quad_bouzidi_enabled_; }
+
+    /**
+     * @brief Switch face boundary handling to HALFWAY bounce-back instead of
+     *        the default fullway BB (cell-center wall).
+     *
+     * For each face the bit is set, the streaming kernel reflects out-of-domain
+     * populations back into the boundary cell at the opposite-direction slot
+     * (halfway BB: wall sits at the link midpoint). Corresponding face nodes
+     * with type BOUNCE_BACK are removed from the BoundaryNode list so the
+     * face-BC apply pass doesn't double-bounce.
+     *
+     * VELOCITY (inlet) and PRESSURE (outlet) face nodes are LEFT IN the
+     * BoundaryNode list — their kernel skips out-of-domain links and the face
+     * BC apply pass handles them via Zou-He.
+     *
+     * Bitmask: use Streaming::BOUNDARY_X_MIN | etc. Pass 0 to revert to fullway.
+     *
+     * Schäfer-Turek and most published LBM cylinder benchmarks use halfway BB
+     * on the channel walls, which avoids the +5-7% Cd inflation of cell-center
+     * fullway BB.
+     */
+    void setHalfwayWallFaces(unsigned int face_mask);
+
+    unsigned int getHalfwayWallFaces() const { return halfway_wall_faces_; }
+
 private:
     // Domain dimensions
     int nx_, ny_, nz_;
@@ -620,6 +696,16 @@ private:
     // Per-link q-fraction for Bouzidi curved BC (size Q*N, q-major SoA).
     // nullptr unless setObstacleQ() has been called.
     float* d_qfrac_;
+
+    // Single-node second-order QBB enabled when > 0. Switches the obstacle
+    // streaming kernel from BFL linear to lbmpy-style second-order QBB.
+    float qbb_omega_;
+
+    // 3-cell quadratic Bouzidi enabled.
+    bool quad_bouzidi_enabled_;
+
+    // Bitmask of faces using halfway BB (default 0 = all face walls fullway).
+    unsigned int halfway_wall_faces_;
 
     // Utility functions
     void allocateMemory();
@@ -764,6 +850,7 @@ __global__ void fluidStreamingKernelWithSolid(
     const float* f_src,
     float* f_dst,
     const unsigned char* solid_mask,
+    unsigned int halfway_wall_faces,
     int nx, int ny, int nz,
     int periodic_x, int periodic_y, int periodic_z);
 
@@ -783,6 +870,64 @@ __global__ void fluidStreamingKernelWithBFL(
     float* f_dst,
     const unsigned char* solid_mask,
     const float* qfrac,
+    unsigned int halfway_wall_faces,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z);
+
+/**
+ * @brief CUDA kernel for streaming with 3-cell quadratic Bouzidi BC.
+ *
+ * Implements Bouzidi-Firdaouss-Lallemand 2001 Eq. 12 (true O(dx²) at wall).
+ * Uses upstream fluid stencil:
+ *
+ *   q <= 1/2:  needs X, X-e_q, X-2e_q (all in direction q toward wall)
+ *     f_dst[X, opp[q]] = q(1+2q)·f_in[X] + (1-2q)(1+2q)·f_up + (-q(1-2q))·f_2up
+ *
+ *   q  > 1/2:  needs X, X (outgoing), X-e_q (outgoing)
+ *     f_dst[X, opp[q]] = (1/(q(1+2q)))·f_in[X] + ((2q-1)/q)·f_out
+ *                      + (-(2q-1)/(2q+1))·f_up_opp
+ *
+ * Defensive fallback to BFL linear when the required upstream cell is solid
+ * or out-of-domain.
+ *
+ * Reference: Bouzidi M., Firdaouss M., Lallemand P. (2001) Phys. Fluids 13:3452.
+ */
+__global__ void fluidStreamingKernelWithQuadBouzidi(
+    const float* f_src,
+    float* f_dst,
+    const unsigned char* solid_mask,
+    const float* qfrac,
+    unsigned int halfway_wall_faces,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z);
+
+/**
+ * @brief CUDA kernel for streaming with single-node second-order QBB.
+ *
+ * For each fluid cell with a solid neighbour in direction q, computes the
+ * post-bounce population using only the boundary cell's own pre-streaming
+ * post-collision populations and the local equilibrium computed from the
+ * cell's macroscopic moments. No upstream stencil access required.
+ *
+ * Formula (lbmpy QuadraticBounceBack, see Geier-style references):
+ *   t1 = (f_in − f_out) + (f_in + f_out − ω·feq_sym) / (1 − ω)
+ *   t2 = q·(f_in + f_out) / (1 + q)
+ *   f_dst[X, opp[q]] = (1−q)/(1+q) · 0.5 · t1 + t2
+ * where feq_sym = f_eq(q) + f_eq(opp[q]) at this cell's local moments.
+ *
+ * @param qfrac Per-link q-fraction (Q-major SoA). 0.5 = "no curvature" default
+ *              has well-defined behaviour but is NOT identical to halfway BB —
+ *              this scheme is independently second-order.
+ * @param omega Relaxation rate used in the BGK inversion (1/tau for BGK,
+ *              omega+ for TRT).
+ */
+__global__ void fluidStreamingKernelWithSingleNodeQBB(
+    const float* f_src,
+    float* f_dst,
+    const unsigned char* solid_mask,
+    const float* qfrac,
+    float omega,
+    unsigned int halfway_wall_faces,
     int nx, int ny, int nz,
     int periodic_x, int periodic_y, int periodic_z);
 

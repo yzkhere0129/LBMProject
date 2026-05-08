@@ -56,7 +56,10 @@ struct Args {
     int   probe_every = 50;
     std::string output_dir = "output_aero_schaefer_turek";
     int   nz_thin    = 4;             // slab depth
-    std::string bc   = "qbb";         // "stair" or "qbb" (Bouzidi linear)
+    std::string bc   = "qbb-quad";    // stair / qbb / qbb-snode / qbb-quad / qbb-half
+    std::string wall_bc = "halfway";  // fullway / halfway   (Y top/bottom walls)
+    float ly_phys    = 0.41f;         // channel height [m]; default = ST spec
+    float u_max_lu   = 0.05f;         // target u_max in lattice units (Mach control)
     float lx_phys    = 2.2f;          // domain length [m]; default = ST spec
 };
 
@@ -80,7 +83,10 @@ static Args parseArgs(int argc, char** argv) {
         else if (s == "--output-dir")  a.output_dir = next();
         else if (s == "--nz-thin")     a.nz_thin = std::stoi(next());
         else if (s == "--bc")          a.bc = next();
+        else if (s == "--wall-bc")     a.wall_bc = next();
         else if (s == "--lx")          a.lx_phys = std::stof(next());
+        else if (s == "--ly")          a.ly_phys = std::stof(next());
+        else if (s == "--u-max-lu")    a.u_max_lu = std::stof(next());
         else if (s == "-h" || s == "--help") {
             std::cout <<
               "Usage: aero_schaefer_turek_3d [opts]\n"
@@ -92,9 +98,18 @@ static Args parseArgs(int argc, char** argv) {
               "  --probe-every N  Cd/Cl sample interval (default 50)\n"
               "  --output-dir D   output directory\n"
               "  --nz-thin N      z-slab depth (default 4)\n"
-              "  --bc stair|qbb   solid BC (default qbb = Bouzidi linear)\n"
+              "  --bc stair|qbb|qbb-snode|qbb-quad|qbb-half   solid BC\n"
+              "         stair    = halfway BB only (Phase 1 baseline)\n"
+              "         qbb      = Bouzidi linear, O(dx) at wall (Phase 1b)\n"
+              "         qbb-snode= single-node 2nd-order QBB (lbmpy formula)\n"
+              "         qbb-quad = 3-cell quadratic Bouzidi (BFL 2001 Eq.12),\n"
+              "                    O(dx²) at wall — strict-band path (default)\n"
+              "         qbb-half = diagnostic (qfrac forced 0.5)\n"
               "  --lx X           domain length [m] (default 2.2 = ST spec; "
-              "use 4.4+ to test outlet reflection)\n";
+              "use 4.4+ to test outlet reflection)\n"
+              "  --wall-bc fullway|halfway   Y top/bottom wall convention\n"
+              "         halfway = wall at link midpoint (default, ST literature)\n"
+              "         fullway = wall at cell centre (legacy, +5-7% Cd bias)\n";
             std::exit(0);
         }
         else {
@@ -113,10 +128,13 @@ int main(int argc, char** argv) {
 
     // ---- Schäfer-Turek geometry (physical units) --------------------------
     const float Lx_phys = args.lx_phys;
-    const float Ly_phys = 0.41f;
+    const float Ly_phys = args.ly_phys;
     const float D_phys  = 0.1f;       // cylinder diameter
     const float cx_phys = 0.2f;
-    const float cy_phys = 0.2f;
+    // ST spec puts cylinder slightly off mid-channel (cy=0.20 vs midline=0.205)
+    // to trigger shedding. When Ly≠0.41 (e.g., wide-channel diagnostic), keep
+    // a 5mm offset from mid-channel to retain asymmetry.
+    const float cy_phys = 0.5f * Ly_phys - 0.005f;
 
     // Inlet velocity (m/s): 2D-1 uses U=0.3 (Re=20), 2D-2 uses U=1.5 (Re=100)
     // U here is centreline (u_max), not mean. u_avg = 2/3 * u_max for parabolic
@@ -133,8 +151,8 @@ int main(int argc, char** argv) {
     const int ny = static_cast<int>(std::round(Ly_phys / dx)) + 1; // +1 so walls sit at j=0 and j=ny-1
     const int nz = args.nz_thin;
 
-    // ---- Time step: target u_max_LU = 0.05 LU (Ma ~ 0.087, well below stability) -
-    const float u_max_lu_target = 0.05f;
+    // ---- Time step: target u_max_LU configurable (default 0.05; Ma ≈ 0.087)
+    const float u_max_lu_target = args.u_max_lu;
     const float dt = u_max_lu_target * dx / U_max_phys;
 
     // ---- Total steps: ~10 shedding cycles (T_shed = D / (St * U_avg)) ----
@@ -169,6 +187,7 @@ int main(int argc, char** argv) {
               << " Probe every:    " << args.probe_every << "\n"
               << " VTK every:      " << args.vtk_every << "\n"
               << " Solid BC:       " << args.bc << "\n"
+              << " Y wall BC:      " << args.wall_bc << "\n"
               << "================================================================\n";
 
     // ---- Build solver -----------------------------------------------------
@@ -192,27 +211,46 @@ int main(int argc, char** argv) {
     fluid.setParabolicInletX(U_max_phys);
     fluid.setPressureOutletX(1.0f);
 
+    // Y-wall convention: halfway BB (wall at link midpoint, ST literature
+    // standard) drops Cd bias by ~5-7% vs the fullway BB (wall at cell centre)
+    // we used by default. Use --wall-bc fullway to revert.
+    if (args.wall_bc == "halfway") {
+        const unsigned int y_face_mask = lbm::core::Streaming::BOUNDARY_Y_MIN
+                                       | lbm::core::Streaming::BOUNDARY_Y_MAX;
+        fluid.setHalfwayWallFaces(y_face_mask);
+    } else if (args.wall_bc != "fullway") {
+        std::cerr << "Unknown --wall-bc value: " << args.wall_bc << std::endl;
+        return 1;
+    }
+
     // ---- Stamp cylinder ---------------------------------------------------
     auto mask = physics::aero::makeFluidMask(nx, ny, nz);
     physics::aero::stampCylinderZ(mask, nx, ny, nz, dx,
                                   cx_phys, cy_phys, 0.5f * D_phys);
     fluid.setSolidMask(mask.data());
 
-    if (args.bc == "qbb") {
-        // Bouzidi-Firdaouss-Lallemand curved BC: per-link q-fractions.
+    if (args.bc == "qbb" || args.bc == "qbb-snode" || args.bc == "qbb-quad") {
+        // Per-link q-fractions for any curved BC variant.
         auto qfrac = physics::aero::makeUnitQFraction(nx, ny, nz);
         physics::aero::computeCylinderZQ(qfrac, mask, nx, ny, nz, dx,
                                          cx_phys, cy_phys, 0.5f * D_phys);
         fluid.setObstacleQ(qfrac.data());
+
+        if (args.bc == "qbb-snode") {
+            const float omega_qbb = fluid.getOmega();
+            fluid.setSingleNodeQBB(omega_qbb);
+        } else if (args.bc == "qbb-quad") {
+            fluid.setQuadBouzidi(true);
+        }
     } else if (args.bc == "qbb-half") {
-        // DIAGNOSTIC: force every q-fraction to 0.5 = halfway BB. Should
-        // produce identical Cd/Cl to --bc stair if BFL kernel is correct.
+        // DIAGNOSTIC: force qfrac=0.5. With BFL kernel this matches halfway BB.
         auto qfrac = physics::aero::makeUnitQFraction(nx, ny, nz);
         for (auto& v : qfrac) v = 0.5f;
         fluid.setObstacleQ(qfrac.data());
     } else if (args.bc != "stair") {
         std::cerr << "Unknown --bc value: " << args.bc
-                  << ". Use 'stair' / 'qbb' / 'qbb-half'." << std::endl;
+                  << ". Use 'stair' / 'qbb' / 'qbb-snode' / 'qbb-half'."
+                  << std::endl;
         return 1;
     }
 
@@ -250,11 +288,25 @@ int main(int argc, char** argv) {
         if (args.probe_every > 0 && (step % args.probe_every == 0)) {
             float Fx_lu = 0, Fy_lu = 0, Fz_lu = 0;
             // f_src after collision is what's about to be streamed
-            physics::aero::computeObstacleForceLU(
-                fluid.getDistributionSrc(), fluid.getSolidMask(),
-                fluid.getObstacleQ(),
-                nx, ny, nz, /*per_x*/0, /*per_y*/0, /*per_z*/1,
-                Fx_lu, Fy_lu, Fz_lu);
+            if (fluid.hasQuadBouzidi()) {
+                physics::aero::computeObstacleForceLU_QuadBouzidi(
+                    fluid.getDistributionSrc(), fluid.getSolidMask(),
+                    fluid.getObstacleQ(),
+                    nx, ny, nz, 0, 0, 1,
+                    Fx_lu, Fy_lu, Fz_lu);
+            } else if (fluid.getQBBOmega() > 0.0f) {
+                physics::aero::computeObstacleForceLU_SingleNodeQBB(
+                    fluid.getDistributionSrc(), fluid.getSolidMask(),
+                    fluid.getObstacleQ(), fluid.getQBBOmega(),
+                    nx, ny, nz, 0, 0, 1,
+                    Fx_lu, Fy_lu, Fz_lu);
+            } else {
+                physics::aero::computeObstacleForceLU(
+                    fluid.getDistributionSrc(), fluid.getSolidMask(),
+                    fluid.getObstacleQ(),
+                    nx, ny, nz, 0, 0, 1,
+                    Fx_lu, Fy_lu, Fz_lu);
+            }
             const float Fx_N = Fx_lu * force_lu_to_N;
             const float Fy_N = Fy_lu * force_lu_to_N;
             const float Fx_per_m = Fx_N / Lz_phys;
