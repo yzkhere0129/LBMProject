@@ -50,6 +50,7 @@ file(GLOB_RECURSE LBM_PHYSICS_SOURCES
     src/physics/vof/*.cu
     src/physics/multiphysics/*.cu
     src/physics/powder/*.cu
+    src/physics/aero/*.cu
     src/cuda/*.cu
 )
 
@@ -252,6 +253,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     add_executable(stefan_benchmark apps/stefan_benchmark.cu)
     set_target_properties(stefan_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(stefan_benchmark lbm_thermal_only CUDA::cudart)
+
+    # ---- Aerodynamics: Schäfer-Turek 3D thin-slab cylinder benchmark ----
+    add_executable(aero_schaefer_turek_3d apps/aero/aero_schaefer_turek_3d.cu)
+    set_target_properties(aero_schaefer_turek_3d PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(aero_schaefer_turek_3d lbm_physics lbm_io CUDA::cudart)
 
 endif()
 

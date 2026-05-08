@@ -106,16 +106,21 @@ public:
      */
     static bool isInitialized();
 
-private:
-    static bool initialized;
-
-    // Host-side copies for initialization
+    // Host-side lattice tables (mirror the __constant__ device arrays).
+    // Public so host-side helpers (geometry stamping, link enumeration in
+    // immersed-boundary BCs, host-side analysis tools) can read the canonical
+    // velocity-direction layout without duplicating it. const + static — no
+    // mutability concern.
     static const int h_ex[Q];
     static const int h_ey[Q];
     static const int h_ez[Q];
+    static const int h_opposite[Q];
+
+private:
+    static bool initialized;
+
     static const float h_w[Q];
     static const double h_w_double[Q];  // Double-precision weights for TRT
-    static const int h_opposite[Q];
 };
 
 } // namespace core

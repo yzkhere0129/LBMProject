@@ -26,7 +26,7 @@ public:
         PUSH
     };
 
-    // Boundary type flags
+    // Boundary type flags (face-mask, used by face BC list)
     static constexpr unsigned int BOUNDARY_NONE  = 0x00;
     static constexpr unsigned int BOUNDARY_X_MIN = 0x01;
     static constexpr unsigned int BOUNDARY_X_MAX = 0x02;
@@ -34,6 +34,12 @@ public:
     static constexpr unsigned int BOUNDARY_Y_MAX = 0x08;
     static constexpr unsigned int BOUNDARY_Z_MIN = 0x10;
     static constexpr unsigned int BOUNDARY_Z_MAX = 0x20;
+
+    // Solid-mask flag values (per-cell uint8_t solid mask for interior obstacles).
+    // Used by FluidLBM::setSolidMask for cylinder/sphere/airfoil immersed
+    // bounce-back. 0 = fluid, 1 = solid (no-slip halfway bounce-back).
+    static constexpr unsigned char CELL_FLUID = 0;
+    static constexpr unsigned char CELL_SOLID = 1;
 
     __host__ __device__ static bool isAtBoundary(
         int x, int y, int z, int nx, int ny, int nz)

@@ -49,7 +49,9 @@ FluidLBM::FluidLBM(int nx, int ny, int nz,
       omega_minus_(0.0f),
       d_omega_field_(nullptr),
       d_boundary_nodes_(nullptr),
-      n_boundary_nodes_(0)
+      n_boundary_nodes_(0),
+      d_solid_mask_(nullptr),
+      d_qfrac_(nullptr)
 {
     // Initialize D3Q19 lattice on device
     if (!D3Q19::isInitialized()) {
@@ -180,11 +182,15 @@ void FluidLBM::freeMemory() {
     if (d_pressure) cudaFree(d_pressure);
     if (d_omega_field_) cudaFree(d_omega_field_);
     if (d_boundary_nodes_) cudaFree(d_boundary_nodes_);
+    if (d_solid_mask_) cudaFree(d_solid_mask_);
+    if (d_qfrac_) cudaFree(d_qfrac_);
 
     d_f_src = d_f_dst = nullptr;
     d_rho = d_ux = d_uy = d_uz = d_pressure = nullptr;
     d_omega_field_ = nullptr;
     d_boundary_nodes_ = nullptr;
+    d_solid_mask_ = nullptr;
+    d_qfrac_ = nullptr;
 }
 
 // Initialize with uniform conditions
@@ -504,17 +510,29 @@ void FluidLBM::streaming() {
                         boundary_y_ == BoundaryType::PERIODIC &&
                         boundary_z_ == BoundaryType::PERIODIC);
 
-    if (all_periodic) {
-        // Use periodic streaming kernel
+    int periodic_x = (boundary_x_ == BoundaryType::PERIODIC) ? 1 : 0;
+    int periodic_y = (boundary_y_ == BoundaryType::PERIODIC) ? 1 : 0;
+    int periodic_z = (boundary_z_ == BoundaryType::PERIODIC) ? 1 : 0;
+
+    if (d_solid_mask_ && d_qfrac_) {
+        // Interior obstacle present + per-link q-fraction set: BFL curved BC.
+        fluidStreamingKernelWithBFL<<<grid, block>>>(
+            d_f_src, d_f_dst, d_solid_mask_, d_qfrac_, nx_, ny_, nz_,
+            periodic_x, periodic_y, periodic_z);
+        CUDA_CHECK_KERNEL();
+    } else if (d_solid_mask_) {
+        // Interior obstacle present, no q-fraction: stair-step halfway BB.
+        fluidStreamingKernelWithSolid<<<grid, block>>>(
+            d_f_src, d_f_dst, d_solid_mask_, nx_, ny_, nz_,
+            periodic_x, periodic_y, periodic_z);
+        CUDA_CHECK_KERNEL();
+    } else if (all_periodic) {
+        // No obstacle, all-periodic: simplest fast kernel
         fluidStreamingKernel<<<grid, block>>>(
             d_f_src, d_f_dst, nx_, ny_, nz_);
         CUDA_CHECK_KERNEL();
     } else {
-        // Use boundary-aware streaming kernel
-        int periodic_x = (boundary_x_ == BoundaryType::PERIODIC) ? 1 : 0;
-        int periodic_y = (boundary_y_ == BoundaryType::PERIODIC) ? 1 : 0;
-        int periodic_z = (boundary_z_ == BoundaryType::PERIODIC) ? 1 : 0;
-
+        // No obstacle, mixed face BCs: existing wall-aware kernel
         fluidStreamingKernelWithWalls<<<grid, block>>>(
             d_f_src, d_f_dst, nx_, ny_, nz_,
             periodic_x, periodic_y, periodic_z);
@@ -935,6 +953,161 @@ void FluidLBM::setMovingWall(unsigned int wall_direction,
               << " nodes with velocity (" << ux_wall << ", "
               << uy_wall << ", " << uz_wall << ")"
               << " (" << excluded_corners << " corner nodes excluded)" << std::endl;
+}
+
+// Set parabolic velocity inlet on the x_min face (Schäfer-Turek profile).
+// Converts BOUNCE_BACK face nodes at x=0 to VELOCITY nodes with per-node
+// u_x(y) = 4·U·y(H-y)/H², uy=uz=0. Corner nodes (touching y or z walls)
+// are left as bounce-back to avoid corner singularities.
+void FluidLBM::setParabolicInletX(float u_max_phys) {
+    if (n_boundary_nodes_ == 0) {
+        std::cout << "[WARNING] setParabolicInletX: no face boundary nodes "
+                  << "(was the FluidLBM constructed with WALL on x?)" << std::endl;
+        return;
+    }
+
+    std::vector<core::BoundaryNode> h_nodes(n_boundary_nodes_);
+    CUDA_CHECK(cudaMemcpy(h_nodes.data(), d_boundary_nodes_,
+                          n_boundary_nodes_ * sizeof(core::BoundaryNode),
+                          cudaMemcpyDeviceToHost));
+
+    // Convert physical centreline velocity to lattice units
+    // u_lattice = u_physical * dt / dx
+    const float u_max_lu = u_max_phys * dt_ / dx_;
+
+    // Channel height in PHYSICAL units; use cell-spacing convention so
+    // walls sit at y=0 and y=(ny-1)·dx (matches Schäfer-Turek convention
+    // when the no-slip wall passes through cell centres of bounce-back nodes).
+    const float H_phys = (ny_ - 1) * dx_;
+
+    int modified = 0, excluded_corners = 0;
+    for (auto& node : h_nodes) {
+        if (!(node.directions & Streaming::BOUNDARY_X_MIN)) continue;
+
+        // Skip corner cells (touching y or z walls) to avoid singularity
+        bool is_corner = false;
+        if (boundary_y_ == BoundaryType::WALL &&
+            (node.y == 0 || node.y == ny_ - 1)) is_corner = true;
+        if (boundary_z_ == BoundaryType::WALL &&
+            (node.z == 0 || node.z == nz_ - 1)) is_corner = true;
+        if (is_corner) { ++excluded_corners; continue; }
+
+        const float y_phys = node.y * dx_;
+        const float u_y = 4.0f * u_max_lu * y_phys * (H_phys - y_phys)
+                          / (H_phys * H_phys);
+        node.type = core::BoundaryType::VELOCITY;
+        node.ux = u_y;
+        node.uy = 0.0f;
+        node.uz = 0.0f;
+        ++modified;
+    }
+
+    CUDA_CHECK(cudaMemcpy(d_boundary_nodes_, h_nodes.data(),
+                          n_boundary_nodes_ * sizeof(core::BoundaryNode),
+                          cudaMemcpyHostToDevice));
+
+    std::cout << "FluidLBM: Parabolic inlet on x_min, u_max="
+              << u_max_phys << " m/s (= " << u_max_lu << " LU), "
+              << modified << " nodes set, "
+              << excluded_corners << " corners excluded." << std::endl;
+}
+
+// Set constant-pressure outlet on the x_max face (Zou-He pressure BC).
+void FluidLBM::setPressureOutletX(float rho_out) {
+    if (n_boundary_nodes_ == 0) {
+        std::cout << "[WARNING] setPressureOutletX: no face boundary nodes."
+                  << std::endl;
+        return;
+    }
+
+    std::vector<core::BoundaryNode> h_nodes(n_boundary_nodes_);
+    CUDA_CHECK(cudaMemcpy(h_nodes.data(), d_boundary_nodes_,
+                          n_boundary_nodes_ * sizeof(core::BoundaryNode),
+                          cudaMemcpyDeviceToHost));
+
+    int modified = 0, excluded_corners = 0;
+    for (auto& node : h_nodes) {
+        if (!(node.directions & Streaming::BOUNDARY_X_MAX)) continue;
+
+        bool is_corner = false;
+        if (boundary_y_ == BoundaryType::WALL &&
+            (node.y == 0 || node.y == ny_ - 1)) is_corner = true;
+        if (boundary_z_ == BoundaryType::WALL &&
+            (node.z == 0 || node.z == nz_ - 1)) is_corner = true;
+        if (is_corner) { ++excluded_corners; continue; }
+
+        node.type = core::BoundaryType::PRESSURE;
+        node.pressure = rho_out;  // BoundaryNode.pressure stores prescribed density
+        node.ux = node.uy = node.uz = 0.0f;
+        ++modified;
+    }
+
+    CUDA_CHECK(cudaMemcpy(d_boundary_nodes_, h_nodes.data(),
+                          n_boundary_nodes_ * sizeof(core::BoundaryNode),
+                          cudaMemcpyHostToDevice));
+
+    std::cout << "FluidLBM: Constant-pressure outlet on x_max, rho_out="
+              << rho_out << " (LU), "
+              << modified << " nodes set, "
+              << excluded_corners << " corners excluded." << std::endl;
+}
+
+// Set per-cell solid mask for interior obstacles (cylinder, sphere, airfoil).
+// Backward compatible: passing nullptr (or never calling) leaves streaming
+// at its existing all-periodic / wall-aware path.
+void FluidLBM::setSolidMask(const unsigned char* host_mask) {
+    if (host_mask == nullptr) {
+        if (d_solid_mask_) {
+            cudaFree(d_solid_mask_);
+            d_solid_mask_ = nullptr;
+        }
+        std::cout << "FluidLBM: Solid mask cleared." << std::endl;
+        return;
+    }
+
+    if (d_solid_mask_ == nullptr) {
+        CUDA_CHECK(cudaMalloc(&d_solid_mask_,
+                              num_cells_ * sizeof(unsigned char)));
+    }
+    CUDA_CHECK(cudaMemcpy(d_solid_mask_, host_mask,
+                          num_cells_ * sizeof(unsigned char),
+                          cudaMemcpyHostToDevice));
+
+    // Count solid cells for diagnostics
+    long long n_solid = 0;
+    for (int i = 0; i < num_cells_; ++i) {
+        if (host_mask[i] != Streaming::CELL_FLUID) ++n_solid;
+    }
+    std::cout << "FluidLBM: Solid mask uploaded ("
+              << n_solid << " / " << num_cells_
+              << " solid cells, "
+              << (100.0 * n_solid / num_cells_) << "% blockage)" << std::endl;
+}
+
+// Set per-link q-fraction field for Bouzidi (BFL) curved BC.
+void FluidLBM::setObstacleQ(const float* host_qfrac) {
+    if (host_qfrac == nullptr) {
+        if (d_qfrac_) { cudaFree(d_qfrac_); d_qfrac_ = nullptr; }
+        std::cout << "FluidLBM: Obstacle q-fraction cleared (revert to halfway BB)."
+                  << std::endl;
+        return;
+    }
+
+    const size_t n_floats = static_cast<size_t>(num_cells_) * D3Q19::Q;
+    if (d_qfrac_ == nullptr) {
+        CUDA_CHECK(cudaMalloc(&d_qfrac_, n_floats * sizeof(float)));
+    }
+    CUDA_CHECK(cudaMemcpy(d_qfrac_, host_qfrac,
+                          n_floats * sizeof(float),
+                          cudaMemcpyHostToDevice));
+
+    // Diagnostic: count non-trivial links (q < 1)
+    long long n_curved = 0;
+    for (size_t i = 0; i < n_floats; ++i) {
+        if (host_qfrac[i] < 0.999f) ++n_curved;
+    }
+    std::cout << "FluidLBM: Obstacle q-fraction uploaded ("
+              << n_curved << " curved-BC links < 1.0)." << std::endl;
 }
 
 // Compute variable viscosity field from VOF
@@ -2020,6 +2193,198 @@ __global__ void fluidStreamingKernelWithWalls(
             f_dst[dst_id + q * n_cells] = f_src[id + q * n_cells];
         }
         // If destination is out of bounds, don't stream (non-periodic boundary)
+    }
+}
+
+// Streaming with per-cell solid mask (interior obstacles).
+//
+// For every fluid cell X and direction q:
+//   - if X+e_q is INTERIOR SOLID (mask flag set):
+//       f_dst[X, opposite[q]] = f_src[X, q]    (halfway bounce-back)
+//   - if X+e_q is OUT OF DOMAIN on a non-periodic face:
+//       SKIP. Face boundary handling (bounce-back / Zou-He velocity /
+//       Zou-He pressure) is done afterwards by applyBoundaryConditions()
+//       via the BoundaryNode list. Reflecting here as well would
+//       double-bounce no-slip walls and overwrite inlet/outlet BCs.
+//   - else:
+//       f_dst[X+e_q, q] = f_src[X, q]          (normal push)
+//
+// Solid cells are skipped entirely.
+__global__ void fluidStreamingKernelWithSolid(
+    const float* __restrict__ f_src,
+    float* __restrict__ f_dst,
+    const unsigned char* __restrict__ solid_mask,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    // Skip solid cells: their f is unused.
+    if (solid_mask[id] != Streaming::CELL_FLUID) return;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        // Raw destination
+        int dst_x = idx + ex[q];
+        int dst_y = idy + ey[q];
+        int dst_z = idz + ez[q];
+
+        bool out_of_domain = false;
+
+        if (periodic_x) {
+            if (dst_x < 0)  dst_x += nx;
+            if (dst_x >= nx) dst_x -= nx;
+        } else if (dst_x < 0 || dst_x >= nx) {
+            out_of_domain = true;
+        }
+        if (periodic_y) {
+            if (dst_y < 0)  dst_y += ny;
+            if (dst_y >= ny) dst_y -= ny;
+        } else if (dst_y < 0 || dst_y >= ny) {
+            out_of_domain = true;
+        }
+        if (periodic_z) {
+            if (dst_z < 0)  dst_z += nz;
+            if (dst_z >= nz) dst_z -= nz;
+        } else if (dst_z < 0 || dst_z >= nz) {
+            out_of_domain = true;
+        }
+
+        if (out_of_domain) {
+            // Skip — face wall / inlet / outlet handled by BoundaryNode list.
+            continue;
+        }
+
+        const int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
+        const float f_q = f_src[id + q * n_cells];
+
+        if (solid_mask[dst_id] != Streaming::CELL_FLUID) {
+            // Interior obstacle: halfway bounce-back.
+            const int q_opp = opposite[q];
+            f_dst[id + q_opp * n_cells] = f_q;
+        } else {
+            f_dst[dst_id + q * n_cells] = f_q;
+        }
+    }
+}
+
+// Streaming with Bouzidi-Firdaouss-Lallemand linear-interpolated bounce-back
+// for curved obstacles.
+//
+// For every fluid cell X and direction q with X+e_q SOLID:
+//   Let q_frac ∈ (0,1] be the fractional distance from X cell-centre to the
+//   wall along the link, normalised by |e_q|·dx. Define:
+//
+//     f1 = f_src[X, q]                              (post-collision, into wall)
+//     f0 = f_src[X, opp[q]]                         (post-collision, away)
+//     f_up = f_src[X - e_q, q]                      (upstream fluid neighbour
+//                                                    same direction)
+//
+//   if q_frac >= 1/2:
+//     f_dst[X, opp[q]] = (1/(2q))·f1 + ((2q-1)/(2q))·f0
+//   else:
+//     if X-e_q is fluid:
+//       f_dst[X, opp[q]] = 2q·f1 + (1-2q)·f_up
+//     else (defensive fallback):
+//       f_dst[X, opp[q]] = f1                       (halfway BB)
+//
+// Reference: Bouzidi M., Firdaouss M., Lallemand P. (2001)
+//   "Momentum transfer of a Boltzmann-lattice fluid with boundaries."
+//   Phys. Fluids 13:3452.
+__global__ void fluidStreamingKernelWithBFL(
+    const float* __restrict__ f_src,
+    float* __restrict__ f_dst,
+    const unsigned char* __restrict__ solid_mask,
+    const float* __restrict__ qfrac,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    int id = idx + idy * nx + idz * nx * ny;
+    int n_cells = nx * ny * nz;
+
+    if (solid_mask[id] != Streaming::CELL_FLUID) return;
+
+    for (int q = 0; q < D3Q19::Q; ++q) {
+        int dst_x = idx + ex[q];
+        int dst_y = idy + ey[q];
+        int dst_z = idz + ez[q];
+
+        bool out_of_domain = false;
+        if (periodic_x) { if (dst_x < 0) dst_x += nx; if (dst_x >= nx) dst_x -= nx; }
+        else if (dst_x < 0 || dst_x >= nx) out_of_domain = true;
+        if (periodic_y) { if (dst_y < 0) dst_y += ny; if (dst_y >= ny) dst_y -= ny; }
+        else if (dst_y < 0 || dst_y >= ny) out_of_domain = true;
+        if (periodic_z) { if (dst_z < 0) dst_z += nz; if (dst_z >= nz) dst_z -= nz; }
+        else if (dst_z < 0 || dst_z >= nz) out_of_domain = true;
+
+        if (out_of_domain) continue;     // face BC list handles it
+
+        const int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
+        const float f1 = f_src[id + q * n_cells];
+
+        if (solid_mask[dst_id] == Streaming::CELL_FLUID) {
+            // Normal streaming
+            f_dst[dst_id + q * n_cells] = f1;
+            continue;
+        }
+
+        // Solid neighbour → BFL bounce-back into f_dst[X, opp[q]]
+        const int q_opp = opposite[q];
+        float qf = qfrac[id + q * n_cells];
+        // Clamp to numerically safe range. BFL formula degenerates as q→0
+        // (bounce ≈ upstream f, breaks no-slip) and as q→1. Mei et al. 2002
+        // recommend [0.1, 0.95] to regularise extreme stair-step links where
+        // the cylinder wall happens to graze a fluid cell-centre.
+        const float QMIN = 0.1f;
+        const float QMAX = 0.95f;
+        if (qf > QMAX) qf = QMAX;
+        if (qf < QMIN) qf = QMIN;
+
+        if (qf >= 0.5f) {
+            const float f0 = f_src[id + q_opp * n_cells];
+            const float inv_2q = 0.5f / qf;
+            f_dst[id + q_opp * n_cells] = inv_2q * f1 + (2.0f * qf - 1.0f) * inv_2q * f0;
+        } else {
+            // Need upstream fluid neighbour at X - e_q
+            int up_x = idx - ex[q];
+            int up_y = idy - ey[q];
+            int up_z = idz - ez[q];
+            bool up_oob = false;
+            if (periodic_x) { if (up_x < 0) up_x += nx; if (up_x >= nx) up_x -= nx; }
+            else if (up_x < 0 || up_x >= nx) up_oob = true;
+            if (periodic_y) { if (up_y < 0) up_y += ny; if (up_y >= ny) up_y -= ny; }
+            else if (up_y < 0 || up_y >= ny) up_oob = true;
+            if (periodic_z) { if (up_z < 0) up_z += nz; if (up_z >= nz) up_z -= nz; }
+            else if (up_z < 0 || up_z >= nz) up_oob = true;
+
+            bool up_fluid = !up_oob;
+            int up_id = -1;
+            if (up_fluid) {
+                up_id = up_x + up_y * nx + up_z * nx * ny;
+                if (solid_mask[up_id] != Streaming::CELL_FLUID) up_fluid = false;
+            }
+
+            if (up_fluid) {
+                const float f_up = f_src[up_id + q * n_cells];
+                f_dst[id + q_opp * n_cells] =
+                    2.0f * qf * f1 + (1.0f - 2.0f * qf) * f_up;
+            } else {
+                // Fallback: halfway BB
+                f_dst[id + q_opp * n_cells] = f1;
+            }
+        }
     }
 }
 

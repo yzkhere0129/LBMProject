@@ -478,6 +478,101 @@ public:
                       float uy_wall,
                       float uz_wall);
 
+    /**
+     * @brief Set a parabolic velocity inlet on the x_min face.
+     *
+     * Converts the bounce-back face nodes at x=0 into VELOCITY nodes whose
+     * x-component follows the Schäfer–Turek profile
+     *
+     *   u_x(y) = 4·u_max·y·(H_y - y) / H_y^2
+     *
+     * where H_y = (ny-1)·dx is the channel height in physical units, y is the
+     * cell y-coordinate (in physical units), and u_max is the centreline
+     * velocity in m/s. uy = uz = 0 at the inlet. z dependence is uniform
+     * (suitable for 3D thin-slab "2D-2" runs).
+     *
+     * Pre-condition: boundary_x_ must be WALL (face node list exists at x=0).
+     * Corner nodes (touching y or z walls) are kept as bounce-back to avoid
+     * the singular zero-velocity / wall-velocity conflict.
+     *
+     * @param u_max_phys Centreline velocity [m/s]
+     */
+    void setParabolicInletX(float u_max_phys);
+
+    /**
+     * @brief Set a constant-pressure outlet on the x_max face.
+     *
+     * Converts bounce-back face nodes at x=nx-1 into PRESSURE nodes with
+     * prescribed density (Zou–He). Reference density rho_out=1.0 corresponds
+     * to zero pressure relative to rho0_ in the standard LBM EOS p = cs²(ρ-ρ₀).
+     *
+     * Pre-condition: boundary_x_ must be WALL.
+     *
+     * @param rho_out Outlet density (lattice units, default 1.0)
+     */
+    void setPressureOutletX(float rho_out = 1.0f);
+
+    /**
+     * @brief Set per-cell solid mask for interior obstacles (cylinder/airfoil).
+     *
+     * Enables halfway bounce-back at fluid-solid interfaces. The streaming
+     * step inspects the mask: when a fluid cell would push into a solid
+     * neighbour (or out of the domain on a non-periodic face), the population
+     * is reflected back into the fluid cell at the opposite-direction slot.
+     *
+     * Backward compatible: with no mask set, streaming behaviour is unchanged
+     * and bit-identical to existing AM tests.
+     *
+     * @param host_mask Host-side mask (size nx*ny*nz, 0=fluid, 1=solid).
+     *                  Use Streaming::CELL_FLUID / CELL_SOLID for clarity.
+     *                  Pass nullptr to clear and revert to mask-free streaming.
+     */
+    void setSolidMask(const unsigned char* host_mask);
+
+    /**
+     * @brief Get device pointer to solid mask (nullptr if none set).
+     *
+     * Aero modules (MEM force, probes) use this to enumerate fluid-solid
+     * links. Read-only; do not mutate.
+     */
+    const unsigned char* getSolidMask() const { return d_solid_mask_; }
+
+    /**
+     * @brief Whether a solid mask is currently active.
+     */
+    bool hasSolidMask() const { return d_solid_mask_ != nullptr; }
+
+    /**
+     * @brief Set per-link q-fraction field for Bouzidi (BFL) curved BC.
+     *
+     * For every fluid cell X and lattice direction q, q_frac[id, q] holds the
+     * fractional distance from X's cell-centre to the immersed wall along the
+     * link, normalised by |e_q|·dx. Range (0, 1]:
+     *   q = 1   → wall sits exactly at the neighbour cell-centre (degenerates
+     *             to standard halfway BB on stair-step)
+     *   q < 1   → wall sits between fluid cell and neighbour (curved surface)
+     *   q ≤ 0   → wall is in or behind the fluid cell (NOT supported; treat
+     *             this cell as solid in the mask instead)
+     *
+     * Layout: same SoA q-major as the f-fields, q_frac[id + q*N].
+     *
+     * Effect on streaming(): when both setSolidMask() and setObstacleQ() are
+     * active, the streaming kernel switches to BFL bounce-back. With only
+     * setSolidMask() active, behaviour is unchanged (halfway BB).
+     *
+     * Reference: Bouzidi, Firdaouss & Lallemand (2001) Phys. Fluids 13:3452.
+     *
+     * @param host_qfrac  Host array of size Q·nx·ny·nz (q-major SoA),
+     *                    or nullptr to clear and revert to halfway BB.
+     */
+    void setObstacleQ(const float* host_qfrac);
+
+    /**
+     * @brief Get device pointer to per-link q-fraction field (nullptr if none).
+     */
+    const float* getObstacleQ() const { return d_qfrac_; }
+    bool hasObstacleQ() const { return d_qfrac_ != nullptr; }
+
 private:
     // Domain dimensions
     int nx_, ny_, nz_;
@@ -517,6 +612,14 @@ private:
     // Boundary node management
     core::BoundaryNode* d_boundary_nodes_;  ///< Device array of boundary nodes
     int n_boundary_nodes_;                   ///< Number of boundary nodes
+
+    // Per-cell solid mask for interior obstacles (aero / immersed bodies).
+    // nullptr unless setSolidMask() has been called.
+    unsigned char* d_solid_mask_;
+
+    // Per-link q-fraction for Bouzidi curved BC (size Q*N, q-major SoA).
+    // nullptr unless setObstacleQ() has been called.
+    float* d_qfrac_;
 
     // Utility functions
     void allocateMemory();
@@ -640,6 +743,46 @@ __global__ void fluidStreamingKernel(
 __global__ void fluidStreamingKernelWithWalls(
     const float* f_src,
     float* f_dst,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z);
+
+/**
+ * @brief CUDA kernel for streaming with mixed BC + interior solid obstacles
+ *
+ * Implements halfway bounce-back at every fluid-solid link plus the
+ * standard face-wall handling. Solid cells are skipped entirely.
+ *
+ * For each fluid cell X and direction q:
+ *   - if X+e_q is solid OR out-of-domain on a non-periodic face:
+ *       f_dst[X, opposite[q]] = f_src[X, q]   (halfway bounce-back)
+ *   - else:
+ *       f_dst[X+e_q, q] = f_src[X, q]         (normal push)
+ *
+ * @param solid_mask Per-cell mask, 0=fluid, 1=solid (Streaming::CELL_*)
+ */
+__global__ void fluidStreamingKernelWithSolid(
+    const float* f_src,
+    float* f_dst,
+    const unsigned char* solid_mask,
+    int nx, int ny, int nz,
+    int periodic_x, int periodic_y, int periodic_z);
+
+/**
+ * @brief CUDA kernel for streaming with Bouzidi (BFL) curved-surface BC.
+ *
+ * Same skeleton as fluidStreamingKernelWithSolid, but every fluid-solid
+ * link uses Bouzidi-Firdaouss-Lallemand linear-interpolated bounce-back
+ * with the per-link q-fraction supplied by the caller. Defensive fallback
+ * to halfway BB when q < 1/2 and the upstream fluid neighbour does not
+ * exist (solid or out-of-domain).
+ *
+ * @param qfrac Per-link q-fraction field (Q-major SoA, default 1.0)
+ */
+__global__ void fluidStreamingKernelWithBFL(
+    const float* f_src,
+    float* f_dst,
+    const unsigned char* solid_mask,
+    const float* qfrac,
     int nx, int ny, int nz,
     int periodic_x, int periodic_y, int periodic_z);
 
