@@ -56,6 +56,7 @@ struct Args {
     float omega_4    = 1.0f;
     float omega_5    = 1.0f;
     float omega_6    = 1.0f;
+    bool  no_cylinder = false;     // diagnostic: pure-Poiseuille (no obstacle)
 };
 static Args parseArgs(int argc, char** argv) {
     Args a;
@@ -73,6 +74,7 @@ static Args parseArgs(int argc, char** argv) {
         else if (s == "--output-dir")  a.output_dir = next();
         else if (s == "--nz-thin")     a.nz_thin = std::stoi(next());
         else if (s == "--u-max-lu")    a.u_max_lu = std::stof(next());
+        else if (s == "--no-cylinder") a.no_cylinder = true;
         else if (s == "--omega-3")     a.omega_3 = std::stof(next());
         else if (s == "--omega-4")     a.omega_4 = std::stof(next());
         else if (s == "--omega-5")     a.omega_5 = std::stof(next());
@@ -136,9 +138,16 @@ __global__ void initializeUniformF27(float* f, int n_cells) {
     }
 }
 
-// Apply parabolic-velocity inlet to f at i=0 (overwrite all 27 PDFs with f_eq).
-// Run BEFORE collision; Cumulant collision preserves equilibrium so the
-// inlet condition stays valid through collision + streaming.
+// Apply parabolic-velocity inlet at i=0.
+// Run AFTER stream. Only sets populations with c_x > 0 (the "missing" ones
+// that would have streamed from x = -1 outside the domain). c_x ≤ 0
+// populations are left as written by stream (from interior cells).
+//
+// This is the equilibrium-form regularized velocity inlet — sets unknown
+// populations to f_eq(rho_inferred, u_inlet) where rho_inferred is the local
+// post-stream density of the c_x ≤ 0 populations, scaled to enforce mass
+// conservation. For practical Cumulant LBM we use rho=1 (consistent with
+// inlet specifying both u and ρ).
 __global__ void applyInletD3Q27(
     float* f, int nx, int ny, int nz,
     float u_max_lu, float dx_phys)
@@ -155,14 +164,29 @@ __global__ void applyInletD3Q27(
     const float y_phys = idy * dx_phys;
     const float u_x = 4.0f * u_max_lu * y_phys * (H_phys - y_phys)
                      / (H_phys * H_phys);
+
+    // Ladd moving-wall velocity BC: for each unknown population (c_x > 0),
+    // reflect from the opposite (c_x < 0, came from interior via stream)
+    // and add momentum correction:
+    //   f_q = f_opp_q + 6 · w_q · ρ · (c_q · u_BC)
+    // For x-direction inlet with u_BC = (u_x, 0, 0), (c · u_BC) = c_q_x · u_x.
+    // We use ρ = 1 (consistent with overall density target).
+    // Reference: Ladd 1994, J. Fluid Mech. 271:285. Bouzidi et al. 2001 for
+    // the 6·w·ρ·(c·u) coefficient form (vs. 2·w·ρ·(c·u)·3 = 6 w ρ (c·u)).
     #pragma unroll
     for (int q = 0; q < 27; ++q) {
-        f[id + q * n_cells] = D3Q27::computeEquilibrium(q, 1.0f, u_x, 0.0f, 0.0f);
+        if (ex27[q] > 0) {
+            const int q_opp = opposite27[q];
+            const float cu = (float)ex27[q] * u_x;  // c_y, c_z components zero in u_BC
+            f[id + q * n_cells] = f[id + q_opp * n_cells]
+                                + 6.0f * w27[q] * 1.0f * cu;
+        }
     }
 }
 
-// Apply outlet (zero-gradient extrapolation): f_src[nx-1] = f_src[nx-2].
-// Run BEFORE collision so collision propagates correctly.
+// Apply outlet (zero-gradient extrapolation) at i=nx-1.
+// Run AFTER stream. Only sets populations with c_x < 0 (those streaming from
+// the missing x=nx ghost cell). Other populations are from streaming.
 __global__ void applyOutletD3Q27(
     float* f, int nx, int ny, int nz)
 {
@@ -174,6 +198,7 @@ __global__ void applyOutletD3Q27(
     const int id = idx + idy * nx + idz * nx * ny;
     const int src_id = (nx - 2) + idy * nx + idz * nx * ny;
     const int n_cells = nx * ny * nz;
+    // Outlet: zero-gradient extrapolation of ALL 27 populations.
     #pragma unroll
     for (int q = 0; q < 27; ++q) {
         f[id + q * n_cells] = f[src_id + q * n_cells];
@@ -199,12 +224,12 @@ __global__ void streamD3Q27(
 
     if (solid_mask[id] != 0) return;
 
-    // Inlet/outlet handled by separate pre-collision kernels. Here just
-    // stream — at i=0 cells we still stream from (i=-1) which is OOB; treat
-    // as halfway BB so f_dst[i=0, q] for q with ex<0 stays defined. The
-    // applyInlet kernel runs before the next collision, overwriting.
+    // STREAM at all cells. At i=0, the c_x>0 populations get halfway BB
+    // from OOB src; applyInletD3Q27 (post-stream) reconstructs them via
+    // Ladd moving-wall formula using the c_x<0 populations from interior.
+    // At i=nx-1, similarly applyOutletD3Q27 sets c_x<0 from extrapolation.
 
-    // Generic interior fluid cell: stream from each direction's pre-image.
+    // Generic fluid cell: stream from each direction's pre-image.
     // For each q, source = X - e_q. If source is solid OR out-of-domain on
     // a non-periodic face, apply halfway BB: take f_src at THIS cell in
     // direction opp[q] (= the population that was about to leave in -q
@@ -376,8 +401,10 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMalloc(&d_uz, macro_size));
     CUDA_CHECK(cudaMalloc(&d_solid, n_cells * sizeof(unsigned char)));
 
-    // Build cylinder mask
-    auto h_mask = makeCylinderMask(nx, ny, nz, dx, cx, cy, 0.5f * D);
+    // Build cylinder mask (or empty if --no-cylinder for diagnostic)
+    auto h_mask = args.no_cylinder
+                ? std::vector<unsigned char>((size_t)nx * ny * nz, 0)
+                : makeCylinderMask(nx, ny, nz, dx, cx, cy, 0.5f * D);
     long long n_solid = 0; for (auto v : h_mask) if (v) ++n_solid;
     std::cout << " Solid cells: " << n_solid << " ("
               << (100.0 * n_solid / n_cells) << "% of domain)\n";
@@ -416,16 +443,9 @@ int main(int argc, char** argv) {
     dim3 grid_face((ny + 15) / 16, (nz + 3) / 4, 1);
 
     for (int step = 0; step < total_steps; ++step) {
-        // Apply inlet (parabolic velocity via f = f_eq) on f_src[i=0]
-        applyInletD3Q27<<<grid_face, block_face>>>(
-            d_f_src, nx, ny, nz, args.u_max_lu, dx);
-        CUDA_CHECK_KERNEL();
-
-        // Apply outlet (extrapolation) on f_src[i=nx-1]
-        applyOutletD3Q27<<<grid_face, block_face>>>(d_f_src, nx, ny, nz);
-        CUDA_CHECK_KERNEL();
-
-        // Cumulant collision (in-place: f_src → f_src)
+        // Cumulant collision (in-place on f_src, interior cells only —
+        // inlet/outlet cells get overwritten by applyInlet/Outlet below
+        // so collision result on i=0/nx-1 is irrelevant)
         physics::cumulant::fluidCumulantCollisionKernel<<<grid3, block3>>>(
             d_f_src, d_f_src, d_rho, d_ux, d_uy, d_uz,
             nx, ny, nz,
@@ -464,9 +484,19 @@ int main(int argc, char** argv) {
                 << Cd << "," << Cl << "\n";
         }
 
-        // Streaming (interior only; inlet/outlet enforced pre-collision)
+        // Streaming (interior only; inlet/outlet skipped inside kernel)
         streamD3Q27<<<grid3, block3>>>(
             d_f_src, d_f_dst, d_solid, nx, ny, nz);
+        CUDA_CHECK_KERNEL();
+
+        // POST-stream: enforce inlet (f = f_eq with parabolic u_x)
+        // This OVERWRITES whatever streaming kernel skipped at i=0.
+        applyInletD3Q27<<<grid_face, block_face>>>(
+            d_f_dst, nx, ny, nz, args.u_max_lu, dx);
+        CUDA_CHECK_KERNEL();
+
+        // POST-stream: enforce outlet (extrapolation from i=nx-2)
+        applyOutletD3Q27<<<grid_face, block_face>>>(d_f_dst, nx, ny, nz);
         CUDA_CHECK_KERNEL();
 
         // Swap
