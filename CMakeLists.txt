@@ -259,6 +259,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(aero_schaefer_turek_3d PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(aero_schaefer_turek_3d lbm_physics lbm_io CUDA::cudart)
 
+    # D3Q27 lattice sanity test (Phase D-1 of Cumulant work)
+    add_executable(test_d3q27_sanity apps/aero/test_d3q27_sanity.cu)
+    set_target_properties(test_d3q27_sanity PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_d3q27_sanity lbm_core CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------
