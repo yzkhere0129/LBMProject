@@ -1,0 +1,40 @@
+{
+  "case": "316L LPBF line scan",
+  "laser_power_W": 150,
+  "scan_velocity_m_s": 0.8,
+  "spot_diameter_um": 50,
+  "grid_dims": [500, 200, 100],
+  "dx_um": 2.0,
+  "step": 3000,
+  "sim_time_us": 240,
+  "physics_stack": [
+    "D3Q19 BGK + EDM forcing + TRT collision",
+    "16-bounce DDA ray-tracing with Born-Wolf complex Fresnel (n=2.9613, k=4.0133 @ 1064nm)",
+    "Anisimov-Knight recoil pressure",
+    "Hertz-Knudsen evaporative cooling (alpha_evap=0.18)",
+    "Marangoni stress on liquid-gas interface",
+    "Phase change (mushy zone, ESM enthalpy method)",
+    "VOF/PLIC interface tracking"
+  ],
+  "stability_features": [
+    "200-step laser ramp",
+    "CFL strict mode",
+    "Force substep",
+    "Bulk-cell evap fallback (grad_eff=0.1)"
+  ],
+  "results_at_240us": {
+    "T_max_K": 4079,
+    "v_max_m_s": 6.01,
+    "pool_length_um": 220,
+    "pool_width_um": 92,
+    "envelope_min_z_um": -103.1,
+    "keyhole_depth_at_column_um": 62,
+    "Ma_LBM_max": 0.499,
+    "mass_drift_pct": -0.33,
+    "surface_vertices_in_view": 28641
+  },
+  "branch": "r14/clean-baseline (showcase) ← derived from r36/penetration-axis",
+  "vtk_step_3000_size_MB": 600,
+  "vtk_archived": false,
+  "extracted_isosurface_size_KB": 209
+}
