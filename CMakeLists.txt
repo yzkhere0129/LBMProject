@@ -270,6 +270,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(test_cumulant_stages PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_cumulant_stages lbm_core lbm_physics CUDA::cudart)
 
+    # ST 2D-2 driver with D3Q27 Cumulant collision (Phase D-4 driver)
+    add_executable(aero_st_2d2_cumulant apps/aero/aero_st_2d2_cumulant.cu)
+    set_target_properties(aero_st_2d2_cumulant PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(aero_st_2d2_cumulant lbm_core lbm_physics lbm_io CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------
