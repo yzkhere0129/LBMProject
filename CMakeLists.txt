@@ -51,6 +51,7 @@ file(GLOB_RECURSE LBM_PHYSICS_SOURCES
     src/physics/multiphysics/*.cu
     src/physics/powder/*.cu
     src/physics/aero/*.cu
+    src/physics/cumulant/*.cu
     src/cuda/*.cu
 )
 
@@ -263,6 +264,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     add_executable(test_d3q27_sanity apps/aero/test_d3q27_sanity.cu)
     set_target_properties(test_d3q27_sanity PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_d3q27_sanity lbm_core CUDA::cudart)
+
+    # Cumulant per-stage tests (Phase D-2)
+    add_executable(test_cumulant_stages apps/aero/test_cumulant_stages.cu)
+    set_target_properties(test_cumulant_stages PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_cumulant_stages lbm_core lbm_physics CUDA::cudart)
 
 endif()
 
