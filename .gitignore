@@ -1,134 +1,66 @@
-# Build directories
+# Build artefacts
 build/
 cmake-build-*/
 out/
-
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Windows Zone.Identifier files
-*:Zone.Identifier
-
-# Compiled objects
 *.o
 *.obj
 *.a
 *.lib
 *.so
 *.dylib
-
-# Executables
 *.exe
-*.out
-
-# VTK output files (simulation results)
-*.vtk
-*.vtu
-*.pvd
-visualization_output/
-test_output/
-
-# Temporary files
-*.tmp
-*.temp
-*.log
-
-# Analysis tools
-.VSCodeCounter/
-
-# Python cache
-__pycache__/
-*.pyc
-
-# Core dumps (only in root, not src/core/ or include/core/)
-/core
-/core.*
-
-# CUDA compiled files
 *.cubin
 *.fatbin
 *.ptx
 
-# Documentation builds (keep source)
-docs/_build/
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.VSCodeCounter/
+*:Zone.Identifier
 
-# Large data files
-*.dat
-*.bin
-*.raw
-
-# Keep important markdown docs
-!README.md
-!CLAUDE.md
-!ARCHITECTURE.md
-!docs/*.md
-
-# Gemini/Claude specific files
-.claude/
-
-# Python virtual environment
+# Python
+__pycache__/
+*.pyc
 venv/
+.venv/
 
-# Backup files
+# Backup / temp
 *.backup*
 *.bak
+*.tmp
+*.temp
+*.log
 
-# Generated Documentation & Reports
-# Ignore all markdown and text files by default
-*.md
-*.txt
-*.pdf
+# AI / Claude internal
+.claude/
+CLAUDE.md
+SHOWCASE_BLUEPRINT.md
 
-# Then, un-ignore the ones that are explicitly tracked or should be.
-# This is a more maintainable approach than listing all reports.
-!README.md
-!README_DOCS.md
-!CLAUDE.md
-!ARCHITECTURE.md
-!CMakeLists.txt
-!LBM_Framework_Blueprint.json
-!MATERIAL_DATABASE.yaml
-!PLIC_DELIVERY.md
-!PLIC_DELIVERY_REPORT.md
-!*.sh
-
-# Un-ignore documentation source files
-!docs/**/*.md
-
-# Test executables in root (not source files)
-# NOTE: Do NOT ignore test_*.cu — those are test source files in tests/
-/test_*
-!/tests/
-
-# Output directories (simulation results — large, reproducible)
+# Simulation outputs (regeneratable, large)
+*.vtk
+*.vtu
+*.pvd
 output_*/
-presentation_figures/
+visualization_output/
+test_output/
 test_reports/
+presentation_figures/
 backups/
 Testing/
 
-# Config files (assuming they are for specific tests and not part of the core config)
-/configs/
+# Large binary data
+*.dat
+*.bin
+*.raw
+phase[0-9]*_results.tar.gz
 
-# Generated images and templates
-*.png
-*.template
-
-# Build directories
-build_test/
-benchmark/
-build_check/
-
-# Task-A: large artefacts that should not be in git
-phase2_results.tar.gz
-phase4_results.tar.gz
-output_phase1
-output_phase2
-output_phase4
-output_phase2_*
-output_phase4_*
-vtk-316L-150W-50um-V800mms
+# Allow showcase figures (committed assets)
+!showcase/**/*.png
+!showcase/**/*.npz
+!showcase/**/*.csv
+!showcase/**/*.json
+!gallery/**/*.png

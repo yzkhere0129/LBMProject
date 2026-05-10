@@ -1,0 +1,18 @@
+{
+  "case": "B4",
+  "Ra": 10000,
+  "Nu_hot": 2.4183,
+  "Nu_cold": 2.5227,
+  "Nu_ref": 2.243,
+  "Nu_err_pct": 7.82,
+  "u_max_norm": 16.6277,
+  "v_max_norm": 20.7506,
+  "u_max_ref": 16.178,
+  "v_max_ref": 19.617,
+  "u_err_pct": 2.78,
+  "v_err_pct": 5.78,
+  "converged": false,
+  "conv_step": 200000,
+  "case_label": "B4 Natural Convection Ra=1e4",
+  "Nu_avg_from_field_recompute": 2.3538797195876353
+}

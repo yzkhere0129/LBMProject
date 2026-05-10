@@ -1,0 +1,11 @@
+{
+  "case": "B3 Taylor-Green 2D",
+  "grid": "128x128x3",
+  "Re": 100,
+  "tau": 0.7,
+  "collision": "BGK",
+  "L2_energy_pct": 0.2201836221284312,
+  "slope_err_pct": 0.010846795870340683,
+  "decay_rate_sim": -1.999783074221586,
+  "decay_rate_exact": -2.0000000101400928
+}

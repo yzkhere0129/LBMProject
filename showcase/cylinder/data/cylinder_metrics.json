@@ -1,0 +1,22 @@
+{
+  "case": "Schaefer-Turek 2D-2 cylinder cross-flow",
+  "Re": 100,
+  "D_over_dx": 20,
+  "scheme": "D3Q27 Cumulant + Ladd moving-wall inlet",
+  "Cd_mean": 3.155682652,
+  "Cd_std": 0.020396987183015445,
+  "Cl_amplitude": 0.93712755,
+  "f_peak_Hz": 2.7999995130435638,
+  "St_LBM": 0.2799999513043564,
+  "DFG_Cd_band": [
+    3.22,
+    3.24
+  ],
+  "DFG_St_band": [
+    0.295,
+    0.305
+  ],
+  "Cd_pct_offset": -2.3008466873065054,
+  "St_pct_offset": -6.666682898547864,
+  "n_samples_in_window": 300
+}

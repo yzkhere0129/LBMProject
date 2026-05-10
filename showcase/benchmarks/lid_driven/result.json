@@ -1,0 +1,11 @@
+{
+  "case": "B1 Lid-driven Re=1000",
+  "grid": "257x257x3",
+  "tau": 0.577,
+  "U_lid_LU": 0.1,
+  "reference": "Ghia, Ghia & Shin 1982",
+  "L2_u_pct": 0.3987835984788972,
+  "L2_v_pct": 0.9105575523950551,
+  "Linf_u_pct": 0.7308631414234434,
+  "Linf_v_pct": 1.7621062619047667
+}
