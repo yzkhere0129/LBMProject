@@ -275,6 +275,26 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps)
     set_target_properties(aero_st_2d2_cumulant PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(aero_st_2d2_cumulant lbm_core lbm_physics lbm_io CUDA::cudart)
 
+    # NACA0012 airfoil with D3Q27 Cumulant + freestream Ladd inlet
+    add_executable(aero_naca0012_cumulant apps/aero/aero_naca0012_cumulant.cu)
+    set_target_properties(aero_naca0012_cumulant PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(aero_naca0012_cumulant lbm_core lbm_physics lbm_io CUDA::cudart)
+
+    # IB-LBM Phase A: marker generation unit tests (host-only)
+    add_executable(test_ib_markers apps/aero/test_ib_markers.cu)
+    set_target_properties(test_ib_markers PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_ib_markers CUDA::cudart)
+
+    # IB-LBM Phase B: spread/interp kernel unit tests (uses GPU)
+    add_executable(test_ib_spread_interp apps/aero/test_ib_spread_interp.cu)
+    set_target_properties(test_ib_spread_interp PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_ib_spread_interp lbm_physics CUDA::cudart)
+
+    # IB-LBM Phase C: NACA0012 with Wu-Shu IB direct forcing (new driver)
+    add_executable(aero_naca0012_ib apps/aero/aero_naca0012_ib.cu)
+    set_target_properties(aero_naca0012_ib PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(aero_naca0012_ib lbm_core lbm_physics lbm_io CUDA::cudart)
+
 endif()
 
 # ---------------------------------------------------------------------------
