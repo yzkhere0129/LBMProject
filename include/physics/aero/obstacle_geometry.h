@@ -379,6 +379,26 @@ inline std::vector<float> makeUnitQFraction27(int nx, int ny, int nz) {
 }
 
 /**
+ * @brief CSR-like sparse storage for q-fractions. Saves ~99% memory vs dense
+ *        layout (most cells have 0 solid-neighbour links and store nothing).
+ *
+ * Layout:
+ *   offset.size()   = n_cells + 1
+ *   offset[i+1] - offset[i] = number of solid-neighbour links from fluid cell i
+ *   link_q[K], link_qfrac[K]  where K = offset[n_cells]
+ *
+ * Kernel-side lookup: for cell id, direction Q, linear-scan
+ *   for e in [offset[id], offset[id+1]):
+ *       if link_q[e] == Q: return link_qfrac[e]
+ *   return 1.0f  (no solid in direction Q from this cell)
+ */
+struct SparseQFraction {
+    std::vector<int>           offset;     // size n_cells + 1
+    std::vector<unsigned char> link_q;     // q ∈ [1, 27)
+    std::vector<float>         link_qfrac;
+};
+
+/**
  * @brief Compute per-link Bouzidi q-fractions for a NACA 4-digit symmetric
  *        airfoil (z-extruded) on the D3Q27 stencil.
  *
@@ -506,6 +526,133 @@ inline std::vector<float> makeNacaQFraction(
         }
     }
     return qfrac;
+}
+
+/**
+ * @brief Sparse-layout version of makeNacaQFraction. Identical algorithm
+ *        (64-step scan + 20-bit bisection per fluid-to-solid link) but packs
+ *        only the fluid-to-solid links into the SparseQFraction CSR struct.
+ *
+ * For 4GB GPUs the dense qfrac (27·N·4 bytes) becomes the dominant
+ * memory consumer at D/dx≥120, so the sparse form is required for higher
+ * resolution runs.
+ */
+inline SparseQFraction makeNacaQFractionSparse(
+    const std::vector<unsigned char>& mask,
+    int nx, int ny, int nz, float dx,
+    float cx_LE, float cy_LE,
+    float chord, float thick_pct, float alpha_rad)
+{
+    using core::D3Q27;
+    const float t = thick_pct / 100.0f;
+    const float cos_a =  std::cos(alpha_rad);
+    const float sin_a = -std::sin(alpha_rad);
+    const size_t n_cells = static_cast<size_t>(nx) * ny * nz;
+
+    auto naca_y_t = [t](float s) -> float {
+        if (s < 0.0f || s > 1.0f) return -1.0f;
+        const float r = std::sqrt(s);
+        return 5.0f * t * (0.2969f * r - 0.1260f * s
+                         - 0.3516f * s * s + 0.2843f * s * s * s
+                         - 0.1015f * s * s * s * s);
+    };
+    auto inside_airfoil = [&](float xw, float yw) -> bool {
+        const float xr =  cos_a * (xw - cx_LE) + sin_a * (yw - cy_LE);
+        const float yr = -sin_a * (xw - cx_LE) + cos_a * (yw - cy_LE);
+        const float s = xr / chord;
+        if (s < 0.0f || s > 1.0f) return false;
+        return std::abs(yr) <= naca_y_t(s) * chord;
+    };
+
+    constexpr int N_SCAN = 64;
+    constexpr int N_BISECT = 20;
+    constexpr float QMIN = 1e-6f;
+
+    // Pass 1: count solid-neighbour links per fluid cell.
+    SparseQFraction out;
+    out.offset.assign(n_cells + 1, 0);
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i) {
+                const size_t id = static_cast<size_t>(i)
+                                + static_cast<size_t>(j) * nx
+                                + static_cast<size_t>(k) * nx * ny;
+                if (mask[id] != core::Streaming::CELL_FLUID) continue;
+                int cnt = 0;
+                for (int q = 1; q < D3Q27::Q; ++q) {
+                    const int ni = i + D3Q27::h_ex[q];
+                    const int nj = j + D3Q27::h_ey[q];
+                    const int nk = k + D3Q27::h_ez[q];
+                    if (ni < 0 || ni >= nx || nj < 0 || nj >= ny ||
+                        nk < 0 || nk >= nz) continue;
+                    const size_t nid = static_cast<size_t>(ni)
+                                     + static_cast<size_t>(nj) * nx
+                                     + static_cast<size_t>(nk) * nx * ny;
+                    if (mask[nid] == core::Streaming::CELL_FLUID) continue;
+                    ++cnt;
+                }
+                out.offset[id + 1] = cnt;
+            }
+    // Prefix sum.
+    for (size_t i = 1; i <= n_cells; ++i) out.offset[i] += out.offset[i-1];
+    const int K = out.offset[n_cells];
+    out.link_q.assign(K, 0);
+    out.link_qfrac.assign(K, 1.0f);
+
+    // Pass 2: fill. Use a per-cell write cursor.
+    std::vector<int> head = out.offset;  // head[id] tracks next slot for cell id
+
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i) {
+                const size_t id = static_cast<size_t>(i)
+                                + static_cast<size_t>(j) * nx
+                                + static_cast<size_t>(k) * nx * ny;
+                if (mask[id] != core::Streaming::CELL_FLUID) continue;
+                const float xC = (i + 0.5f) * dx;
+                const float yC = (j + 0.5f) * dx;
+                for (int q = 1; q < D3Q27::Q; ++q) {
+                    const int ni = i + D3Q27::h_ex[q];
+                    const int nj = j + D3Q27::h_ey[q];
+                    const int nk = k + D3Q27::h_ez[q];
+                    if (ni < 0 || ni >= nx || nj < 0 || nj >= ny ||
+                        nk < 0 || nk >= nz) continue;
+                    const size_t nid = static_cast<size_t>(ni)
+                                     + static_cast<size_t>(nj) * nx
+                                     + static_cast<size_t>(nk) * nx * ny;
+                    if (mask[nid] == core::Streaming::CELL_FLUID) continue;
+
+                    const float dxL = D3Q27::h_ex[q] * dx;
+                    const float dyL = D3Q27::h_ey[q] * dx;
+                    int idx_first = -1;
+                    for (int n = 1; n <= N_SCAN; ++n) {
+                        const float s = static_cast<float>(n) / static_cast<float>(N_SCAN);
+                        if (inside_airfoil(xC + s * dxL, yC + s * dyL)) {
+                            idx_first = n;
+                            break;
+                        }
+                    }
+                    float qf;
+                    if (idx_first < 0) {
+                        qf = 0.5f;  // grazing-corner fallback
+                    } else {
+                        float s_lo = (idx_first - 1) / static_cast<float>(N_SCAN);
+                        float s_hi =  idx_first      / static_cast<float>(N_SCAN);
+                        for (int b = 0; b < N_BISECT; ++b) {
+                            const float sm = 0.5f * (s_lo + s_hi);
+                            if (inside_airfoil(xC + sm * dxL, yC + sm * dyL))
+                                s_hi = sm;
+                            else
+                                s_lo = sm;
+                        }
+                        qf = std::clamp(0.5f * (s_lo + s_hi), QMIN, 1.0f);
+                    }
+                    const int slot = head[id]++;
+                    out.link_q[slot]     = static_cast<unsigned char>(q);
+                    out.link_qfrac[slot] = qf;
+                }
+            }
+    return out;
 }
 
 /**

@@ -52,6 +52,22 @@ __global__ void streamD3Q27_naca_qbb(
     int nx, int ny, int nz,
     float omega);
 
+/**
+ * @brief Sparse-qfrac variant. qfrac is stored as CSR (offset + link_q +
+ *        link_qfrac arrays) instead of dense float[27·N]. Saves ~99% of qfrac
+ *        memory at the cost of a short linear scan per wall-link lookup.
+ *        Required for D/dx ≥ 120 to fit in 4GB GPU.
+ */
+__global__ void streamD3Q27_naca_qbb_sparse(
+    const float* __restrict__ f_src,
+    float* __restrict__ f_dst,
+    const unsigned char* __restrict__ solid_mask,
+    const int*           __restrict__ qf_offset,    // n_cells + 1
+    const unsigned char* __restrict__ qf_link_q,    // K
+    const float*         __restrict__ qf_link_val,  // K
+    int nx, int ny, int nz,
+    float omega);
+
 } // namespace cumulant
 } // namespace physics
 } // namespace lbm

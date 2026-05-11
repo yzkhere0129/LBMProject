@@ -54,6 +54,9 @@ struct Args {
     float ly_over_c  = 20.0f;    // domain height in chord units
     float xLE_over_c = 10.0f;    // LE position from inlet, chord units
     int   use_bgk    = 0;        // 1 = use BGK D3Q27 instead of Cumulant
+    int   use_trt    = 0;        // 1 = use TRT D3Q27 (magic Λ=3/16 by default)
+    float trt_lambda = 0.1875f;  // TRT magic parameter Λ = (τ+-1/2)(τ--1/2)
+    int   sparse_qfrac = 0;      // 1 = use sparse-CSR qfrac (saves ~99% mem)
     // Shape: 0=NACA0012 (default), 1=cylinder, 2=flat plate
     int   shape      = 0;
     float cyl_off_y  = 0.0f;     // cylinder y offset from y_LE (for asymmetry)
@@ -61,9 +64,73 @@ struct Args {
     // BC at obstacle: "stair" = halfway BB on cell-centre stamp; "qbb-snode"
     // = D3Q27 single-node Bouzidi (curved BC, q-fraction per link). NACA only.
     std::string bc_mode = "stair";
+    // Wall ω used inside QBB streaming kernel + MEM-QBB force probe. Defaults
+    // to ω_nu (BGK-equivalent). Setting to a different value emulates TRT-style
+    // Bouzidi (e.g. Λ_eo = 3/16 magic gives ω_wall = 1/(0.5 + 3/(16·(τ-0.5)))).
+    // -1 sentinel = "use ω_nu" (i.e. unchanged behavior).
+    float wall_omega_override = -1.0f;
 };
 
 // Simple BGK D3Q27 collision (control test for Cumulant)
+// TRT D3Q27 collision: split f into symmetric (even) and antisymmetric (odd)
+// parts and apply distinct relaxation rates. For magic parameter Λ = 3/16,
+// the no-slip wall condition becomes exact (independent of ν). For our setup
+// at ω+ = 1.976 (τ+ = 0.506), magic ω- = 1 / (0.5 + 3/(16·(τ+-0.5))) ≈ 0.031.
+__global__ void fluidTRTD3Q27Kernel(
+    const float* f_src, float* f_dst,
+    float* rho_out, float* ux_out, float* uy_out, float* uz_out,
+    int nx, int ny, int nz, float omega_plus, float omega_minus)
+{
+    using lbm::core::D3Q27;
+    using lbm::core::opposite27;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    const int idz = blockIdx.z * blockDim.z + threadIdx.z;
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    const int id = idx + idy * nx + idz * nx * ny;
+    const int n_cells = nx * ny * nz;
+
+    float f[27];
+    #pragma unroll
+    for (int q = 0; q < 27; ++q) f[q] = f_src[id + q * n_cells];
+
+    float rho = 0.0f, mx = 0.0f, my = 0.0f, mz = 0.0f;
+    #pragma unroll
+    for (int q = 0; q < 27; ++q) {
+        const float fq = f[q];
+        rho += fq;
+        mx += ::lbm::core::ex27[q] * fq;
+        my += ::lbm::core::ey27[q] * fq;
+        mz += ::lbm::core::ez27[q] * fq;
+    }
+    const float inv_rho = (rho > 1e-12f) ? (1.0f / rho) : 0.0f;
+    const float ux = mx * inv_rho;
+    const float uy = my * inv_rho;
+    const float uz = mz * inv_rho;
+
+    float feq[27];
+    #pragma unroll
+    for (int q = 0; q < 27; ++q)
+        feq[q] = D3Q27::computeEquilibrium(q, rho, ux, uy, uz);
+
+    #pragma unroll
+    for (int q = 0; q < 27; ++q) {
+        const int qo = opposite27[q];
+        const float f_plus  = 0.5f * (f[q] + f[qo]);
+        const float f_minus = 0.5f * (f[q] - f[qo]);
+        const float feq_plus  = 0.5f * (feq[q] + feq[qo]);
+        const float feq_minus = 0.5f * (feq[q] - feq[qo]);
+        const float coll = omega_plus  * (f_plus  - feq_plus)
+                         + omega_minus * (f_minus - feq_minus);
+        f_dst[id + q * n_cells] = f[q] - coll;
+    }
+    if (rho_out) rho_out[id] = rho;
+    if (ux_out)  ux_out[id]  = ux;
+    if (uy_out)  uy_out[id]  = uy;
+    if (uz_out)  uz_out[id]  = uz;
+}
+
 __global__ void fluidBGKD3Q27Kernel(
     const float* f_src, float* f_dst,
     float* rho_out, float* ux_out, float* uy_out, float* uz_out,
@@ -128,6 +195,14 @@ static Args parseArgs(int argc, char** argv) {
         else if (s == "--ly-over-c")   a.ly_over_c = std::stof(next());
         else if (s == "--xle-over-c")  a.xLE_over_c = std::stof(next());
         else if (s == "--bgk")         a.use_bgk = 1;
+        else if (s == "--trt")         a.use_trt = 1;
+        else if (s == "--trt-lambda")  a.trt_lambda = std::stof(next());
+        else if (s == "--sparse-qfrac") a.sparse_qfrac = 1;
+        else if (s == "--omega-3")     a.omega_3 = std::stof(next());
+        else if (s == "--omega-4")     a.omega_4 = std::stof(next());
+        else if (s == "--omega-5")     a.omega_5 = std::stof(next());
+        else if (s == "--omega-6")     a.omega_6 = std::stof(next());
+        else if (s == "--wall-omega")  a.wall_omega_override = std::stof(next());
         // Shape selector. --cylinder kept as backward-compat alias.
         else if (s == "--cylinder")    a.shape = 1;
         else if (s == "--shape") {
@@ -409,6 +484,98 @@ __global__ void memForceNaca_QBB(
     if (fz_local != 0.0) atomicAdd(Fz_acc, fz_local);
 }
 
+// Sparse-qfrac MEM force probe. Identical formula as memForceNaca_QBB but
+// reads qfrac via CSR-like lookup. Used in --sparse-qfrac mode for D/dx≥120.
+__device__ inline float lookup_sparse_qf_local(
+    int id, unsigned char Q,
+    const int* __restrict__ offset,
+    const unsigned char* __restrict__ link_q,
+    const float* __restrict__ link_val)
+{
+    int start = offset[id];
+    int end   = offset[id + 1];
+    for (int e = start; e < end; ++e)
+        if (link_q[e] == Q) return link_val[e];
+    return 0.5f;
+}
+
+__global__ void memForceNaca_QBB_sparse(
+    const float* __restrict__ f,
+    const unsigned char* __restrict__ solid_mask,
+    const int*           __restrict__ qf_offset,
+    const unsigned char* __restrict__ qf_link_q,
+    const float*         __restrict__ qf_link_val,
+    float omega,
+    int nx, int ny, int nz,
+    double* Fx_acc, double* Fy_acc, double* Fz_acc)
+{
+    using lbm::core::D3Q27;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    const int idz = blockIdx.z * blockDim.z + threadIdx.z;
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    const int id = idx + idy * nx + idz * nx * ny;
+    const int n_cells = nx * ny * nz;
+    if (solid_mask[id] != 0) return;
+
+    float rho = 0.0f, mx = 0.0f, my = 0.0f, mz = 0.0f;
+    #pragma unroll
+    for (int q = 0; q < 27; ++q) {
+        const float fq = f[id + q * n_cells];
+        rho += fq;
+        mx += ex27[q] * fq;
+        my += ey27[q] * fq;
+        mz += ez27[q] * fq;
+    }
+    const float rho_safe = fmaxf(rho, 1e-12f);
+    const float ux = mx / rho_safe;
+    const float uy = my / rho_safe;
+    const float uz = mz / rho_safe;
+
+    const float inv_one_minus_omega = 1.0f / (1.0f - omega);
+    constexpr float QMIN_F = 0.05f;
+    constexpr float QMAX_F = 0.95f;
+
+    double fx_local = 0.0, fy_local = 0.0, fz_local = 0.0;
+    for (int q = 1; q < 27; ++q) {
+        int dst_x = idx + ex27[q];
+        int dst_y = idy + ey27[q];
+        int dst_z = idz + ez27[q];
+        if (dst_z < 0)  dst_z += nz;
+        if (dst_z >= nz) dst_z -= nz;
+        if (dst_x < 0 || dst_x >= nx || dst_y < 0 || dst_y >= ny) continue;
+        const int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
+        if (solid_mask[dst_id] == 0) continue;
+
+        const int q_opp = opposite27[q];
+        float qf = lookup_sparse_qf_local(id, (unsigned char)q,
+            qf_offset, qf_link_q, qf_link_val);
+        if (qf > QMAX_F) qf = QMAX_F;
+        if (qf < QMIN_F) qf = QMIN_F;
+
+        const float f_in  = f[id + q     * n_cells];
+        const float f_out = f[id + q_opp * n_cells];
+
+        const float feq_a   = D3Q27::computeEquilibrium(q,     rho, ux, uy, uz);
+        const float feq_b   = D3Q27::computeEquilibrium(q_opp, rho, ux, uy, uz);
+        const float feq_sym = feq_a + feq_b;
+
+        const float t1 = (f_in - f_out)
+                       + (f_in + f_out - omega * feq_sym) * inv_one_minus_omega;
+        const float t2 = qf * (f_in + f_out) / (1.0f + qf);
+        const float f_out_new = ((1.0f - qf) / (1.0f + qf)) * 0.5f * t1 + t2;
+
+        const double sum = (double)f_in + (double)f_out_new;
+        fx_local += (double)ex27[q] * sum;
+        fy_local += (double)ey27[q] * sum;
+        fz_local += (double)ez27[q] * sum;
+    }
+    if (fx_local != 0.0) atomicAdd(Fx_acc, fx_local);
+    if (fy_local != 0.0) atomicAdd(Fy_acc, fy_local);
+    if (fz_local != 0.0) atomicAdd(Fz_acc, fz_local);
+}
+
 __global__ void copyMacroD3Q27_naca(
     const float* __restrict__ f,
     float* rho_out, float* ux_out, float* uy_out, float* uz_out,
@@ -457,6 +624,8 @@ int main(int argc, char** argv) {
     const float nu_lat = nu_phys * dt / (dx * dx);
     const float tau = nu_lat / D3Q27::CS2 + 0.5f;
     const float omega_nu = 1.0f / tau;
+    const float wall_omega = (args.wall_omega_override > 0.0f)
+                           ? args.wall_omega_override : omega_nu;
 
     int total_steps = args.steps;
     if (total_steps < 0) {
@@ -478,7 +647,8 @@ int main(int argc, char** argv) {
               << " chord=" << chord << " m  (cells/c = " << args.resolution << ")\n"
               << " U_∞=" << U_inf_phys << " m/s, nu=" << nu_phys << " m²/s\n"
               << " Re=" << args.re << ", alpha=" << args.alpha_deg << "°\n"
-              << " tau=" << tau << ", omega_nu=" << omega_nu << "\n"
+              << " tau=" << tau << ", omega_nu=" << omega_nu
+              << ", wall_omega=" << wall_omega << "\n"
               << " u_max_LU=" << args.u_max_lu << " (Ma="
               << (args.u_max_lu * std::sqrt(3.0f)) << ")\n"
               << " LE position: (" << xLE << ", " << yLE << ") m\n"
@@ -550,7 +720,10 @@ int main(int argc, char** argv) {
                           cudaMemcpyHostToDevice));
 
     // Build per-link q-fractions (only for --bc qbb-snode + NACA shape).
-    float* d_qfrac = nullptr;
+    float*         d_qfrac = nullptr;          // dense path
+    int*           d_qf_offset = nullptr;      // sparse path: offset[N+1]
+    unsigned char* d_qf_link_q = nullptr;      // sparse path: link_q[K]
+    float*         d_qf_link_val = nullptr;    // sparse path: link_val[K]
     const bool use_qbb = (args.bc_mode == "qbb-snode");
     if (use_qbb) {
         if (args.shape != 0) {
@@ -559,19 +732,39 @@ int main(int argc, char** argv) {
             std::exit(1);
         }
         std::cout << " Building D3Q27 q-fractions (sub-sample + bisect)...\n";
-        auto h_qfrac = physics::aero::makeNacaQFraction(
-            h_mask, nx, ny, nz, dx,
-            xLE, yLE, chord, /*thickness%*/ 12.0f, alpha_rad);
-        // Diagnostic: count fractional links (qf < 1.0)
-        long long n_fractional = 0;
-        for (auto v : h_qfrac) if (v < 0.999f) ++n_fractional;
-        std::cout << " QBB enabled: " << n_fractional << " fractional links of "
-                  << h_qfrac.size() << " total ("
-                  << (100.0 * n_fractional / h_qfrac.size()) << "%)\n";
-        const size_t qf_bytes = h_qfrac.size() * sizeof(float);
-        CUDA_CHECK(cudaMalloc(&d_qfrac, qf_bytes));
-        CUDA_CHECK(cudaMemcpy(d_qfrac, h_qfrac.data(), qf_bytes,
-                              cudaMemcpyHostToDevice));
+        if (args.sparse_qfrac) {
+            auto sq = physics::aero::makeNacaQFractionSparse(
+                h_mask, nx, ny, nz, dx,
+                xLE, yLE, chord, 12.0f, alpha_rad);
+            const int K = (int)sq.link_q.size();
+            std::cout << " QBB SPARSE enabled: " << K << " fractional links over "
+                      << n_cells << " cells (offset+q+val: "
+                      << (sq.offset.size()*4 + K*1 + K*4) / 1048576.0
+                      << " MB vs dense "
+                      << (n_cells * 27 * 4) / 1048576.0 << " MB)\n";
+            CUDA_CHECK(cudaMalloc(&d_qf_offset, sq.offset.size() * sizeof(int)));
+            CUDA_CHECK(cudaMalloc(&d_qf_link_q, K * sizeof(unsigned char)));
+            CUDA_CHECK(cudaMalloc(&d_qf_link_val, K * sizeof(float)));
+            CUDA_CHECK(cudaMemcpy(d_qf_offset, sq.offset.data(),
+                sq.offset.size() * sizeof(int), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_qf_link_q, sq.link_q.data(),
+                K * sizeof(unsigned char), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_qf_link_val, sq.link_qfrac.data(),
+                K * sizeof(float), cudaMemcpyHostToDevice));
+        } else {
+            auto h_qfrac = physics::aero::makeNacaQFraction(
+                h_mask, nx, ny, nz, dx,
+                xLE, yLE, chord, /*thickness%*/ 12.0f, alpha_rad);
+            long long n_fractional = 0;
+            for (auto v : h_qfrac) if (v < 0.999f) ++n_fractional;
+            std::cout << " QBB enabled: " << n_fractional << " fractional links of "
+                      << h_qfrac.size() << " total ("
+                      << (100.0 * n_fractional / h_qfrac.size()) << "%)\n";
+            const size_t qf_bytes = h_qfrac.size() * sizeof(float);
+            CUDA_CHECK(cudaMalloc(&d_qfrac, qf_bytes));
+            CUDA_CHECK(cudaMemcpy(d_qfrac, h_qfrac.data(), qf_bytes,
+                                  cudaMemcpyHostToDevice));
+        }
     }
 
     // Initialise fluid at uniform freestream
@@ -601,11 +794,28 @@ int main(int argc, char** argv) {
     dim3 block_face(16, 4, 1);
     dim3 grid_face((ny + 15) / 16, (nz + 3) / 4, 1);
 
+    // TRT magic ω_minus from Λ = (τ+-0.5)(τ--0.5). For ω+ ≡ omega_nu,
+    // τ+ = 1/omega_nu, Λ_+ = τ+-0.5, Λ_- = trt_lambda/Λ_+, τ_- = 0.5 + Λ_-,
+    // ω_- = 1/τ_-.
+    const float tau_plus  = 1.0f / omega_nu;
+    const float lambda_plus_trt = tau_plus - 0.5f;
+    const float lambda_minus_trt = args.trt_lambda / fmaxf(lambda_plus_trt, 1e-6f);
+    const float omega_minus_trt = 1.0f / (0.5f + lambda_minus_trt);
+    if (args.use_trt) {
+        std::cout << " TRT magic Λ=" << args.trt_lambda
+                  << ", ω_+=" << omega_nu << " (shear),"
+                  << " ω_-=" << omega_minus_trt << "\n";
+    }
+
     for (int step = 0; step < total_steps; ++step) {
         if (args.use_bgk) {
             fluidBGKD3Q27Kernel<<<grid3, block3>>>(
                 d_f_src, d_f_src, d_rho, d_ux, d_uy, d_uz,
                 nx, ny, nz, omega_nu);
+        } else if (args.use_trt) {
+            fluidTRTD3Q27Kernel<<<grid3, block3>>>(
+                d_f_src, d_f_src, d_rho, d_ux, d_uy, d_uz,
+                nx, ny, nz, omega_nu, omega_minus_trt);
         } else {
             physics::cumulant::fluidCumulantCollisionKernel<<<grid3, block3>>>(
                 d_f_src, d_f_src, d_rho, d_ux, d_uy, d_uz,
@@ -624,9 +834,13 @@ int main(int argc, char** argv) {
             CUDA_CHECK(cudaMemcpy(d_Fx, &zero, sizeof(double), cudaMemcpyHostToDevice));
             CUDA_CHECK(cudaMemcpy(d_Fy, &zero, sizeof(double), cudaMemcpyHostToDevice));
             CUDA_CHECK(cudaMemcpy(d_Fz, &zero, sizeof(double), cudaMemcpyHostToDevice));
-            if (use_qbb) {
+            if (use_qbb && args.sparse_qfrac) {
+                memForceNaca_QBB_sparse<<<grid3, block3>>>(
+                    d_f_src, d_solid, d_qf_offset, d_qf_link_q, d_qf_link_val,
+                    wall_omega, nx, ny, nz, d_Fx, d_Fy, d_Fz);
+            } else if (use_qbb) {
                 memForceNaca_QBB<<<grid3, block3>>>(
-                    d_f_src, d_solid, d_qfrac, omega_nu,
+                    d_f_src, d_solid, d_qfrac, wall_omega,
                     nx, ny, nz, d_Fx, d_Fy, d_Fz);
             } else {
                 memForceNaca<<<grid3, block3>>>(d_f_src, d_solid, nx, ny, nz,
@@ -651,10 +865,15 @@ int main(int argc, char** argv) {
                 << Cd << "," << Cl << "\n";
         }
 
-        if (use_qbb) {
+        if (use_qbb && args.sparse_qfrac) {
+            physics::cumulant::streamD3Q27_naca_qbb_sparse<<<grid3, block3>>>(
+                d_f_src, d_f_dst, d_solid,
+                d_qf_offset, d_qf_link_q, d_qf_link_val,
+                nx, ny, nz, wall_omega);
+        } else if (use_qbb) {
             physics::cumulant::streamD3Q27_naca_qbb<<<grid3, block3>>>(
                 d_f_src, d_f_dst, d_solid, d_qfrac,
-                nx, ny, nz, omega_nu);
+                nx, ny, nz, wall_omega);
         } else {
             streamD3Q27_naca<<<grid3, block3>>>(d_f_src, d_f_dst, d_solid,
                                                 nx, ny, nz);
@@ -722,5 +941,8 @@ int main(int argc, char** argv) {
     cudaFree(d_rho); cudaFree(d_ux); cudaFree(d_uy); cudaFree(d_uz);
     cudaFree(d_solid);
     if (d_qfrac) cudaFree(d_qfrac);
+    if (d_qf_offset)  cudaFree(d_qf_offset);
+    if (d_qf_link_q)  cudaFree(d_qf_link_q);
+    if (d_qf_link_val) cudaFree(d_qf_link_val);
     return 0;
 }
