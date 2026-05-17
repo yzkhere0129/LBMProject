@@ -30,18 +30,25 @@ OUT_PATH  = DATA_DIR / "rt_mushroom.png"
 NX, NY = 128, 512                       # grid cells
 LX_M   = 1.0                            # m
 DX_M   = LX_M / NX                      # = 7.8125 mm / cell
-TAU_F  = 0.6
+TAU_F  = 0.55
 NU_LBM = (TAU_F - 0.5) / 3.0
 NU_PHY = 2.5551e-3                      # m²/s (matches air at heavy phase)
 DT     = min(NU_LBM * DX_M**2 / NU_PHY, 5e-4)   # s / step
 
-# Out frequency from viz_rt.cu: out every 0.1 s
-T_OUT_DT = 0.1
-OUT_FREQ = max(1, int(round(T_OUT_DT / DT)))
-
-# 6 frames at t = 0, 0.2, 0.4, 0.6, 0.8, 1.0 s (matches JAX RT_phase_evolution.png)
+# Find closest available step file to each target time
 TIMES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-PANELS = [(f"step {int(round(t/DT)):05d}", int(round(t/DT)), f"t = {t:.1f} s") for t in TIMES]
+import glob, re
+_files = sorted(glob.glob(str(DATA_DIR / "rt_step*.csv")))
+_avail = sorted(int(re.search(r"rt_step(\d+)", f).group(1)) for f in _files)
+
+def _nearest(target_step):
+    return min(_avail, key=lambda s: abs(s - target_step))
+
+PANELS = []
+for t in TIMES:
+    target = int(round(t / DT))
+    s = _nearest(target)
+    PANELS.append((f"step {s:05d}", s, f"t = {t:.1f} s"))
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -110,13 +117,18 @@ def main():
     im_ref = None
 
     for ax, (label, step_idx, time_label) in zip(axes, PANELS):
+        # files are zero-padded to 4 or 5 digits — try both
         fname = DATA_DIR / f"rt_step{step_idx:04d}.csv"
+        if not fname.exists():
+            fname = DATA_DIR / f"rt_step{step_idx:05d}.csv"
         data  = load_csv(fname)          # shape (ny, nx) = (512, 128)
 
-        # Show FULL domain so wall behaviour is visible (no auto-crop)
-        view = data
-        y0, y1 = 0, NY
-        extent_y = (y0 * DX_M, y1 * DX_M)               # m
+        # Crop to active interface region y ∈ [0.8, 2.6] m (heavy descends down
+        # to ~y=1.3, light rises to ~y=2.4 — wall artefacts above y=3.5 cropped).
+        y_lo, y_hi = 0.8, 2.6
+        j0 = int(y_lo / DX_M); j1 = int(y_hi / DX_M)
+        view = data[j0:j1, :]
+        extent_y = (j0 * DX_M, j1 * DX_M)
 
         extent = [0, NX * DX_M, extent_y[0], extent_y[1]]   # m
 
