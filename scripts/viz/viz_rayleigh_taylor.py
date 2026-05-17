@@ -27,7 +27,7 @@ DATA_DIR  = Path("/home/yzk/LBMProject/scripts/viz")
 OUT_PATH  = DATA_DIR / "rt_mushroom.png"
 
 # Simulation parameters (must match viz_rt.cu — JAX air/helium config)
-NX, NY = 128, 512                       # grid cells
+NX, NY = 128, 1024                      # grid cells (tall domain for headroom)
 LX_M   = 1.0                            # m
 DX_M   = LX_M / NX                      # = 7.8125 mm / cell
 TAU_F  = 0.55
@@ -123,10 +123,11 @@ def main():
             fname = DATA_DIR / f"rt_step{step_idx:05d}.csv"
         data  = load_csv(fname)          # shape (ny, nx) = (512, 128)
 
-        # FULL DOMAIN (y from 0 to 4 m) — no crop so the slim spike tail
-        # and rollups are fully visible (matches JAX figure framing).
-        view = data
-        extent_y = (0.0, NY * DX_M)
+        # Crop view to y∈[0, 4] m to match JAX framing. Sim domain is
+        # actually y∈[0, 8] m so displaced light has room above y=4.
+        j_lo, j_hi = 0, int(round(4.0 / DX_M))
+        view = data[j_lo:j_hi, :]
+        extent_y = (0.0, 4.0)
         extent = [0, NX * DX_M, extent_y[0], extent_y[1]]   # m
 
         ax.set_facecolor("#0d0d0d")
