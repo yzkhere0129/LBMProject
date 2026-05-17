@@ -79,8 +79,10 @@ __global__ void streamD3Q27_naca_qbb(
     const float uz = mz / rho_safe;
 
     const float inv_one_minus_omega = 1.0f / (1.0f - omega);
-    constexpr float QMIN = 0.05f;
-    constexpr float QMAX = 0.95f;
+    // QMIN/QMAX relaxed 0.05/0.95 → 1e-3/0.999 (debug 2026-05-15):
+    // original clamp was systematic geometric error at sub-cell LE/TE.
+    constexpr float QMIN = 1e-3f;
+    constexpr float QMAX = 0.999f;
 
     // Phase 2: PULL-stream. For each Q, compute f_dst[id, Q].
     for (int Q = 0; Q < 27; ++Q) {
@@ -195,8 +197,9 @@ __global__ void streamD3Q27_naca_qbb_sparse(
     const float uz = mz / rho_safe;
 
     const float inv_one_minus_omega = 1.0f / (1.0f - omega);
-    constexpr float QMIN = 0.05f;
-    constexpr float QMAX = 0.95f;
+    // Relaxed clamp (debug 2026-05-15): 0.05/0.95 → 1e-3/0.999.
+    constexpr float QMIN = 1e-3f;
+    constexpr float QMAX = 0.999f;
 
     for (int Q = 0; Q < 27; ++Q) {
         int src_x = idx - ex27[Q];

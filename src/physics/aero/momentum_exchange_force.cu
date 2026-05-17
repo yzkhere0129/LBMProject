@@ -81,7 +81,8 @@ __global__ void memForceKernel(
         } else {
             const int q_opp = opposite[q];
             float qf = qfrac[id + q * n_cells];
-            const float QMIN = 0.1f, QMAX = 0.95f;
+            // Relaxed clamp (debug 2026-05-15): 0.1/0.95 → 1e-3/0.999.
+            const float QMIN = 1e-3f, QMAX = 0.999f;
             if (qf > QMAX) qf = QMAX;
             if (qf < QMIN) qf = QMIN;
 
@@ -192,7 +193,8 @@ __global__ void memForceQBBKernel(
 
         const int q_opp = opposite[q];
         float qf = qfrac[id + q * n_cells];
-        const float QMIN = 0.05f, QMAX = 0.95f;
+        // Relaxed clamp (debug 2026-05-15): 0.05/0.95 → 1e-3/0.999.
+        const float QMIN = 1e-3f, QMAX = 0.999f;
         if (qf > QMAX) qf = QMAX;
         if (qf < QMIN) qf = QMIN;
 
@@ -260,7 +262,8 @@ __global__ void memForceQuadBouzidiKernel(
 
         const int q_opp = opposite[q];
         float qf = qfrac[id + q * n_cells];
-        const float QMIN = 0.05f, QMAX = 0.95f;
+        // Relaxed clamp (debug 2026-05-15): 0.05/0.95 → 1e-3/0.999.
+        const float QMIN = 1e-3f, QMAX = 0.999f;
         if (qf > QMAX) qf = QMAX;
         if (qf < QMIN) qf = QMIN;
 

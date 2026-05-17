@@ -443,8 +443,9 @@ __global__ void memForceNaca_QBB(
     const float uz = mz / rho_safe;
 
     const float inv_one_minus_omega = 1.0f / (1.0f - omega);
-    constexpr float QMIN_F = 0.05f;
-    constexpr float QMAX_F = 0.95f;
+    // Relaxed clamp (debug 2026-05-15): 0.05/0.95 → 1e-3/0.999.
+    constexpr float QMIN_F = 1e-3f;
+    constexpr float QMAX_F = 0.999f;
 
     double fx_local = 0.0, fy_local = 0.0, fz_local = 0.0;
     for (int q = 1; q < 27; ++q) {
@@ -534,8 +535,9 @@ __global__ void memForceNaca_QBB_sparse(
     const float uz = mz / rho_safe;
 
     const float inv_one_minus_omega = 1.0f / (1.0f - omega);
-    constexpr float QMIN_F = 0.05f;
-    constexpr float QMAX_F = 0.95f;
+    // Relaxed clamp (debug 2026-05-15): 0.05/0.95 → 1e-3/0.999.
+    constexpr float QMIN_F = 1e-3f;
+    constexpr float QMAX_F = 0.999f;
 
     double fx_local = 0.0, fy_local = 0.0, fz_local = 0.0;
     for (int q = 1; q < 27; ++q) {
@@ -794,6 +796,13 @@ int main(int argc, char** argv) {
     dim3 block_face(16, 4, 1);
     dim3 grid_face((ny + 15) / 16, (nz + 3) / 4, 1);
 
+    // Per-stage profiling (chrono + cudaDeviceSynchronize). Each stage's
+    // elapsed wall-time accumulated across all steps; printed at the end.
+    // Sync overhead is O(µs) per call — negligible vs typical kernel times.
+    double t_collision = 0.0, t_force = 0.0, t_stream = 0.0,
+           t_io_bc = 0.0, t_vtk = 0.0;
+    long long n_force_calls = 0, n_vtk_calls = 0;
+
     // TRT magic ω_minus from Λ = (τ+-0.5)(τ--0.5). For ω+ ≡ omega_nu,
     // τ+ = 1/omega_nu, Λ_+ = τ+-0.5, Λ_- = trt_lambda/Λ_+, τ_- = 0.5 + Λ_-,
     // ω_- = 1/τ_-.
@@ -808,6 +817,7 @@ int main(int argc, char** argv) {
     }
 
     for (int step = 0; step < total_steps; ++step) {
+        auto stage_t0 = std::chrono::steady_clock::now();
         if (args.use_bgk) {
             fluidBGKD3Q27Kernel<<<grid3, block3>>>(
                 d_f_src, d_f_src, d_rho, d_ux, d_uy, d_uz,
@@ -817,15 +827,23 @@ int main(int argc, char** argv) {
                 d_f_src, d_f_src, d_rho, d_ux, d_uy, d_uz,
                 nx, ny, nz, omega_nu, omega_minus_trt);
         } else {
+            // Cumulant: omega_b = 1.0 (bulk instant relaxation, kills compressibility
+            // waves polluting pressure field; Geier 2015 §V.B recommendation).
+            // Previously set to omega_nu — that under-damped acoustic modes and
+            // biased lift at high Re via pressure-field artifacts.
             physics::cumulant::fluidCumulantCollisionKernel<<<grid3, block3>>>(
                 d_f_src, d_f_src, d_rho, d_ux, d_uy, d_uz,
                 nx, ny, nz,
-                omega_nu, omega_nu,
+                omega_nu, 1.0f,
                 args.omega_3, args.omega_4, args.omega_5, args.omega_6);
         }
         CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+        t_collision += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - stage_t0).count();
 
         if (args.probe_every > 0 && (step % args.probe_every == 0)) {
+            stage_t0 = std::chrono::steady_clock::now();
             double *d_Fx, *d_Fy, *d_Fz;
             CUDA_CHECK(cudaMalloc(&d_Fx, sizeof(double)));
             CUDA_CHECK(cudaMalloc(&d_Fy, sizeof(double)));
@@ -863,8 +881,12 @@ int main(int argc, char** argv) {
                 << Fx << "," << Fy << "," << Fz << ","
                 << Fx_per_m << "," << Fy_per_m << ","
                 << Cd << "," << Cl << "\n";
+            t_force += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - stage_t0).count();
+            ++n_force_calls;
         }
 
+        stage_t0 = std::chrono::steady_clock::now();
         if (use_qbb && args.sparse_qfrac) {
             physics::cumulant::streamD3Q27_naca_qbb_sparse<<<grid3, block3>>>(
                 d_f_src, d_f_dst, d_solid,
@@ -879,12 +901,19 @@ int main(int argc, char** argv) {
                                                 nx, ny, nz);
         }
         CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+        t_stream += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - stage_t0).count();
 
+        stage_t0 = std::chrono::steady_clock::now();
         applyInletFreestream<<<grid_face, block_face>>>(
             d_f_dst, nx, ny, nz, args.u_max_lu);
         CUDA_CHECK_KERNEL();
         applyOutletExtrap<<<grid_face, block_face>>>(d_f_dst, nx, ny, nz);
         CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+        t_io_bc += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - stage_t0).count();
 
         std::swap(d_f_src, d_f_dst);
 
@@ -900,6 +929,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.vtk_every > 0 && ((step + 1) % args.vtk_every == 0)) {
+            stage_t0 = std::chrono::steady_clock::now();
             copyMacroD3Q27_naca<<<macro_grid, 256>>>(d_f_src, d_rho, d_ux, d_uy, d_uz, n_cells);
             CUDA_CHECK_KERNEL();
             CUDA_CHECK(cudaDeviceSynchronize());
@@ -927,6 +957,9 @@ int main(int argc, char** argv) {
                 }
                 rf << "\n";
             }
+            t_vtk += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - stage_t0).count();
+            ++n_vtk_calls;
         }
     }
 
@@ -936,6 +969,29 @@ int main(int argc, char** argv) {
     std::cout << "Done. Wall time " << tot_secs << " s, "
               << ((double)n_cells * total_steps / 1e6 / tot_secs) << " MLUPS\n"
               << "Forces written to " << args.output_dir << "/forces.csv\n";
+
+    // Per-stage profiling breakdown
+    const double accounted = t_collision + t_force + t_stream + t_io_bc + t_vtk;
+    auto pct = [tot_secs](double t) { return 100.0 * t / tot_secs; };
+    std::cout << "\n=== Per-stage profiling (chrono+sync) ===\n";
+    std::cout << "  collision       : " << t_collision  << " s ("
+              << pct(t_collision)  << "%, " << t_collision/total_steps*1e3 << " ms/step)\n";
+    std::cout << "  streaming+QBB   : " << t_stream     << " s ("
+              << pct(t_stream)     << "%, " << t_stream/total_steps*1e3    << " ms/step)\n";
+    std::cout << "  inlet+outlet BC : " << t_io_bc      << " s ("
+              << pct(t_io_bc)      << "%, " << t_io_bc/total_steps*1e3     << " ms/step)\n";
+    if (n_force_calls > 0) {
+        std::cout << "  force probe x" << n_force_calls << " : " << t_force
+                  << " s (" << pct(t_force) << "%, "
+                  << t_force/n_force_calls*1e3 << " ms/call)\n";
+    }
+    if (n_vtk_calls > 0) {
+        std::cout << "  VTK dump x" << n_vtk_calls << " : " << t_vtk
+                  << " s (" << pct(t_vtk) << "%, "
+                  << t_vtk/n_vtk_calls*1e3 << " ms/call)\n";
+    }
+    std::cout << "  unaccounted     : " << (tot_secs - accounted) << " s ("
+              << pct(tot_secs - accounted) << "%)\n";
 
     cudaFree(d_f_src); cudaFree(d_f_dst);
     cudaFree(d_rho); cudaFree(d_ux); cudaFree(d_uy); cudaFree(d_uz);
