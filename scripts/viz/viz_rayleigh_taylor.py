@@ -26,20 +26,22 @@ from pathlib import Path
 DATA_DIR  = Path("/home/yzk/LBMProject/scripts/viz")
 OUT_PATH  = DATA_DIR / "rt_mushroom.png"
 
-# Simulation parameters (must match viz_rt.cu)
-NX, NY = 128, 512        # grid cells
-DX_M   = 1e-4            # m / cell
+# Simulation parameters (must match viz_rt.cu — JAX air/helium config)
+NX, NY = 128, 512                       # grid cells
+LX_M   = 1.0                            # m
+DX_M   = LX_M / NX                      # = 7.8125 mm / cell
 TAU_F  = 0.6
 NU_LBM = (TAU_F - 0.5) / 3.0
-NU_PHY = 5e-6            # m²/s
-DT     = min(NU_LBM * DX_M**2 / NU_PHY, 5e-5)   # s / step
+NU_PHY = 2.5551e-3                      # m²/s (matches air at heavy phase)
+DT     = min(NU_LBM * DX_M**2 / NU_PHY, 5e-4)   # s / step
 
-PANELS = [
-    ("step 0000", 0,    "t = 0 s"),
-    ("step 2000", 2000, "t = {:.2f} s".format(2000 * DT)),
-    ("step 4000", 4000, "t = {:.2f} s".format(4000 * DT)),
-    ("step 6000", 6000, "t = {:.2f} s".format(6000 * DT)),
-]
+# Out frequency from viz_rt.cu: out every 0.1 s
+T_OUT_DT = 0.1
+OUT_FREQ = max(1, int(round(T_OUT_DT / DT)))
+
+# 6 frames at t = 0, 0.2, 0.4, 0.6, 0.8, 1.0 s (matches JAX RT_phase_evolution.png)
+TIMES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+PANELS = [(f"step {int(round(t/DT)):05d}", int(round(t/DT)), f"t = {t:.1f} s") for t in TIMES]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,14 +97,14 @@ _CMAP = mcolors.LinearSegmentedColormap.from_list(
 def main():
     fig, axes = plt.subplots(
         1, len(PANELS),
-        figsize=(12, 7),
+        figsize=(15, 8),
         facecolor="#0d0d0d",
-        gridspec_kw={"wspace": 0.04, "hspace": 0.0},
+        gridspec_kw={"wspace": 0.02, "hspace": 0.0},
     )
 
     fig.suptitle(
-        "Rayleigh-Taylor Instability   (At = 0.33, TVD-MC VOF)",
-        color="white", fontsize=13, fontweight="bold", y=0.97,
+        "Rayleigh-Taylor Instability — air/helium  (At = 0.758, g = 9.81 m/s²)",
+        color="white", fontsize=14, fontweight="bold", y=0.96,
     )
 
     im_ref = None
@@ -111,11 +113,12 @@ def main():
         fname = DATA_DIR / f"rt_step{step_idx:04d}.csv"
         data  = load_csv(fname)          # shape (ny, nx) = (512, 128)
 
-        # Crop all panels to the interface-active region
-        view, y0, y1 = crop_interface(data, margin=30)
-        extent_y = (y0 * DX_M * 100, y1 * DX_M * 100)
+        # Show FULL domain so wall behaviour is visible (no auto-crop)
+        view = data
+        y0, y1 = 0, NY
+        extent_y = (y0 * DX_M, y1 * DX_M)               # m
 
-        extent = [0, NX * DX_M * 100, extent_y[0], extent_y[1]]   # cm
+        extent = [0, NX * DX_M, extent_y[0], extent_y[1]]   # m
 
         ax.set_facecolor("#0d0d0d")
         im = ax.imshow(
@@ -133,24 +136,24 @@ def main():
 
         # f=0.5 contour
         y_cells = np.linspace(extent_y[0], extent_y[1], view.shape[0])
-        x_cells = np.linspace(0, NX * DX_M * 100, view.shape[1])
+        x_cells = np.linspace(0, NX * DX_M, view.shape[1])
         ax.contour(
             x_cells, y_cells, view,
             levels=[0.5],
             colors=["white"],
-            linewidths=0.8,
-            alpha=0.9,
+            linewidths=0.7,
+            alpha=0.85,
         )
 
-        ax.set_title(time_label, color="white", fontsize=10, pad=4)
-        ax.set_xlabel("x  [cm]", color="#aaaaaa", fontsize=8)
+        ax.set_title(time_label, color="white", fontsize=11, pad=4)
+        ax.set_xlabel("x  [m]", color="#aaaaaa", fontsize=8)
         ax.tick_params(colors="#888888", labelsize=7)
         for spine in ax.spines.values():
             spine.set_edgecolor("#444444")
 
         # Only label y-axis on leftmost panel
         if ax is axes[0]:
-            ax.set_ylabel("y  [cm]", color="#aaaaaa", fontsize=8)
+            ax.set_ylabel("y  [m]", color="#aaaaaa", fontsize=8)
         else:
             ax.set_yticklabels([])
 
@@ -160,17 +163,6 @@ def main():
     cb.set_label("Fill level f", color="white", fontsize=9, labelpad=8)
     cb.ax.yaxis.set_tick_params(color="#888888", labelcolor="#aaaaaa", labelsize=7)
     cb.outline.set_edgecolor("#444444")
-
-    # Annotation on the mushroom-cap panel (step 4000)
-    mushroom_ax = axes[2]
-    mushroom_ax.text(
-        0.50, 0.04,
-        "mushroom cap",
-        transform=mushroom_ax.transAxes,
-        color="#ffdd99", fontsize=8,
-        ha="center", va="bottom",
-        bbox=dict(boxstyle="round,pad=0.2", facecolor="#111111", alpha=0.7, edgecolor="none"),
-    )
 
     fig.savefig(OUT_PATH, dpi=200, bbox_inches="tight",
                 facecolor="#0d0d0d", edgecolor="none")
