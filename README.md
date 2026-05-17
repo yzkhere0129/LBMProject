@@ -33,7 +33,7 @@
 </tr>
 <tr>
 <td align="center"><img src="gallery/naca_a8_vorticity.png" alt="NACA0012 a=8 vorticity"><br><sub><b>NACA0012 α=+8° Re=1000 涡量场</b><br>D3Q27 Cumulant · D/dx=160 · von Karman 涡街</sub></td>
-<td align="center"><img src="gallery/rt_instability.png" alt="Rayleigh-Taylor"><br><sub><b>Rayleigh-Taylor 不稳定（air/helium）</b><br>At = 0.758 · TVD-MC VOF · 蘑菇头 + KH 卷</sub></td>
+<td align="center"><img src="gallery/rt_instability.png" alt="Rayleigh-Taylor"><br><sub><b>Rayleigh-Taylor 不稳定（air/helium）</b><br>At = 0.758 · PLIC + 2-phase ν · 细长拖尾 + 蘑菇双角</sub></td>
 <td align="center"><img src="gallery/lid_cavity.png" alt="Lid-driven cavity"><br><sub><b>Lid-Driven Cavity Re=1000</b><br>vs Ghia 1982（17 点）</sub></td>
 </tr>
 <tr>
