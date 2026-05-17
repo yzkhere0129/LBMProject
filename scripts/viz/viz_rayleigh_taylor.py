@@ -123,13 +123,10 @@ def main():
             fname = DATA_DIR / f"rt_step{step_idx:05d}.csv"
         data  = load_csv(fname)          # shape (ny, nx) = (512, 128)
 
-        # Crop to active interface region y ∈ [0.8, 2.6] m (heavy descends down
-        # to ~y=1.3, light rises to ~y=2.4 — wall artefacts above y=3.5 cropped).
-        y_lo, y_hi = 0.8, 2.6
-        j0 = int(y_lo / DX_M); j1 = int(y_hi / DX_M)
-        view = data[j0:j1, :]
-        extent_y = (j0 * DX_M, j1 * DX_M)
-
+        # FULL DOMAIN (y from 0 to 4 m) — no crop so the slim spike tail
+        # and rollups are fully visible (matches JAX figure framing).
+        view = data
+        extent_y = (0.0, NY * DX_M)
         extent = [0, NX * DX_M, extent_y[0], extent_y[1]]   # m
 
         ax.set_facecolor("#0d0d0d")
