@@ -884,12 +884,19 @@ int main(int argc, char** argv) {
         initializeFreestream<<<fgrid, fblock>>>(
             fine_patch.d_f_src(), fine_patch.n_cells(), args.u_max_lu);
         CUDA_CHECK_KERNEL();
-        // Solid mask defaults to 0 (all fluid) — Phase 1 isolation test
-        // skips NACA stamping on fine patch for now (no qfrac generation).
-        // Phase 2 will stamp NACA at fine dx + build sparse qfrac.
-        cudaMemset(fine_patch.d_solid(), 0, fine_patch.n_cells());
-        cudaMemset(fine_patch.d_qf_offset(), 0,
-                   (fine_patch.n_cells() + 1) * sizeof(int));
+        // Phase 2.1: stamp NACA0012 on fine grid + build sparse qfrac.
+        // Same predicate + transformation as coarse stamp; LE position
+        // translated to patch-local frame so cell-center test resolves
+        // the airfoil at world coordinates.
+        if (args.shape == 0) {  // NACA
+            fine_patch.buildNacaGeometry(
+                xLE, yLE, chord, /*thick%*/ 12.0f, alpha_rad, dx);
+        } else {
+            // Non-NACA shapes: zero mask + zero offsets (no QBB on fine).
+            cudaMemset(fine_patch.d_solid(), 0, fine_patch.n_cells());
+            cudaMemset(fine_patch.d_qf_offset(), 0,
+                       (fine_patch.n_cells() + 1) * sizeof(int));
+        }
         amr_active = true;
     }
 

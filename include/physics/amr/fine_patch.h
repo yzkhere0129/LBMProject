@@ -149,7 +149,36 @@ public:
     void allocate_sparse_qfrac_links(std::size_t n_links) {
         qf_link_q_.reset(static_cast<int>(n_links));
         qf_link_val_.reset(static_cast<int>(n_links));
+        n_sparse_links_ = n_links;
     }
+
+    std::size_t n_sparse_links() const { return n_sparse_links_; }
+
+    /**
+     * @brief Stamp NACA0012 (or other 4-digit symmetric airfoil) on the
+     *        fine grid and build the sparse-qfrac CSR arrays.
+     *
+     * Uses the same host functions as the coarse driver
+     * (physics::aero::stampNacaAirfoil4Digit + makeNacaQFractionSparse),
+     * just with fine dx and a translated LE position so the airfoil sits
+     * at its world coordinates inside the patch frame.
+     *
+     * @param xLE_world  World x of leading edge [m] (same as coarse driver).
+     * @param yLE_world  World y of leading edge [m].
+     * @param chord      Chord length [m].
+     * @param thick_pct  NACA thickness percent (12 for NACA0012).
+     * @param alpha_rad  Angle of attack [rad].
+     * @param dx_coarse  Coarse dx [m]; patch i_lo·dx_coarse = patch origin world x.
+     *
+     * After this call: d_solid() and d_qf_*() are valid for fine-resolution
+     * NACA. n_sparse_links() reports how many fractional links were stored.
+     */
+    void buildNacaGeometry(float xLE_world,
+                           float yLE_world,
+                           float chord,
+                           float thick_pct,
+                           float alpha_rad,
+                           float dx_coarse);
 
 private:
     PatchExtentCoarse ext_{};
@@ -158,6 +187,7 @@ private:
     int   ny_f_ = 0;
     int   nz_f_ = 0;
     std::size_t n_cells_f_ = 0;
+    std::size_t n_sparse_links_ = 0;
     float dx_f_ = 0.0f;
     float omega_nu_coarse_ = 0.0f;
     float omega_nu_f_ = 0.0f;
