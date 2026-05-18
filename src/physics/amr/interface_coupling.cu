@@ -107,33 +107,37 @@ __global__ void prolongateBoundaryFineFromCoarse(
     const int id_ab = coarse_id(i_c,    j_c_n,  k_c);  // 3/16
     const int id_bb = coarse_id(i_c_n,  j_c_n,  k_c);  // 1/16
 
-    // Decide bilinear vs nearest based on solid presence in stencil.
-    bool use_bilinear = true;
+    // Solid-aware stencil selection (Phase 2-B v5 fix 2026-05-19):
+    //   Old fallback "any-solid → use containing cell" was BROKEN when
+    //   the containing cell ITSELF was solid (e.g., fine boundary cell
+    //   whose containing coarse cell is inside the airfoil at α=8 LE/TE).
+    //
+    //   Correct fallback:
+    //     (a) if all 4 stencil cells are fluid → bilinear (9/3/3/1)
+    //     (b) if some fluid, some solid → use only fluid cells, renormalize
+    //         weights to sum to 1 (preserves total mass)
+    //     (c) if ALL 4 solid → skip prolongation entirely (return)
+    const int ids[4]   = {id_aa, id_ba, id_ab, id_bb};
+    float ws[4] = {9.0f/16.0f, 3.0f/16.0f, 3.0f/16.0f, 1.0f/16.0f};
     if (solid_c) {
-        if (solid_c[id_aa] != 0 || solid_c[id_ba] != 0 ||
-            solid_c[id_ab] != 0 || solid_c[id_bb] != 0) {
-            use_bilinear = false;
+        float wsum = 0.0f;
+        #pragma unroll
+        for (int c = 0; c < 4; ++c) {
+            if (solid_c[ids[c]] != 0) ws[c] = 0.0f;
+            wsum += ws[c];
         }
-    }
-
-    float w_aa, w_ba, w_ab, w_bb;
-    if (use_bilinear) {
-        w_aa = 9.0f / 16.0f;
-        w_ba = 3.0f / 16.0f;
-        w_ab = 3.0f / 16.0f;
-        w_bb = 1.0f / 16.0f;
-    } else {
-        w_aa = 1.0f; w_ba = 0.0f; w_ab = 0.0f; w_bb = 0.0f;
+        if (wsum <= 0.0f) return;  // all 4 stencil cells are solid → leave fine cell unchanged
+        const float inv_wsum = 1.0f / wsum;
+        #pragma unroll
+        for (int c = 0; c < 4; ++c) ws[c] *= inv_wsum;
     }
 
     // Per-cell decomposition: compute ρ_i, u_i, f_eq_i, f_neq_i for each of
-    // the 4 stencil cells, then BILINEAR the (ρ, u) and f_neq_i separately.
-    // This is correct under Chapman-Enskog (each cell has its own consistent
-    // CE expansion); the earlier approach of "bilinear sum f_cell, then
+    // the (up to 4) stencil cells, then BILINEAR the (ρ, u) and f_neq_i.
+    // f_neq is computed per cell (each cell has its own consistent CE
+    // expansion); the earlier approach of "bilinear sum f_cell, then
     // decompose with f_eq(sum_ρ, sum_u)" couples f_eq nonlinearly with sum
-    // and introduces spurious f_neq components that quickly diverge.
-    const int ids[4] = {id_aa, id_ba, id_ab, id_bb};
-    const float ws[4] = {w_aa, w_ba, w_ab, w_bb};
+    // and introduces spurious f_neq components that diverge.
 
     float rho_avg = 0.0f, ux_avg = 0.0f, uy_avg = 0.0f, uz_avg = 0.0f;
     float f_neq_avg[27] = {0.0f};
@@ -444,22 +448,24 @@ __global__ void prolongateBoundaryFineWithTimeInterp(
     const int id_ab_b = band_id_of(i_c,    j_c_n,  k_c);
     const int id_bb_b = band_id_of(i_c_n,  j_c_n,  k_c);
 
-    bool use_bilinear = true;
+    // Same solid-aware stencil selection as non-time-interp variant (v5 fix).
+    // (a) all fluid → bilinear 9/3/3/1
+    // (b) some fluid → renormalize weights over fluid cells (preserves mass)
+    // (c) all solid → skip prolongation (return)
+    const int ids_c[4] = {id_aa_c, id_ba_c, id_ab_c, id_bb_c};
+    const int ids_b[4] = {id_aa_b, id_ba_b, id_ab_b, id_bb_b};
+    float ws[4] = {9.0f/16.0f, 3.0f/16.0f, 3.0f/16.0f, 1.0f/16.0f};
     if (solid_c) {
-        if (solid_c[id_aa_c] != 0 || solid_c[id_ba_c] != 0 ||
-            solid_c[id_ab_c] != 0 || solid_c[id_bb_c] != 0) {
-            use_bilinear = false;
+        float wsum = 0.0f;
+        #pragma unroll
+        for (int c = 0; c < 4; ++c) {
+            if (solid_c[ids_c[c]] != 0) ws[c] = 0.0f;
+            wsum += ws[c];
         }
-    }
-
-    float w_aa, w_ba, w_ab, w_bb;
-    if (use_bilinear) {
-        w_aa = 9.0f / 16.0f;
-        w_ba = 3.0f / 16.0f;
-        w_ab = 3.0f / 16.0f;
-        w_bb = 1.0f / 16.0f;
-    } else {
-        w_aa = 1.0f; w_ba = 0.0f; w_ab = 0.0f; w_bb = 0.0f;
+        if (wsum <= 0.0f) return;
+        const float inv_wsum = 1.0f / wsum;
+        #pragma unroll
+        for (int c = 0; c < 4; ++c) ws[c] *= inv_wsum;
     }
 
     // Helper: read PDF f_q at coarse stencil position, time-averaged.
@@ -468,10 +474,6 @@ __global__ void prolongateBoundaryFineWithTimeInterp(
         const float v_snap = (id_b >= 0) ? f_snap_band[id_b + q * n_band] : v_cur;
         return 0.5f * (v_cur + v_snap);
     };
-
-    const int ids_c[4] = {id_aa_c, id_ba_c, id_ab_c, id_bb_c};
-    const int ids_b[4] = {id_aa_b, id_ba_b, id_ab_b, id_bb_b};
-    const float ws[4] = {w_aa, w_ba, w_ab, w_bb};
 
     float rho_avg = 0.0f, ux_avg = 0.0f, uy_avg = 0.0f, uz_avg = 0.0f;
     float f_neq_avg[27] = {0.0f};

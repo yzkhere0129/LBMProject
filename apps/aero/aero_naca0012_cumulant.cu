@@ -652,6 +652,44 @@ __global__ void computeTotalFluidMassKernel(
     if (rho != 0.0) atomicAdd(mass_acc, rho);
 }
 
+// Phase 2.7 v2: u-variance diagnostic. For uniform-flow / no-stamp tests,
+// true momentum conservation = u_x stays at u_max_lu everywhere. Outputs:
+//   u_x_sum, u_x_sum_sq, n_fluid → host computes mean, std, max_dev.
+// Skips solid cells. Uses double-precision accumulators.
+__global__ void computeUStatsKernel(
+    const float* __restrict__ f,
+    const unsigned char* __restrict__ solid_mask,
+    int n_cells,
+    double* ux_sum_acc,
+    double* ux_sum_sq_acc,
+    double* ux_max_dev_acc,    // max |u_x - u_x_ref|
+    float u_x_ref,
+    int* n_fluid_acc)
+{
+    const int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= n_cells) return;
+    if (solid_mask[id] != 0) return;
+    float rho = 0.0f, mx = 0.0f;
+    #pragma unroll
+    for (int q = 0; q < 27; ++q) {
+        const float v = f[id + q * n_cells];
+        rho += v;
+        mx += lbm::core::ex27[q] * v;
+    }
+    const float rho_safe = fmaxf(rho, 1e-12f);
+    const float ux = mx / rho_safe;
+    const float dev = fabsf(ux - u_x_ref);
+    atomicAdd(ux_sum_acc, (double)ux);
+    atomicAdd(ux_sum_sq_acc, (double)ux * (double)ux);
+    // Atomic max on positive doubles via bit-cast to uint64_t.
+    // For positive doubles, bit pattern compares like unsigned int.
+    unsigned long long *as_ull = (unsigned long long*)ux_max_dev_acc;
+    unsigned long long new_bits =
+        (unsigned long long)__double_as_longlong((double)dev);
+    atomicMax(as_ull, new_bits);
+    atomicAdd(n_fluid_acc, 1);
+}
+
 int main(int argc, char** argv) {
     Args args = parseArgs(argc, argv);
 
@@ -831,7 +869,7 @@ int main(int argc, char** argv) {
     }
 
     std::ofstream csv(args.output_dir + "/forces.csv");
-    csv << "step,t,Fx_LU,Fy_LU,Fz_LU,Fx_phys_per_m,Fy_phys_per_m,Cd,Cl,total_mass\n";
+    csv << "step,t,Fx_LU,Fy_LU,Fz_LU,Fx_phys_per_m,Fy_phys_per_m,Cd,Cl,total_mass,ux_mean,ux_std,ux_max_dev\n";
     csv.precision(8);
     double initial_total_mass = -1.0;  // captured at step 0; sentinel until then
 
@@ -1046,7 +1084,39 @@ int main(int argc, char** argv) {
                                   cudaMemcpyDeviceToHost));
             cudaFree(d_mass);
             if (initial_total_mass < 0.0) initial_total_mass = h_mass;
-            csv << h_mass << "\n";
+            csv << h_mass;
+
+            // ----- Phase 2.7 v2: u-stats diagnostic -----
+            // For uniform-flow (--no-stamp) case: max_dev should be ~0.
+            // For NACA case: indicates how strongly flow deviates from
+            // freestream (useful for AMR-OFF vs AMR-ON comparison).
+            double *d_ux_sum, *d_ux_sq, *d_ux_max;
+            int *d_nf;
+            CUDA_CHECK(cudaMalloc(&d_ux_sum, sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&d_ux_sq,  sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&d_ux_max, sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&d_nf,     sizeof(int)));
+            CUDA_CHECK(cudaMemset(d_ux_sum, 0, sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_ux_sq,  0, sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_ux_max, 0, sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_nf,     0, sizeof(int)));
+            computeUStatsKernel<<<mass_grid_n, mass_block>>>(
+                d_f_src, d_solid, n_cells,
+                d_ux_sum, d_ux_sq, d_ux_max,
+                args.u_max_lu, d_nf);
+            CUDA_CHECK_KERNEL();
+            double h_ux_sum = 0, h_ux_sq = 0, h_ux_max = 0;
+            int h_nf = 0;
+            CUDA_CHECK(cudaMemcpy(&h_ux_sum, d_ux_sum, sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(&h_ux_sq,  d_ux_sq,  sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(&h_ux_max, d_ux_max, sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(&h_nf,     d_nf,     sizeof(int),    cudaMemcpyDeviceToHost));
+            cudaFree(d_ux_sum); cudaFree(d_ux_sq); cudaFree(d_ux_max); cudaFree(d_nf);
+            const double ux_mean = (h_nf > 0) ? (h_ux_sum / h_nf) : 0.0;
+            const double ux_var = (h_nf > 0) ?
+                (h_ux_sq / h_nf - ux_mean * ux_mean) : 0.0;
+            const double ux_std = sqrt(fmax(ux_var, 0.0));
+            csv << "," << ux_mean << "," << ux_std << "," << h_ux_max << "\n";
             t_force += std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - stage_t0).count();
             ++n_force_calls;
