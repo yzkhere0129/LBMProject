@@ -276,6 +276,55 @@ __global__ void prolongateBoundaryFineFromCoarse(
     int nx_f, int ny_f, int nz_f,
     float omega_c, float omega_f);
 
+// =====================================================================
+// Phase 2.5: time interpolation snapshot
+// =====================================================================
+
+/**
+ * @brief Copy a band of coarse cells from the FULL coarse PDF buffer
+ *        into a compact band buffer (used as snapshot for time interp).
+ *
+ * Band is the box [i_lo-1, i_hi+1) × [j_lo-1, j_hi+1) × [k_lo, k_hi)
+ * in coarse cell indices — covers the bilinear stencil's read region.
+ * Launches over the BAND volume.
+ *
+ * Band SoA layout: band_id + q * (band_nx * band_ny * band_nz)
+ *   where band_id = band_i + band_j * band_nx + band_k * band_nx * band_ny
+ *   band_i = i_c - (i_lo - 1)
+ *   band_j = j_c - (j_lo - 1)
+ *   band_k = k_c - k_lo
+ */
+__global__ void snapshotCoarseBand(
+    const float* __restrict__ f_coarse,
+    float*       __restrict__ f_snap_band,
+    int i_lo, int j_lo, int k_lo,
+    int band_nx, int band_ny, int band_nz,
+    int nx_c, int ny_c, int nz_c);
+
+/**
+ * @brief Bilinear prolongation with linear TIME interpolation between
+ *        snapshot (coarse_t) and current coarse (coarse_{t+δt_c}).
+ *
+ * For each stencil cell C, read PDF from BOTH the snap and current
+ * buffers and average: f_eff_C = 0.5 * (f_snap_C + f_cur_C). This is
+ * the linear time interp at t + δt_c/2 per Lagrava 2012 §3.5 step 2.
+ * Then proceed with per-cell CE decomposition + bilinear average.
+ *
+ * Phase 2.5 used at fine sub-step 1 (which reaches t + δt_c/2).
+ * Fine sub-step 2 uses prolongateBoundaryFineFromCoarse (no snapshot).
+ */
+__global__ void prolongateBoundaryFineWithTimeInterp(
+    const float* __restrict__ f_coarse_cur,
+    const float* __restrict__ f_snap_band,
+    float*       __restrict__ f_fine,
+    const unsigned char* __restrict__ solid_c,
+    int i_lo, int j_lo, int k_lo,
+    int band_nx, int band_ny, int band_nz,
+    int refine,
+    int nx_c, int ny_c, int nz_c,
+    int nx_f, int ny_f, int nz_f,
+    float omega_c, float omega_f);
+
 /**
  * @brief Overwrite patch-interior coarse cells with restricted fine values.
  *

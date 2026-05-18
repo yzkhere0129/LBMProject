@@ -924,7 +924,43 @@ int main(int argc, char** argv) {
         amr_active = true;
     }
 
+    // ----- AMR Phase 2.5 setup: time-interp snapshot band -----
+    // Band covers [i_lo-1, i_hi+1) × [j_lo-1, j_hi+1) × [k_lo, k_hi)
+    // — the bilinear stencil's read region. Pre-collision snapshot
+    // gives coarse_t for linear time interp at fine sub-step 1.
+    utils::CudaBuffer<float> d_f_snap_band;
+    int band_nx = 0, band_ny = 0, band_nz = 0;
+    if (amr_active) {
+        const auto& ext = fine_patch.extent_coarse();
+        band_nx = ext.nx_coarse() + 2;
+        band_ny = ext.ny_coarse() + 2;
+        band_nz = ext.nz_coarse();
+        const int band_n_cells = band_nx * band_ny * band_nz;
+        d_f_snap_band.reset(band_n_cells * 27);
+        d_f_snap_band.zero();
+        std::cout << " AMR snapshot band: " << band_nx << "×" << band_ny << "×" << band_nz
+                  << " = " << band_n_cells << " cells, "
+                  << (band_n_cells * 27 * 4 / 1024) << " KB\n";
+    }
+
     for (int step = 0; step < total_steps; ++step) {
+        // ----- Phase 2.5: snapshot pre-collision coarse PDFs in band -----
+        // BEFORE the coarse collision modifies d_f_src in-place, copy band
+        // cells to d_f_snap_band. After coarse step completes, d_f_src holds
+        // state_{t+δt_c}; d_f_snap_band still holds state_t. AMR sub-step 1
+        // uses linear time interp = 0.5*(snap + cur) at the bilinear stencil.
+        if (amr_active) {
+            const auto& ext = fine_patch.extent_coarse();
+            dim3 band_block(4, 4, 4);
+            dim3 band_grid((band_nx + 3) / 4, (band_ny + 3) / 4, (band_nz + 3) / 4);
+            physics::amr::snapshotCoarseBand<<<band_grid, band_block>>>(
+                d_f_src, d_f_snap_band.get(),
+                ext.i_lo, ext.j_lo, ext.k_lo,
+                band_nx, band_ny, band_nz,
+                nx, ny, nz);
+            CUDA_CHECK_KERNEL();
+        }
+
         auto stage_t0 = std::chrono::steady_clock::now();
         if (args.use_bgk) {
             fluidBGKD3Q27Kernel<<<grid3, block3>>>(
@@ -1053,11 +1089,14 @@ int main(int argc, char** argv) {
             const float omega_c = omega_nu;
             const float omega_f = fine_patch.omega_nu_fine();
 
-            // Sub-step 1
-            physics::amr::prolongateBoundaryFineFromCoarse<<<fine_grid3, fine_block3>>>(
-                d_f_src, fine_patch.d_f_src(),
+            // Sub-step 1 — Phase 2.5: bilinear + LINEAR TIME INTERP between
+            // pre-collision snapshot (state_t) and current d_f_src (state_{t+δt_c}).
+            // Fine reaches t+δt_c/2 after this sub-step.
+            physics::amr::prolongateBoundaryFineWithTimeInterp<<<fine_grid3, fine_block3>>>(
+                d_f_src, d_f_snap_band.get(), fine_patch.d_f_src(),
                 d_solid,
                 ext_amr.i_lo, ext_amr.j_lo, ext_amr.k_lo,
+                band_nx, band_ny, band_nz,
                 args.amr_refine,
                 nx, ny, nz,
                 fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
@@ -1081,7 +1120,8 @@ int main(int argc, char** argv) {
             CUDA_CHECK_KERNEL();
             fine_patch.swap_pdf();
 
-            // Sub-step 2 (no time interp yet — same coarse source)
+            // Sub-step 2 — fine reaches t+δt_c. Use CURRENT coarse only
+            // (no time interp; coarse is already at t+δt_c).
             physics::amr::prolongateBoundaryFineFromCoarse<<<fine_grid3, fine_block3>>>(
                 d_f_src, fine_patch.d_f_src(),
                 d_solid,
