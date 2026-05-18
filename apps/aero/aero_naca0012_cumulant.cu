@@ -82,6 +82,9 @@ struct Args {
     float amr_y_lo   = -0.10f;   // patch y range in chord units (relative to yLE)
     float amr_y_hi   = +0.10f;
     int   amr_refine = 2;        // refinement factor (Phase 1: only 2 supported)
+    // Phase 2.7 sanity-test flag: skip obstacle stamp (no NACA, no qfrac).
+    // Combined with --amr-enable runs uniform-flow test through AMR pipeline.
+    int   no_stamp = 0;
 };
 
 // Simple BGK D3Q27 collision (control test for Cumulant)
@@ -242,6 +245,7 @@ static Args parseArgs(int argc, char** argv) {
         else if (s == "--amr-y-lo")    a.amr_y_lo = std::stof(next());
         else if (s == "--amr-y-hi")    a.amr_y_hi = std::stof(next());
         else if (s == "--amr-refine")  a.amr_refine = std::stoi(next());
+        else if (s == "--no-stamp")    a.no_stamp = 1;
         else if (s == "-h" || s == "--help") {
             std::cout <<
               "Usage: aero_naca0012_cumulant [opts]\n"
@@ -724,7 +728,9 @@ int main(int argc, char** argv) {
     // Build mask: --shape selects naca|cylinder|flatplate
     auto h_mask = physics::aero::makeFluidMask(nx, ny, nz);
     const char* shape_name = "?";
-    if (args.shape == 1) {
+    if (args.no_stamp) {
+        shape_name = "no-stamp (uniform flow sanity test)";
+    } else if (args.shape == 1) {
         // Cylinder of diameter = chord, centered at (xLE+0.5c, yLE+cyl_off_y)
         const float cz = 0.5f * nz * dx;
         physics::aero::stampSphere(
@@ -912,11 +918,11 @@ int main(int argc, char** argv) {
         // Same predicate + transformation as coarse stamp; LE position
         // translated to patch-local frame so cell-center test resolves
         // the airfoil at world coordinates.
-        if (args.shape == 0) {  // NACA
+        if (args.shape == 0 && !args.no_stamp) {  // NACA (skip if --no-stamp)
             fine_patch.buildNacaGeometry(
                 xLE, yLE, chord, /*thick%*/ 12.0f, alpha_rad, dx);
         } else {
-            // Non-NACA shapes: zero mask + zero offsets (no QBB on fine).
+            // No obstacle on fine: zero mask + zero offsets.
             cudaMemset(fine_patch.d_solid(), 0, fine_patch.n_cells());
             cudaMemset(fine_patch.d_qf_offset(), 0,
                        (fine_patch.n_cells() + 1) * sizeof(int));
