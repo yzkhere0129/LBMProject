@@ -1001,17 +1001,32 @@ int main(int argc, char** argv) {
 
         std::swap(d_f_src, d_f_dst);
 
-        // ----- AMR Phase 1: fine sub-steps (2× per coarse) — ISOLATED -----
-        // No data flow with coarse. Phase 2 will add interface coupling.
-        // Coarse swap above is unaffected → coarse Cl in forces.csv stays
-        // bit-identical when --amr-enable is OFF (this block skipped).
+        // ----- AMR Phase 2: fine sub-steps WITH interface coupling -----
+        // Coarse swap above completed → d_f_src now holds post-coarse-step PDFs.
+        // Each fine sub-step: (1) prolongate coarse boundary → fine ghost
+        // (2) fine collide-stream (3) [Phase 2.5+ time interp not yet wired —
+        // sub-steps 1 and 2 both prolongate from same d_f_src; will revisit].
+        // After both fine sub-steps: restrict fine interior → coarse cells
+        // inside patch (1-cell margin acts as overlap buffer).
         if (amr_active) {
-            // Sub-step 1: collide (in-place) then stream into f_dst.
+            const auto& ext_amr = fine_patch.extent_coarse();
+            const float omega_c = omega_nu;
+            const float omega_f = fine_patch.omega_nu_fine();
+
+            // Sub-step 1
+            physics::amr::prolongateBoundaryFineFromCoarse<<<fine_grid3, fine_block3>>>(
+                d_f_src, fine_patch.d_f_src(),
+                ext_amr.i_lo, ext_amr.j_lo, ext_amr.k_lo,
+                args.amr_refine,
+                nx, ny, nz,
+                fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
+                omega_c, omega_f);
+            CUDA_CHECK_KERNEL();
             physics::amr::fineCumulantCollisionKernel<<<fine_grid3, fine_block3>>>(
                 fine_patch.d_f_src(), fine_patch.d_f_src(),
                 nullptr, nullptr, nullptr, nullptr,
                 fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
-                fine_patch.omega_nu_fine(), 1.0f,
+                omega_f, 1.0f,
                 args.omega_3, args.omega_4, args.omega_5, args.omega_6);
             CUDA_CHECK_KERNEL();
             physics::amr::fineStreamD3Q27_naca_qbb_sparse<<<fine_grid3, fine_block3>>>(
@@ -1021,16 +1036,24 @@ int main(int argc, char** argv) {
                 fine_patch.d_qf_link_q(),
                 fine_patch.d_qf_link_val(),
                 fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
-                fine_patch.omega_nu_fine());
+                omega_f);
             CUDA_CHECK_KERNEL();
             fine_patch.swap_pdf();
 
-            // Sub-step 2: same.
+            // Sub-step 2 (no time interp yet — same coarse source)
+            physics::amr::prolongateBoundaryFineFromCoarse<<<fine_grid3, fine_block3>>>(
+                d_f_src, fine_patch.d_f_src(),
+                ext_amr.i_lo, ext_amr.j_lo, ext_amr.k_lo,
+                args.amr_refine,
+                nx, ny, nz,
+                fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
+                omega_c, omega_f);
+            CUDA_CHECK_KERNEL();
             physics::amr::fineCumulantCollisionKernel<<<fine_grid3, fine_block3>>>(
                 fine_patch.d_f_src(), fine_patch.d_f_src(),
                 nullptr, nullptr, nullptr, nullptr,
                 fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
-                fine_patch.omega_nu_fine(), 1.0f,
+                omega_f, 1.0f,
                 args.omega_3, args.omega_4, args.omega_5, args.omega_6);
             CUDA_CHECK_KERNEL();
             physics::amr::fineStreamD3Q27_naca_qbb_sparse<<<fine_grid3, fine_block3>>>(
@@ -1040,9 +1063,31 @@ int main(int argc, char** argv) {
                 fine_patch.d_qf_link_q(),
                 fine_patch.d_qf_link_val(),
                 fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
-                fine_patch.omega_nu_fine());
+                omega_f);
             CUDA_CHECK_KERNEL();
             fine_patch.swap_pdf();
+
+            // Restriction: overwrite patch-interior coarse cells with fine avg.
+            // Block grid for coarse-interior region [i_lo+1, i_hi-1) etc.
+            const int ix_count = std::max(0, ext_amr.nx_coarse() - 2);
+            const int jy_count = std::max(0, ext_amr.ny_coarse() - 2);
+            const int kz_count = std::max(0, ext_amr.nz_coarse());
+            if (ix_count > 0 && jy_count > 0 && kz_count > 0) {
+                dim3 restrict_grid(
+                    (ix_count + 3) / 4,
+                    (jy_count + 3) / 4,
+                    (kz_count + 3) / 4);
+                physics::amr::restrictFineToCoarsePatch<<<restrict_grid, fine_block3>>>(
+                    fine_patch.d_f_src(), d_f_src,
+                    d_solid, fine_patch.d_solid(),
+                    ext_amr.i_lo, ext_amr.j_lo, ext_amr.k_lo,
+                    ext_amr.i_hi, ext_amr.j_hi, ext_amr.k_hi,
+                    args.amr_refine,
+                    nx, ny, nz,
+                    fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
+                    omega_c, omega_f);
+                CUDA_CHECK_KERNEL();
+            }
         }
 
         if (step + 1 == next_log) {

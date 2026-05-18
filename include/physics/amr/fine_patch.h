@@ -253,6 +253,49 @@ __global__ void fineMemForceNaca_QBB_sparse(
     int nx, int ny, int nz,
     double* Fx_acc, double* Fy_acc, double* Fz_acc);
 
+// =====================================================================
+// Phase 2: Coarse↔fine PDF coupling (Lagrava 2012 rescaling)
+// =====================================================================
+
+/**
+ * @brief Overwrite boundary fine cells with prolongated coarse values.
+ *
+ * Phase 2.2 minimum: nearest-coarse-cell value (no spatial interp).
+ * Launches over ALL fine cells; only the 1-cell-thick boundary layer
+ * (i_f==0, nx_f-1, j_f==0, ny_f-1) does work.
+ *
+ * Formula: f_fine_q = f_eq_q(ρ_c, u_c) + (ω_c / 2ω_f) · f_neq_c_q.
+ */
+__global__ void prolongateBoundaryFineFromCoarse(
+    const float* __restrict__ f_coarse,
+    float*       __restrict__ f_fine,
+    int i_lo, int j_lo, int k_lo,
+    int refine,
+    int nx_c, int ny_c, int nz_c,
+    int nx_f, int ny_f, int nz_f,
+    float omega_c, float omega_f);
+
+/**
+ * @brief Overwrite patch-interior coarse cells with restricted fine values.
+ *
+ * Phase 2.3 minimum: unweighted average over 8 fine cells (no box filter).
+ * Launches over coarse cells [i_lo+1, i_hi-1) — 1-cell margin from
+ * patch boundary acts as Lagrava overlap buffer.
+ *
+ * Formula: f_coarse_q = f_eq_q(ρ_f_avg, u_f_avg) + (2ω_f / ω_c) · f_neq_avg_q.
+ */
+__global__ void restrictFineToCoarsePatch(
+    const float* __restrict__ f_fine,
+    float*       __restrict__ f_coarse,
+    const unsigned char* __restrict__ solid_c,
+    const unsigned char* __restrict__ solid_f,
+    int i_lo, int j_lo, int k_lo,
+    int i_hi, int j_hi, int k_hi,
+    int refine,
+    int nx_c, int ny_c, int nz_c,
+    int nx_f, int ny_f, int nz_f,
+    float omega_c, float omega_f);
+
 } // namespace amr
 } // namespace physics
 } // namespace lbm
