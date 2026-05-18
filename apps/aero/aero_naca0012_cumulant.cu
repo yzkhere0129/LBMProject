@@ -1056,6 +1056,7 @@ int main(int argc, char** argv) {
             // Sub-step 1
             physics::amr::prolongateBoundaryFineFromCoarse<<<fine_grid3, fine_block3>>>(
                 d_f_src, fine_patch.d_f_src(),
+                d_solid,
                 ext_amr.i_lo, ext_amr.j_lo, ext_amr.k_lo,
                 args.amr_refine,
                 nx, ny, nz,
@@ -1083,6 +1084,7 @@ int main(int argc, char** argv) {
             // Sub-step 2 (no time interp yet — same coarse source)
             physics::amr::prolongateBoundaryFineFromCoarse<<<fine_grid3, fine_block3>>>(
                 d_f_src, fine_patch.d_f_src(),
+                d_solid,
                 ext_amr.i_lo, ext_amr.j_lo, ext_amr.k_lo,
                 args.amr_refine,
                 nx, ny, nz,

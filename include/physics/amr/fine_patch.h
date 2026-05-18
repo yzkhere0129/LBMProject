@@ -269,6 +269,7 @@ __global__ void fineMemForceNaca_QBB_sparse(
 __global__ void prolongateBoundaryFineFromCoarse(
     const float* __restrict__ f_coarse,
     float*       __restrict__ f_fine,
+    const unsigned char* __restrict__ solid_c,
     int i_lo, int j_lo, int k_lo,
     int refine,
     int nx_c, int ny_c, int nz_c,

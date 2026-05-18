@@ -35,25 +35,31 @@ using lbm::core::ey27;
 using lbm::core::ez27;
 
 /**
- * @brief Prolongation kernel: write boundary fine cells from nearest coarse cell.
+ * @brief Prolongation kernel: bilinear (9/3/3/1) interp over 4 coarse cells
+ *        with ρ-guard fallback to nearest-coarse when bilinear stencil
+ *        yields an unphysical density.
  *
- * Each fine cell at the boundary of the patch (i_f == 0 or nx_f-1, etc.)
- * gets its 27 PDFs OVERWRITTEN with the prolongated value from the
- * coarse cell that contains it. Interior fine cells are untouched.
+ * For cell-center 2× refinement, each boundary fine cell sits in one of
+ * 4 quadrants of its containing coarse cell. Bilinear stencil uses the
+ * containing cell (weight 9/16) + 2 face-neighbors (3/16 each) +
+ * diagonal neighbor (1/16), with direction of neighbors set by the
+ * fine cell's quadrant.
  *
- * Rescaling: f_fine = f_eq(ρ_c, u_c) + (ω_c / (2·ω_f)) · (f_coarse - f_eq).
+ * Fallback: if bilinear ρ_avg < 0.5 (sanity floor, baseline ρ=1) OR
+ * any of the 4 stencil cells is solid, use only the containing coarse
+ * cell (weight 1.0, w_others = 0).
  *
- * @param f_coarse   Coarse PDF (SoA, n_cells_c = nx_c*ny_c*nz_c).
- * @param f_fine     Fine PDF buffer to write into (SoA, n_cells_f).
- * @param i_lo,j_lo,k_lo  Patch lower corner in coarse cell indices.
- * @param refine     Refinement factor (= 2).
- * @param nx_c,ny_c,nz_c  Coarse domain extents.
- * @param nx_f,ny_f,nz_f  Fine patch extents.
- * @param omega_c, omega_f  Shear relaxation rates (Lagrava eq. 24).
+ * Rescaling (Lagrava 2012 eq. 29):
+ *   f_fine = f_eq(ρ_bilin, u_bilin) + (ω_c / 2ω_f) · f_neq_bilin
+ *
+ * @param f_coarse   Coarse PDF (SoA).
+ * @param f_fine     Fine PDF (SoA, written at boundary cells only).
+ * @param solid_c    Coarse solid mask (for fallback decision).
  */
 __global__ void prolongateBoundaryFineFromCoarse(
     const float* __restrict__ f_coarse,
     float*       __restrict__ f_fine,
+    const unsigned char* __restrict__ solid_c,
     int i_lo, int j_lo, int k_lo,
     int refine,
     int nx_c, int ny_c, int nz_c,
@@ -67,53 +73,133 @@ __global__ void prolongateBoundaryFineFromCoarse(
     const int k_f = blockIdx.z * blockDim.z + threadIdx.z;
     if (i_f >= nx_f || j_f >= ny_f || k_f >= nz_f) return;
 
-    // Only process boundary fine cells (1-cell layer at each edge).
     const bool on_x_edge = (i_f == 0 || i_f == nx_f - 1);
     const bool on_y_edge = (j_f == 0 || j_f == ny_f - 1);
-    // z is periodic; skip z edges (no prolongation needed for periodic).
     if (!on_x_edge && !on_y_edge) return;
 
-    // Map fine cell → containing coarse cell.
     const int i_c = i_lo + i_f / refine;
     const int j_c = j_lo + j_f / refine;
     const int k_c = k_lo + k_f / refine;
 
-    // Clamp to coarse domain (should be inside since patch is interior).
     if (i_c < 0 || i_c >= nx_c || j_c < 0 || j_c >= ny_c ||
         k_c < 0 || k_c >= nz_c) return;
 
-    const int id_c = i_c + j_c * nx_c + k_c * nx_c * ny_c;
-    const int n_cells_c = nx_c * ny_c * nz_c;
+    // Quadrant direction within containing coarse cell.
+    const int qx = i_f % refine;
+    const int qy = j_f % refine;
+    const int di_neigh = (qx == 0) ? -1 : +1;
+    const int dj_neigh = (qy == 0) ? -1 : +1;
 
-    const int id_f = i_f + j_f * nx_f + k_f * nx_f * ny_f;
+    auto clamp_idx = [](int v, int v_max) -> int {
+        return (v < 0) ? 0 : ((v >= v_max) ? (v_max - 1) : v);
+    };
+    const int i_c_n = clamp_idx(i_c + di_neigh, nx_c);
+    const int j_c_n = clamp_idx(j_c + dj_neigh, ny_c);
+
+    const int n_cells_c = nx_c * ny_c * nz_c;
     const int n_cells_f = nx_f * ny_f * nz_f;
 
-    // Load coarse PDF, compute (ρ, u) and f_neq.
-    float f_c[27];
-    float rho = 0.0f, mx = 0.0f, my = 0.0f, mz = 0.0f;
-    #pragma unroll
-    for (int q = 0; q < 27; ++q) {
-        const float v = f_coarse[id_c + q * n_cells_c];
-        f_c[q] = v;
-        rho += v;
-        mx  += ex27[q] * v;
-        my  += ey27[q] * v;
-        mz  += ez27[q] * v;
-    }
-    const float rho_safe = fmaxf(rho, 1e-12f);
-    const float ux = mx / rho_safe;
-    const float uy = my / rho_safe;
-    const float uz = mz / rho_safe;
+    auto coarse_id = [&](int ic, int jc, int kc) -> int {
+        return ic + jc * nx_c + kc * nx_c * ny_c;
+    };
+    const int id_aa = coarse_id(i_c,    j_c,    k_c);  // 9/16
+    const int id_ba = coarse_id(i_c_n,  j_c,    k_c);  // 3/16
+    const int id_ab = coarse_id(i_c,    j_c_n,  k_c);  // 3/16
+    const int id_bb = coarse_id(i_c_n,  j_c_n,  k_c);  // 1/16
 
-    // f_neq^coarse = f^coarse - f^eq(ρ_c, u_c).
-    // Rescale: f_neq^fine = (ω_c / (2·ω_f)) · f_neq^coarse.
+    // Decide bilinear vs nearest based on solid presence in stencil.
+    bool use_bilinear = true;
+    if (solid_c) {
+        if (solid_c[id_aa] != 0 || solid_c[id_ba] != 0 ||
+            solid_c[id_ab] != 0 || solid_c[id_bb] != 0) {
+            use_bilinear = false;
+        }
+    }
+
+    float w_aa, w_ba, w_ab, w_bb;
+    if (use_bilinear) {
+        w_aa = 9.0f / 16.0f;
+        w_ba = 3.0f / 16.0f;
+        w_ab = 3.0f / 16.0f;
+        w_bb = 1.0f / 16.0f;
+    } else {
+        w_aa = 1.0f; w_ba = 0.0f; w_ab = 0.0f; w_bb = 0.0f;
+    }
+
+    // Per-cell decomposition: compute ρ_i, u_i, f_eq_i, f_neq_i for each of
+    // the 4 stencil cells, then BILINEAR the (ρ, u) and f_neq_i separately.
+    // This is correct under Chapman-Enskog (each cell has its own consistent
+    // CE expansion); the earlier approach of "bilinear sum f_cell, then
+    // decompose with f_eq(sum_ρ, sum_u)" couples f_eq nonlinearly with sum
+    // and introduces spurious f_neq components that quickly diverge.
+    const int ids[4] = {id_aa, id_ba, id_ab, id_bb};
+    const float ws[4] = {w_aa, w_ba, w_ab, w_bb};
+
+    float rho_avg = 0.0f, ux_avg = 0.0f, uy_avg = 0.0f, uz_avg = 0.0f;
+    float f_neq_avg[27] = {0.0f};
+
+    #pragma unroll
+    for (int c = 0; c < 4; ++c) {
+        if (ws[c] <= 0.0f) continue;
+        // Load PDF, compute moments.
+        float f_loc[27];
+        float r = 0.0f, mx = 0.0f, my = 0.0f, mz = 0.0f;
+        #pragma unroll
+        for (int q = 0; q < 27; ++q) {
+            const float v = f_coarse[ids[c] + q * n_cells_c];
+            f_loc[q] = v;
+            r += v;
+            mx += ex27[q] * v;
+            my += ey27[q] * v;
+            mz += ez27[q] * v;
+        }
+        const float r_safe = fmaxf(r, 1e-6f);
+        const float u_x = mx / r_safe;
+        const float u_y = my / r_safe;
+        const float u_z = mz / r_safe;
+        rho_avg += ws[c] * r;
+        ux_avg  += ws[c] * u_x;
+        uy_avg  += ws[c] * u_y;
+        uz_avg  += ws[c] * u_z;
+        #pragma unroll
+        for (int q = 0; q < 27; ++q) {
+            const float feq_q = D3Q27::computeEquilibrium(q, r, u_x, u_y, u_z);
+            f_neq_avg[q] += ws[c] * (f_loc[q] - feq_q);
+        }
+    }
+
+    // Safety: if averaged ρ is unphysical, fall back to containing cell.
+    if (!isfinite(rho_avg) || rho_avg < 0.5f) {
+        rho_avg = 0.0f;
+        ux_avg = uy_avg = uz_avg = 0.0f;
+        for (int q = 0; q < 27; ++q) f_neq_avg[q] = 0.0f;
+        float mx = 0.0f, my = 0.0f, mz = 0.0f;
+        float f_loc[27];
+        #pragma unroll
+        for (int q = 0; q < 27; ++q) {
+            const float v = f_coarse[id_aa + q * n_cells_c];
+            f_loc[q] = v;
+            rho_avg += v;
+            mx += ex27[q] * v;
+            my += ey27[q] * v;
+            mz += ez27[q] * v;
+        }
+        const float r_safe = fmaxf(rho_avg, 1e-6f);
+        ux_avg = mx / r_safe; uy_avg = my / r_safe; uz_avg = mz / r_safe;
+        #pragma unroll
+        for (int q = 0; q < 27; ++q) {
+            const float feq_q = D3Q27::computeEquilibrium(q, rho_avg, ux_avg, uy_avg, uz_avg);
+            f_neq_avg[q] = f_loc[q] - feq_q;
+        }
+    }
+
+    // f_fine = f_eq(ρ_avg, u_avg) + (ω_c / 2ω_f) · f_neq_avg
     const float scale = omega_c / (2.0f * omega_f);
+    const int id_f = i_f + j_f * nx_f + k_f * nx_f * ny_f;
     #pragma unroll
     for (int q = 0; q < 27; ++q) {
-        const float feq_q = D3Q27::computeEquilibrium(q, rho, ux, uy, uz);
-        const float f_neq_c = f_c[q] - feq_q;
-        const float f_neq_f = scale * f_neq_c;
-        f_fine[id_f + q * n_cells_f] = feq_q + f_neq_f;
+        const float feq_q = D3Q27::computeEquilibrium(q, rho_avg, ux_avg, uy_avg, uz_avg);
+        f_fine[id_f + q * n_cells_f] = feq_q + scale * f_neq_avg[q];
     }
 }
 
