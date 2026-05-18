@@ -22,6 +22,7 @@
 #include "physics/cumulant/cumulant_d3q27.h"
 #include "physics/cumulant/streaming_d3q27_qbb.h"
 #include "physics/aero/obstacle_geometry.h"
+#include "physics/amr/fine_patch.h"
 #include "io/vtk_writer.h"
 #include "utils/cuda_check.h"
 
@@ -69,6 +70,18 @@ struct Args {
     // Bouzidi (e.g. Λ_eo = 3/16 magic gives ω_wall = 1/(0.5 + 3/(16·(τ-0.5)))).
     // -1 sentinel = "use ω_nu" (i.e. unchanged behavior).
     float wall_omega_override = -1.0f;
+    // ----- AMR Phase 1: static patch-based 2× refinement around NACA -----
+    // When --amr-enable is OFF, code path is bit-identical to pre-AMR.
+    // When ON, a FinePatch is allocated covering [amr_x_lo, amr_x_hi] ×
+    // [amr_y_lo, amr_y_hi] (in chord units, relative to LE position) and
+    // runs in ISOLATION (no coupling to coarse) — verifies fine kernels
+    // are stable. Interface coupling is Phase 2.
+    int   amr_enable = 0;
+    float amr_x_lo   = -0.05f;   // patch x range in chord units (relative to xLE)
+    float amr_x_hi   = +1.05f;
+    float amr_y_lo   = -0.10f;   // patch y range in chord units (relative to yLE)
+    float amr_y_hi   = +0.10f;
+    int   amr_refine = 2;        // refinement factor (Phase 1: only 2 supported)
 };
 
 // Simple BGK D3Q27 collision (control test for Cumulant)
@@ -222,6 +235,13 @@ static Args parseArgs(int argc, char** argv) {
             }
             a.bc_mode = v;
         }
+        // ----- AMR Phase 1 CLI -----
+        else if (s == "--amr-enable")  a.amr_enable = 1;
+        else if (s == "--amr-x-lo")    a.amr_x_lo = std::stof(next());
+        else if (s == "--amr-x-hi")    a.amr_x_hi = std::stof(next());
+        else if (s == "--amr-y-lo")    a.amr_y_lo = std::stof(next());
+        else if (s == "--amr-y-hi")    a.amr_y_hi = std::stof(next());
+        else if (s == "--amr-refine")  a.amr_refine = std::stoi(next());
         else if (s == "-h" || s == "--help") {
             std::cout <<
               "Usage: aero_naca0012_cumulant [opts]\n"
@@ -235,7 +255,11 @@ static Args parseArgs(int argc, char** argv) {
               "  --lx-over-c X     domain length in chord units (default 30)\n"
               "  --ly-over-c Y     domain height in chord units (default 20)\n"
               "  --xle-over-c X    LE position from inlet (default 10)\n"
-              "  --bc M            obstacle BC: stair (default) | qbb-snode (NACA only)\n";
+              "  --bc M            obstacle BC: stair (default) | qbb-snode (NACA only)\n"
+              "  --amr-enable           [Phase 1] allocate isolated fine patch around NACA (no coupling yet)\n"
+              "  --amr-x-lo X / --amr-x-hi X    patch x extent in chord units (rel xLE; default -0.05 / +1.05)\n"
+              "  --amr-y-lo Y / --amr-y-hi Y    patch y extent in chord units (rel yLE; default ±0.10)\n"
+              "  --amr-refine N         spatial refinement factor (Phase 1: only 2 supported)\n";
             std::exit(0);
         } else { std::cerr << "Unknown: " << s << std::endl; std::exit(1); }
     }
@@ -816,6 +840,59 @@ int main(int argc, char** argv) {
                   << " ω_-=" << omega_minus_trt << "\n";
     }
 
+    // ----- AMR Phase 1 setup (ISLAND mode, no coupling) -----
+    // When --amr-enable is OFF, this block is skipped entirely and the
+    // coarse path runs exactly as before — guarantees bit-identical
+    // regression on the current baseline.
+    physics::amr::FinePatch fine_patch;
+    dim3 fine_block3(4, 4, 4);
+    dim3 fine_grid3(1, 1, 1);
+    bool amr_active = false;
+    if (args.amr_enable) {
+        // Convert chord-units AMR window to coarse cell indices.
+        // xLE / yLE are computed earlier in this function.
+        const float xLE_amr_lo = xLE + args.amr_x_lo * chord;
+        const float xLE_amr_hi = xLE + args.amr_x_hi * chord;
+        const float yLE_amr_lo = yLE + args.amr_y_lo * chord;
+        const float yLE_amr_hi = yLE + args.amr_y_hi * chord;
+        physics::amr::PatchExtentCoarse ext{
+            std::max(0,  (int)std::floor(xLE_amr_lo / dx)),
+            std::min(nx, (int)std::ceil (xLE_amr_hi / dx)),
+            std::max(0,  (int)std::floor(yLE_amr_lo / dx)),
+            std::min(ny, (int)std::ceil (yLE_amr_hi / dx)),
+            0, nz
+        };
+        if (ext.nx_coarse() <= 0 || ext.ny_coarse() <= 0) {
+            std::cerr << "ERROR: --amr-enable: patch extent is empty after clipping. "
+                      << "Check --amr-x-lo/hi / --amr-y-lo/hi values.\n";
+            std::exit(1);
+        }
+        fine_patch.allocate(ext, args.amr_refine, dx, omega_nu);
+        fine_grid3 = dim3(
+            (fine_patch.nx() + 3) / 4,
+            (fine_patch.ny() + 3) / 4,
+            (fine_patch.nz() + 3) / 4);
+        std::cout << " AMR Phase 1: fine patch [" << ext.i_lo << "," << ext.i_hi
+                  << ")×[" << ext.j_lo << "," << ext.j_hi << ")×[" << ext.k_lo
+                  << "," << ext.k_hi << ") coarse → fine "
+                  << fine_patch.nx() << "×" << fine_patch.ny() << "×" << fine_patch.nz()
+                  << " (omega_c=" << omega_nu << ", omega_f="
+                  << fine_patch.omega_nu_fine() << ")\n";
+        // Phase 1 isolation: initialise fine patch at freestream equilibrium.
+        const int fblock = 256;
+        const int fgrid = (fine_patch.n_cells() + fblock - 1) / fblock;
+        initializeFreestream<<<fgrid, fblock>>>(
+            fine_patch.d_f_src(), fine_patch.n_cells(), args.u_max_lu);
+        CUDA_CHECK_KERNEL();
+        // Solid mask defaults to 0 (all fluid) — Phase 1 isolation test
+        // skips NACA stamping on fine patch for now (no qfrac generation).
+        // Phase 2 will stamp NACA at fine dx + build sparse qfrac.
+        cudaMemset(fine_patch.d_solid(), 0, fine_patch.n_cells());
+        cudaMemset(fine_patch.d_qf_offset(), 0,
+                   (fine_patch.n_cells() + 1) * sizeof(int));
+        amr_active = true;
+    }
+
     for (int step = 0; step < total_steps; ++step) {
         auto stage_t0 = std::chrono::steady_clock::now();
         if (args.use_bgk) {
@@ -916,6 +993,50 @@ int main(int argc, char** argv) {
             std::chrono::steady_clock::now() - stage_t0).count();
 
         std::swap(d_f_src, d_f_dst);
+
+        // ----- AMR Phase 1: fine sub-steps (2× per coarse) — ISOLATED -----
+        // No data flow with coarse. Phase 2 will add interface coupling.
+        // Coarse swap above is unaffected → coarse Cl in forces.csv stays
+        // bit-identical when --amr-enable is OFF (this block skipped).
+        if (amr_active) {
+            // Sub-step 1: collide (in-place) then stream into f_dst.
+            physics::amr::fineCumulantCollisionKernel<<<fine_grid3, fine_block3>>>(
+                fine_patch.d_f_src(), fine_patch.d_f_src(),
+                nullptr, nullptr, nullptr, nullptr,
+                fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
+                fine_patch.omega_nu_fine(), 1.0f,
+                args.omega_3, args.omega_4, args.omega_5, args.omega_6);
+            CUDA_CHECK_KERNEL();
+            physics::amr::fineStreamD3Q27_naca_qbb_sparse<<<fine_grid3, fine_block3>>>(
+                fine_patch.d_f_src(), fine_patch.d_f_dst(),
+                fine_patch.d_solid(),
+                fine_patch.d_qf_offset(),
+                fine_patch.d_qf_link_q(),
+                fine_patch.d_qf_link_val(),
+                fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
+                fine_patch.omega_nu_fine());
+            CUDA_CHECK_KERNEL();
+            fine_patch.swap_pdf();
+
+            // Sub-step 2: same.
+            physics::amr::fineCumulantCollisionKernel<<<fine_grid3, fine_block3>>>(
+                fine_patch.d_f_src(), fine_patch.d_f_src(),
+                nullptr, nullptr, nullptr, nullptr,
+                fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
+                fine_patch.omega_nu_fine(), 1.0f,
+                args.omega_3, args.omega_4, args.omega_5, args.omega_6);
+            CUDA_CHECK_KERNEL();
+            physics::amr::fineStreamD3Q27_naca_qbb_sparse<<<fine_grid3, fine_block3>>>(
+                fine_patch.d_f_src(), fine_patch.d_f_dst(),
+                fine_patch.d_solid(),
+                fine_patch.d_qf_offset(),
+                fine_patch.d_qf_link_q(),
+                fine_patch.d_qf_link_val(),
+                fine_patch.nx(), fine_patch.ny(), fine_patch.nz(),
+                fine_patch.omega_nu_fine());
+            CUDA_CHECK_KERNEL();
+            fine_patch.swap_pdf();
+        }
 
         if (step + 1 == next_log) {
             csv.flush();
