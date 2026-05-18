@@ -625,6 +625,29 @@ __global__ void copyMacroD3Q27_naca(
     uz_out[id] = mz * inv_rho;
 }
 
+// =====================================================================
+// Phase 2.7 (simplified): mass conservation audit
+// =====================================================================
+// Sums total fluid mass over the coarse domain (skipping solid cells).
+// Probe at each force-probe step → write to forces.csv → drift over time
+// reveals AMR-induced mass leak (Lagrava §3.7 warning).
+__global__ void computeTotalFluidMassKernel(
+    const float* __restrict__ f,
+    const unsigned char* __restrict__ solid_mask,
+    int n_cells,
+    double* mass_acc)
+{
+    const int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= n_cells) return;
+    if (solid_mask[id] != 0) return;
+    double rho = 0.0;
+    #pragma unroll
+    for (int q = 0; q < 27; ++q) {
+        rho += (double)f[id + q * n_cells];
+    }
+    if (rho != 0.0) atomicAdd(mass_acc, rho);
+}
+
 int main(int argc, char** argv) {
     Args args = parseArgs(argc, argv);
 
@@ -802,8 +825,9 @@ int main(int argc, char** argv) {
     }
 
     std::ofstream csv(args.output_dir + "/forces.csv");
-    csv << "step,t,Fx_LU,Fy_LU,Fz_LU,Fx_phys_per_m,Fy_phys_per_m,Cd,Cl\n";
+    csv << "step,t,Fx_LU,Fy_LU,Fz_LU,Fx_phys_per_m,Fy_phys_per_m,Cd,Cl,total_mass\n";
     csv.precision(8);
+    double initial_total_mass = -1.0;  // captured at step 0; sentinel until then
 
     const float rho_phys = 1.0f;
     const float Lz_phys = nz * dx;
@@ -964,7 +988,23 @@ int main(int argc, char** argv) {
             csv << step << "," << (step * dt) << ","
                 << Fx << "," << Fy << "," << Fz << ","
                 << Fx_per_m << "," << Fy_per_m << ","
-                << Cd << "," << Cl << "\n";
+                << Cd << "," << Cl << ",";
+            // ----- Phase 2.7 simplified: total fluid mass audit -----
+            // Drift over time → AMR is leaking mass at coarse↔fine interface.
+            double *d_mass;
+            CUDA_CHECK(cudaMalloc(&d_mass, sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_mass, 0, sizeof(double)));
+            const int mass_block = 256;
+            const int mass_grid_n = (n_cells + mass_block - 1) / mass_block;
+            computeTotalFluidMassKernel<<<mass_grid_n, mass_block>>>(
+                d_f_src, d_solid, n_cells, d_mass);
+            CUDA_CHECK_KERNEL();
+            double h_mass = 0.0;
+            CUDA_CHECK(cudaMemcpy(&h_mass, d_mass, sizeof(double),
+                                  cudaMemcpyDeviceToHost));
+            cudaFree(d_mass);
+            if (initial_total_mass < 0.0) initial_total_mass = h_mass;
+            csv << h_mass << "\n";
             t_force += std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - stage_t0).count();
             ++n_force_calls;
@@ -1165,6 +1205,15 @@ int main(int argc, char** argv) {
     }
     std::cout << "  unaccounted     : " << (tot_secs - accounted) << " s ("
               << pct(tot_secs - accounted) << "%)\n";
+
+    // Phase 2.7 simplified: mass-conservation summary
+    if (initial_total_mass > 0.0 && n_force_calls > 0) {
+        // Re-read final mass from forces.csv tail (cheap, cleaner than another GPU pass)
+        std::cout << "\n=== Mass conservation audit (Phase 2.7 simplified) ===\n"
+                  << "  initial_total_mass = " << initial_total_mass << "\n"
+                  << "  (per-step values in forces.csv 'total_mass' column)\n"
+                  << "  drift formula: (M(t) - M(0)) / M(0)\n";
+    }
 
     cudaFree(d_f_src); cudaFree(d_f_dst);
     cudaFree(d_rho); cudaFree(d_ux); cudaFree(d_uy); cudaFree(d_uz);
