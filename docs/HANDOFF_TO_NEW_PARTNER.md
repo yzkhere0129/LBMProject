@@ -680,9 +680,11 @@ scripts/aero/
 
 ---
 
-## 12. 2026-05-19 UPDATE — AMR Phase 2 SUCCESS: NACA Cl gap 41% → 16.5%
+## 12. 2026-05-19 UPDATE — AMR Phase 2 "SUCCESS" ⚠️ NEEDS RE-RUN (see §13)
 
-**TL;DR**: 选项 B（在本代码库 build AMR）的 Phase 2 已完成。30k 步 settled-mean 跑出来 AMR-ON 把 Cl gap 从 41% 拉到 **16.5%**，**通过 ≤25% 验收**。Mass conservation 在 FP32 噪声内（3e-6 drift），DFG 圆柱 regression 不变（Cd=3.185）。
+**⚠️ 2026-05-20 修正**：§12 的 Cl gap 41%→16.5% PASS 是**单变量胜利**——同一份 30k 数据里 **Cd 从 0.13 涨到 0.24（+87%）**，L/D 反而从 2.60 退到 1.97（lit~3.80）。**根因 §13：AMR patch ±0.10c 默认值在 α=8° 下切穿了 42% 翼面**。代码已修（auto-expand），需要 GPU 空闲后重跑验证。
+
+**TL;DR (原版)**: 选项 B（在本代码库 build AMR）的 Phase 2 已完成。30k 步 settled-mean 跑出来 AMR-ON 把 Cl gap 从 41% 拉到 **16.5%**，**通过 ≤25% 验收**。Mass conservation 在 FP32 噪声内（3e-6 drift），DFG 圆柱 regression 不变（Cd=3.185）。
 
 ### 12.1 Phase 2 实现要点
 
@@ -746,4 +748,70 @@ User 在跑 overnight 前要求严格自查。审计找出 3 个真问题，全�
 - 10% 目标仍然需要更多工作（AMR 多层 + double precision + 真湍流模型）——见 §5。
 
 — 2026-05-19 Claude / overnight 30k chain completion
+
+---
+
+## 13. 2026-05-20 — AMR patch truncation bug (corrects §12)
+
+**触发**：用户问 §12 那次"PASS"是不是 over-claim。一查发现单看 Cl 没问题，但 L/D 退化了。
+
+### 13.1 现象
+
+| metric | AMR-OFF | AMR-ON ±0.10c patch | lit | verdict |
+|---|---|---|---|---|
+| Cl | 0.336 (gap 41.0%) | 0.476 (gap 16.5%) | 0.57 | Cl ✓ |
+| Cd | 0.129 (gap -14%) | 0.241 (gap +60%) | ~0.15 | **Cd ✗** |
+| **L/D** | **2.61 (gap 31.4%)** | **1.97 (gap 48.1%)** | 3.80 | **加 AMR 反而退步** |
+
+AMR-OFF L/D 比 AMR-ON 还接近文献——这是 §12 那次"通过验收"漏看的事。
+
+### 13.2 根因（`images/amr_patch_truncation_bug.png` 直观）
+
+AMR patch CLI 默认 `--amr-y-lo -0.10 --amr-y-hi +0.10`（在 LE 中心 ±0.10c）。
+这个默认是 α=0° 写出来的，**没有跟 α 联动**。
+
+α=8° 时翼型旋转，世界坐标 y 范围变成 **[-0.139, +0.033]c**（TE 下沉 0.139c）：
+
+- 上表面 + LE：完全在 patch 内 → fine 分辨率 → Cl 改善 ✓
+- 下表面 s ∈ [0.30, 1.00]（即 max-thickness 之后整段）：**y < -0.10c，在 patch 外**
+- coarse-fine 边界 y=-0.10c 直接**穿过翼型实心**
+- 数据：solid cells **20.6% 在 patch 外**，surface points **42% 在 patch 外**
+
+coarse-fine 间断穿过壁面附近 → 数值耗散 / 伪压力跃变 → **虚假形阻**。这就是 Cd +87% 的来源。
+
+### 13.3 修法（已 commit）
+
+apps/aero/aero_naca0012_cumulant.cu：在 patch 分配前加 airfoil bbox 检查：
+
+```cpp
+// 解析 α 旋转后的世界坐标 bbox，要求 patch 至少覆盖 bbox + 0.06c margin
+// 只增不减——用户显式给的更大值会被尊重
+if (args.amr_x_lo > need_x_lo) { args.amr_x_lo = need_x_lo; grew = true; }
+// ... 4 个边界同理
+std::cout << "AMR patch (incl 0.06c margin) ... [AUTO-EXPANDED]";
+```
+
+启动时打印 bbox + 最终 patch 范围，运行透明可审计。
+
+### 13.4 待跑（GPU 空闲后）
+
+**单跑** 30k AMR-ON 修补版（同 §12 参数，新 binary）。预期：
+
+| | 现在 (bug) | 预期 (fix) |
+|---|---|---|
+| Cl | 0.476 | 类似或略高（上表面 fine 不变） |
+| Cd | 0.241 (+60%) | **应大幅下降，接近 0.15** |
+| L/D | 1.97 | 应回到 ~3.0+ |
+| 单跑成本 | — | ~2.5h（fine 区翻倍） |
+
+如果 Cd 真的下降到 0.15±，§12 "PASS ≤25% Cl gap" 会升级为"PASS Cl + Cd 双变量"，物理可信度大幅提升。
+
+### 13.5 教训
+
+- **单变量验收门是陷阱**——只看 Cl 不看 Cd 会错过 50% 的物理。L/D / 极曲线斜率 / Strouhal 才是物理可信度指标。
+- **CLI 默认值不能跟 α 解耦**——任何与几何旋转相关的参数都该 auto-compute。
+- **昨天 §12 写得太自满**——"PASS ≤25%" 当时是真，但**事后看是因为没看 Cd**。修正记录在这里，不删 §12（保留历史）。
+
+— 2026-05-20 Claude / patch-truncation finding
+
 

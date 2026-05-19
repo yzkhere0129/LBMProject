@@ -261,8 +261,8 @@ static Args parseArgs(int argc, char** argv) {
               "  --xle-over-c X    LE position from inlet (default 10)\n"
               "  --bc M            obstacle BC: stair (default) | qbb-snode (NACA only)\n"
               "  --amr-enable           [Phase 1] allocate isolated fine patch around NACA (no coupling yet)\n"
-              "  --amr-x-lo X / --amr-x-hi X    patch x extent in chord units (rel xLE; default -0.05 / +1.05)\n"
-              "  --amr-y-lo Y / --amr-y-hi Y    patch y extent in chord units (rel yLE; default ±0.10)\n"
+              "  --amr-x-lo X / --amr-x-hi X    patch x extent in chord units (rel xLE; default -0.05 / +1.05, AUTO-EXPANDS to airfoil bbox + 0.06c margin)\n"
+              "  --amr-y-lo Y / --amr-y-hi Y    patch y extent in chord units (rel yLE; default ±0.10, AUTO-EXPANDS to airfoil bbox + 0.06c margin)\n"
               "  --amr-refine N         spatial refinement factor (Phase 1: only 2 supported)\n";
             std::exit(0);
         } else { std::cerr << "Unknown: " << s << std::endl; std::exit(1); }
@@ -917,6 +917,52 @@ int main(int argc, char** argv) {
     dim3 fine_grid3(1, 1, 1);
     bool amr_active = false;
     if (args.amr_enable) {
+        // ----- AMR patch auto-sizing (added 2026-05-20) -----
+        // The original ±0.10c defaults were chosen for α=0. At α=8° the
+        // airfoil's world-frame y range is [-0.139, +0.033], so 42% of the
+        // surface (and ~20% of the solid cells) fell OUTSIDE the patch — the
+        // coarse-fine interface cut THROUGH the lower TE, injecting spurious
+        // form drag (Cd went 0.13 → 0.24 vs lit ~0.15 on the 2026-05-19 run).
+        //
+        // Fix: compute the rotated NACA bbox in world frame, then auto-grow
+        // the patch to cover it with a 0.06c (~5 coarse cells @ D/dx=80)
+        // margin. Only ever grows — user values are honoured when wider.
+        if (args.shape == 0 && !args.no_stamp) {  // NACA only
+            const float t = 0.12f;
+            const float ca = std::cos(alpha_rad), sa = std::sin(alpha_rad);
+            float x_min = 1e9f, x_max = -1e9f, y_min = 1e9f, y_max = -1e9f;
+            for (int k = 0; k <= 200; ++k) {
+                const float s = (float)k / 200.0f;
+                const float sqrt_s = std::sqrt(s);
+                const float yt = 5.0f * t * (0.2969f * sqrt_s
+                                             - 0.1260f * s
+                                             - 0.3516f * s * s
+                                             + 0.2843f * s * s * s
+                                             - 0.1036f * s * s * s * s);
+                for (int sgn = -1; sgn <= 1; sgn += 2) {
+                    const float xr = s, yr = (float)sgn * yt;
+                    const float xw =  ca * xr + sa * yr;
+                    const float yw = -sa * xr + ca * yr;
+                    x_min = std::min(x_min, xw); x_max = std::max(x_max, xw);
+                    y_min = std::min(y_min, yw); y_max = std::max(y_max, yw);
+                }
+            }
+            const float MARGIN = 0.06f;
+            const float need_x_lo = x_min - MARGIN, need_x_hi = x_max + MARGIN;
+            const float need_y_lo = y_min - MARGIN, need_y_hi = y_max + MARGIN;
+            bool grew = false;
+            if (args.amr_x_lo > need_x_lo) { args.amr_x_lo = need_x_lo; grew = true; }
+            if (args.amr_x_hi < need_x_hi) { args.amr_x_hi = need_x_hi; grew = true; }
+            if (args.amr_y_lo > need_y_lo) { args.amr_y_lo = need_y_lo; grew = true; }
+            if (args.amr_y_hi < need_y_hi) { args.amr_y_hi = need_y_hi; grew = true; }
+            std::cout << " AMR patch bbox check (α=" << (alpha_rad * 180.0f / 3.14159265f)
+                      << "°): airfoil y∈[" << y_min << "," << y_max
+                      << "] x∈[" << x_min << "," << x_max << "]\n"
+                      << " AMR patch (incl " << MARGIN << "c margin): "
+                      << "x∈[" << args.amr_x_lo << "," << args.amr_x_hi
+                      << "] y∈[" << args.amr_y_lo << "," << args.amr_y_hi << "]"
+                      << (grew ? "  [AUTO-EXPANDED]" : "  [user values OK]") << "\n";
+        }
         // Convert chord-units AMR window to coarse cell indices.
         // xLE / yLE are computed earlier in this function.
         const float xLE_amr_lo = xLE + args.amr_x_lo * chord;
