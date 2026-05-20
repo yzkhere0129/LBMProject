@@ -82,6 +82,86 @@ def write_binary_stl(path, tris):
             f.write(struct.pack("<H", 0))
 
 
+def _signed_area_2d(p):
+    """Signed area of polygon p (Nx2). >0 = CCW, <0 = CW."""
+    x = p[:, 0]; y = p[:, 1]
+    return 0.5 * np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y)
+
+
+def _ensure_ccw(p):
+    """Return polygon p with CCW orientation."""
+    if _signed_area_2d(p) < 0:
+        return p[::-1].copy()
+    return p
+
+
+def _is_convex_vertex(a, b, c):
+    """Returns True if turning from a→b→c is left (CCW interior corner)."""
+    return ( (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0]) ) > 0
+
+
+def _point_in_triangle(p, a, b, c):
+    """Barycentric inside-test."""
+    v0x, v0y = c[0]-a[0], c[1]-a[1]
+    v1x, v1y = b[0]-a[0], b[1]-a[1]
+    v2x, v2y = p[0]-a[0], p[1]-a[1]
+    d00 = v0x*v0x + v0y*v0y
+    d01 = v0x*v1x + v0y*v1y
+    d02 = v0x*v2x + v0y*v2y
+    d11 = v1x*v1x + v1y*v1y
+    d12 = v1x*v2x + v1y*v2y
+    denom = d00*d11 - d01*d01
+    if abs(denom) < 1e-20: return False
+    inv = 1.0 / denom
+    u = (d11*d02 - d01*d12) * inv
+    v = (d00*d12 - d01*d02) * inv
+    return (u >= 0) and (v >= 0) and (u + v <= 1)
+
+
+def _ear_clip_2d(pts):
+    """Triangulate a CCW simple polygon by ear-clipping.
+
+    Returns list of (i0, i1, i2) index triples into pts. O(N²).
+    """
+    n = len(pts)
+    if n < 3: return []
+    indices = list(range(n))
+    triangles = []
+    safety = 0
+    while len(indices) > 3 and safety < n * n:
+        ear_found = False
+        for k in range(len(indices)):
+            i_prev = indices[(k - 1) % len(indices)]
+            i_curr = indices[k]
+            i_next = indices[(k + 1) % len(indices)]
+            a, b, c = pts[i_prev], pts[i_curr], pts[i_next]
+            if not _is_convex_vertex(a, b, c):
+                continue  # not an ear candidate
+            # Check no other polygon vertex is inside triangle (a, b, c).
+            inside = False
+            for idx in indices:
+                if idx in (i_prev, i_curr, i_next): continue
+                if _point_in_triangle(pts[idx], a, b, c):
+                    inside = True; break
+            if inside: continue
+            # b is an ear → clip it.
+            triangles.append((i_prev, i_curr, i_next))
+            indices.pop(k)
+            ear_found = True
+            break
+        if not ear_found:
+            # Degenerate input — fall back to fan-triangulate remaining.
+            print("  WARN: ear-clip stuck; falling back to fan tri for tail",
+                  file=sys.stderr)
+            for k in range(1, len(indices) - 1):
+                triangles.append((indices[0], indices[k], indices[k + 1]))
+            return triangles
+        safety += 1
+    if len(indices) == 3:
+        triangles.append((indices[0], indices[1], indices[2]))
+    return triangles
+
+
 def rasterise_triangles(verts2, nx, ny, lo, hi):
     """Render filled triangle list (in 2D) onto an nx×ny boolean mask using
        barycentric scanline. verts2: (ntri,3,2)."""
@@ -176,25 +256,39 @@ def main():
     poly = approximate_polygon(poly, tolerance=0.5 * dx_r)
     print(f"  simplified polygon: {len(poly)} points", file=sys.stderr)
 
-    # Triangulate filled polygon into top and bottom faces + side walls.
-    # Top/bottom: fan triangulation from polygon centroid (works for convex
-    # or mildly concave; for highly concave shapes use a real triangulator).
+    # Triangulate polygon via ear-clipping. Robust for any simple polygon
+    # (convex or concave). For F-18-class silhouettes the older fan
+    # triangulation from centroid happens to work because the centroid is
+    # interior; for shapes with sharper concavities (e.g., F-22 inlet, helicopters)
+    # fan from centroid would generate triangles that extend OUTSIDE the polygon.
     z_lo = verts[:, :, z_axis].min()
     z_hi = z_lo + args.z_thickness
-    c = poly.mean(axis=0)
+    pts2d = _ensure_ccw(poly[:-1].copy())  # drop closing duplicate
+    tri_indices = _ear_clip_2d(pts2d)
+    print(f"  ear-clipped: {len(tri_indices)} interior tris (poly verts: {len(pts2d)})", file=sys.stderr)
+
     tris_out = []
-    for i in range(len(poly) - 1):
-        # Bottom face (CCW from outside i.e. z=z_lo looking up)
-        v_c_lo = np.array([c[0], c[1], z_lo], dtype=np.float32)
-        v0_lo  = np.array([poly[i][0],   poly[i][1],   z_lo], dtype=np.float32)
-        v1_lo  = np.array([poly[i+1][0], poly[i+1][1], z_lo], dtype=np.float32)
-        tris_out.append(np.array([v_c_lo, v1_lo, v0_lo], dtype=np.float32))  # CCW from below
-        # Top face
-        v_c_hi = np.array([c[0], c[1], z_hi], dtype=np.float32)
-        v0_hi  = np.array([poly[i][0],   poly[i][1],   z_hi], dtype=np.float32)
-        v1_hi  = np.array([poly[i+1][0], poly[i+1][1], z_hi], dtype=np.float32)
-        tris_out.append(np.array([v_c_hi, v0_hi, v1_hi], dtype=np.float32))  # CCW from above
-        # Side wall (2 triangles)
+    for i0, i1, i2 in tri_indices:
+        a = pts2d[i0]; b = pts2d[i1]; c2 = pts2d[i2]
+        # Bottom face (CCW seen from -z so outward normal is -z)
+        tris_out.append(np.array([[a[0], a[1], z_lo],
+                                  [c2[0], c2[1], z_lo],
+                                  [b[0], b[1], z_lo]], dtype=np.float32))
+        # Top face (CCW seen from +z so outward normal is +z)
+        tris_out.append(np.array([[a[0], a[1], z_hi],
+                                  [b[0], b[1], z_hi],
+                                  [c2[0], c2[1], z_hi]], dtype=np.float32))
+
+    # Side walls — 2 triangles per polygon edge.
+    n_pts = len(pts2d)
+    for i in range(n_pts):
+        j = (i + 1) % n_pts
+        v0_lo = np.array([pts2d[i][0], pts2d[i][1], z_lo], dtype=np.float32)
+        v1_lo = np.array([pts2d[j][0], pts2d[j][1], z_lo], dtype=np.float32)
+        v0_hi = np.array([pts2d[i][0], pts2d[i][1], z_hi], dtype=np.float32)
+        v1_hi = np.array([pts2d[j][0], pts2d[j][1], z_hi], dtype=np.float32)
+        # Outward normal should point AWAY from polygon interior. For CCW polygon
+        # the edge i→j has outward direction = right of the edge in xy plane.
         tris_out.append(np.array([v0_lo, v1_lo, v0_hi], dtype=np.float32))
         tris_out.append(np.array([v0_hi, v1_lo, v1_hi], dtype=np.float32))
 
