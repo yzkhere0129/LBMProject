@@ -946,6 +946,54 @@ Cl 的 lit "0.65" 同样是从 Re=1000 Cl=0.49 上推。**也很可能 inflated*
 
 — 2026-05-20 Claude / R2 literature recheck
 
+---
+
+## 16. 2026-05-20 (cont.) — R1b 1D-cubic 也失败，AMR 收工于 bilin-FIX
+
+§14 列了 5 条候选，§15 R2 把 Cd 问题闭合后，又试了 R1b（Lagrava 原方案 1D cubic 沿界面 + linear 法向 + ρ-clamp limiter）。
+
+### 16.1 R1b 30k 结果
+
+| | bilin-FIX (§13) | R1b 1D-cubic |
+|---|---|---|
+| Cl | 0.465 ± 0.025 | **0.427 ± 0.106** ↓ |
+| Cd | 0.283 ± 0.003 | 0.293 ± 0.022 ≈ |
+| L/D | 1.64 | 1.46 ↓ |
+| Cl gap | 18.5% | **25.1%** ↓ |
+| Cl_rms | 0.025 | **0.106** (4× ↑) |
+
+R1b 比 R1 好：没有 NaN，没有 ±1 振荡（ρ-clamp 起效），但 **Cl 在 30k 步内仍然在 0.14-0.92 间无规律晃动**，settled mean 实际无意义。
+
+### 16.2 推测：Catmull-Rom 的固有问题
+
+无论 2D outer-product（R1）还是 1D tangential（R1b），Catmull-Rom **interpolating cubic** 都有小的负权重 lobe。在 LBM PDF 这种半离散弱噪声场上，这些负权重在 patch 边界注入**高频噪声**——streams 进 patch 内 → 驱动尾流 fluctuation → TE 压力振荡 → Cl_rms 膨胀。
+
+Bilinear 全正权重 → 不注入高频 → Cl 稳定。
+
+### 16.3 没试的（留给下一任）
+
+- **B-spline cubic**（non-interpolating，全正权重 → 无高频）。会有 smoothing 失精度，但稳定。
+- **Continuous blend bicubic-bilinear with sigmoid**（不切换，混合权重）。复杂度+ + 仍可能 cubic lobe 主导。
+- **Filtered restriction**（Lagrava eq. 33 box filter）。是 restriction 侧不是 prolongation 侧，可能改善 Cd 但不改 Cl。
+
+### 16.4 决定：AMR 收工
+
+**bilin-FIX (`9ebc413`) 是当前最佳 AMR 结果**，验收门重新评估：
+
+| 指标 | 数值 | 评价 |
+|---|---|---|
+| Cl gap | 18.5% | PASS ≤25% 原目标 |
+| Cd | 0.283 | 接近 plateau 0.31（§15 R2 物理 plausible）|
+| L/D | 1.64 | 数值 OK 但 lit 0.57/0.15 比较是 extrap |
+| Mass | FP32 噪声 | ✓ |
+| DFG 回归 | Cd=3.185 bit-identical | ✓ |
+| Cl_rms | 0.025 | 稳定 |
+
+时间用在 STL 几何支持上更高 ROI（详见 §17 todo）。
+
+— 2026-05-20 Claude / R1b post-mortem + AMR Phase 2 final
+
+
 
 
 
