@@ -993,6 +993,92 @@ Bilinear 全正权重 → 不注入高频 → Cl 稳定。
 
 — 2026-05-20 Claude / R1b post-mortem + AMR Phase 2 final
 
+---
+
+## 17. 2026-05-20 (cont.) — STL geometry pipeline complete (D1-D3)
+
+NACA AMR 收工后开 STL 支持。3 个 commit (`0061f49` + `4e6b9a4` + `acf1919`) 完成完整管线：
+
+### 17.1 D1 — STL reader + stamp
+
+`include/io/stl_reader.h` — header-only ASCII + Binary STL parser with bbox + transform_mesh.
+`include/physics/aero/stl_geometry.h` — Möller-Trumbore ray-tri intersect + brute-force stamp (even-odd rule, +x ray cast).
+
+CLI:
+```bash
+--shape stl --stl-file PATH --stl-scale X --stl-tx X --stl-ty Y --stl-tz Z
+```
+
+Validated on r=0.5 sphere: stamp <1 ms, geometry correct (mid-slice r ∈ [0.024, 0.486]) ✓.
+
+### 17.2 D2 — BVH acceleration
+
+`include/io/triangle_bvh.h` — median-split AABB tree, leaf size 8.
+- `traverse_ray(O, D, callback)`: stack-based DFS with slab-method AABB tests
+- `find_nearest(P, dist_fn)`: branch-and-bound for nearest-triangle (qfrac)
+
+5120-tri sphere: BVH build 1.23 ms, stamp 8.2 ms (vs ~15 s brute-force estimate = **~1800× speedup**).
+
+### 17.3 D3 — qfrac for QBB sub-cell BC
+
+`makeSTLQFractionSparse()` in `stl_geometry.h`. Direct ray-tri intersection (no bisection):
+- For each fluid cell × each q ∈ [1, 27) where neighbor is solid:
+  - cast ray from cell centre along c_q (unit)
+  - use BVH to find min positive t
+  - qfrac = clamp(t / link_length, 1e-6, 1.0)
+
+Tested on sphere: 200 step QBB + α=0 → Cl ≈ 0 (symmetry ✓), mass drift 4.6e-7, no NaN.
+
+### 17.4 Silhouette projection for 3D STL → quasi-2D
+
+`scripts/aero/project_stl_to_silhouette.py` (commit `890fb94`):
+
+For real 3D bodies (aircraft, cars), our nz=4 quasi-2D slab can't contain the full z extent. The pragmatic workaround: project the 3D STL top-down onto xy, then z-extrude into a thin slab.
+
+Pipeline:
+1. Load STL, rasterise triangle xy-projection onto fine grid (skimage rasterise + scipy fill_holes)
+2. Marching squares contour extraction + Douglas-Peucker simplify
+3. Triangulate contour fan + side walls into z-extruded silhouette STL
+
+Tested on F/A-18E (`Model/obj_1_FA-18E_Final01.stl`, 2.1M tris):
+- 2.1M tris → 4540 tris silhouette (~460× reduction)
+- D/dx=80 stamp gives recognizable F-18 top-down view: nose + main wings + horizontal stabilizers + fuselage all visible (`images/f18_silhouette_mask.png`)
+
+### 17.5 What works / what doesn't
+
+Works:
+- Load any STL (ASCII or binary)
+- BVH-accelerated stamp for arbitrary triangle counts
+- QBB sub-cell BC for any STL (sphere demonstrated end-to-end)
+- 3D-to-2D silhouette projection for quasi-2D demos
+
+Doesn't yet:
+- True 3D simulation on >1m³ STL — needs nz≫4 which OOMs 4GB GPU
+- Stamp UNCLOSED STL meshes — undefined behavior
+- Surface normal extraction (D4 task; force probe uses Bouzidi MEM which doesn't need normals)
+
+### 17.6 Demo recipe (when GPU available)
+
+```bash
+# 1. Generate silhouette from 3D STL (one-shot, <30s on 2M-tri input)
+python3 scripts/aero/project_stl_to_silhouette.py \
+    Model/<your_model>.stl Model/<your_model>_silhouette.stl \
+    --raster-cells 400 --projection xy --z-thickness 20.0
+
+# 2. Run quasi-2D LBM around silhouette (chord = 1m)
+./build/aero_naca0012_cumulant \
+    --shape stl --stl-file Model/<your_model>_silhouette.stl \
+    --stl-scale <model_to_meters> --stl-tx <x> --stl-ty <y> --stl-tz <z> \
+    --bc qbb-snode --sparse-qfrac \
+    --resolution 80 --re 2000 --alpha 0 \
+    --steps 30000 --output-dir output_<name>
+```
+
+GPU 65 min for 30k step settled mean (when solo on GPU).
+
+— 2026-05-20 Claude / STL pipeline complete + F-18 demo staged (GPU busy)
+
+
 
 
 
