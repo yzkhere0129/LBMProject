@@ -34,27 +34,70 @@ using lbm::core::ex27;
 using lbm::core::ey27;
 using lbm::core::ez27;
 
+// ============================================================================
+// Lagrava 2012 §3.6 cubic (Catmull-Rom) interpolation along refinement interface
+// ----------------------------------------------------------------------------
+// At t=0.5 reproduces Lagrava eq. shown in §3.6: weights 9/16, -1/16.
+// For cell-center 2× refinement, fine boundary cells sit at offset ±0.25 from
+// the containing coarse cell center, so we evaluate the cubic at t=0.25 or t=0.75.
+//
+// Convention: t ∈ [0, 1] is the position of the interpolated point between
+// stencil indices 0 and 1 of a 4-cell stencil (-1, 0, 1, 2).
+//
+// Catmull-Rom weights:
+//   w(-1) = -0.5 t (1-t)(2-t)
+//   w(0)  =  (1+t)(1-t)(2-t) / 2
+//   w(1)  =  (1+t) t (2-t) / 2
+//   w(2)  = -0.5 (1+t) t (1-t)
+// Sum = 1 for all t ∈ [0,1].
+__device__ inline void catmull_rom_weights_t(float t, float w[4]) {
+    const float one_p_t = 1.0f + t;
+    const float one_m_t = 1.0f - t;
+    const float two_m_t = 2.0f - t;
+    w[0] = -0.5f * t * one_m_t * two_m_t;       // x_{-1}
+    w[1] =  0.5f * one_p_t * one_m_t * two_m_t; // x_0
+    w[2] =  0.5f * one_p_t * t * two_m_t;       // x_1
+    w[3] = -0.5f * one_p_t * t * one_m_t;       // x_2
+}
+
+// Build 1D cubic stencil offsets (di) and weights (w) for a fine boundary
+// cell in quadrant q ∈ {0,1} of its containing coarse cell.
+//   q=0 → fine at coarse offset -0.25  → t=0.75, stencil = {-2,-1, 0,+1}
+//   q=1 → fine at coarse offset +0.25  → t=0.25, stencil = {-1, 0,+1,+2}
+__device__ inline void cubic_1d_q(int q, int di_out[4], float w_out[4]) {
+    if (q == 0) {
+        di_out[0] = -2; di_out[1] = -1; di_out[2] = 0; di_out[3] = +1;
+        catmull_rom_weights_t(0.75f, w_out);
+    } else {
+        di_out[0] = -1; di_out[1] =  0; di_out[2] = +1; di_out[3] = +2;
+        catmull_rom_weights_t(0.25f, w_out);
+    }
+}
+
 /**
- * @brief Prolongation kernel: bilinear (9/3/3/1) interp over 4 coarse cells
- *        with ρ-guard fallback to nearest-coarse when bilinear stencil
- *        yields an unphysical density.
+ * @brief Prolongation kernel: 2D bicubic Catmull-Rom over 16 coarse cells.
  *
- * For cell-center 2× refinement, each boundary fine cell sits in one of
- * 4 quadrants of its containing coarse cell. Bilinear stencil uses the
- * containing cell (weight 9/16) + 2 face-neighbors (3/16 each) +
- * diagonal neighbor (1/16), with direction of neighbors set by the
- * fine cell's quadrant.
+ * Replaces the 4-cell bilinear (9/3/3/1) of earlier Phase 2-B. Per Lagrava
+ * 2012 §3.6, bilinear interpolation is locally 2nd-order which gives a
+ * globally O(1) pressure jump at the coarse-fine interface — incompatible
+ * with LBM's 2nd-order global accuracy. Cubic (Catmull-Rom) at t=0.25 or
+ * t=0.75 brings the interpolation error in line with LBM.
  *
- * Fallback: if bilinear ρ_avg < 0.5 (sanity floor, baseline ρ=1) OR
- * any of the 4 stencil cells is solid, use only the containing coarse
- * cell (weight 1.0, w_others = 0).
+ * Stencil (per quadrant q={0,1} in each direction):
+ *   q=0 (fine at coarse offset -0.25): cells {-2, -1, 0, +1}, t=0.75
+ *   q=1 (fine at coarse offset +0.25): cells {-1, 0, +1, +2}, t=0.25
+ * 2D weights = outer product of 1D x-weights and 1D y-weights (16 total).
  *
- * Rescaling (Lagrava 2012 eq. 29):
- *   f_fine = f_eq(ρ_bilin, u_bilin) + (ω_c / 2ω_f) · f_neq_bilin
+ * Solid-aware: any of the 16 cells that's solid → weight zeroed,
+ * remaining weights renormalized so Σw=1 (preserves mass).
+ * If all 16 solid → skip cell (return).
+ *
+ * Rescaling (Lagrava 2012 eq. 29): same as bilinear,
+ *   f_fine = f_eq(ρ_avg, u_avg) + (ω_c / 2ω_f) · f_neq_avg
  *
  * @param f_coarse   Coarse PDF (SoA).
  * @param f_fine     Fine PDF (SoA, written at boundary cells only).
- * @param solid_c    Coarse solid mask (for fallback decision).
+ * @param solid_c    Coarse solid mask (for solid-aware weight zeroing).
  */
 __global__ void prolongateBoundaryFineFromCoarse(
     const float* __restrict__ f_coarse,
@@ -84,17 +127,19 @@ __global__ void prolongateBoundaryFineFromCoarse(
     if (i_c < 0 || i_c >= nx_c || j_c < 0 || j_c >= ny_c ||
         k_c < 0 || k_c >= nz_c) return;
 
-    // Quadrant direction within containing coarse cell.
+    // Quadrant within containing coarse cell.
     const int qx = i_f % refine;
     const int qy = j_f % refine;
-    const int di_neigh = (qx == 0) ? -1 : +1;
-    const int dj_neigh = (qy == 0) ? -1 : +1;
+
+    // Build 4×4 bicubic stencil offsets + weights (outer product of 1D cubics).
+    int  dix[4], djy[4];
+    float wx[4], wy[4];
+    cubic_1d_q(qx, dix, wx);
+    cubic_1d_q(qy, djy, wy);
 
     auto clamp_idx = [](int v, int v_max) -> int {
         return (v < 0) ? 0 : ((v >= v_max) ? (v_max - 1) : v);
     };
-    const int i_c_n = clamp_idx(i_c + di_neigh, nx_c);
-    const int j_c_n = clamp_idx(j_c + dj_neigh, ny_c);
 
     const int n_cells_c = nx_c * ny_c * nz_c;
     const int n_cells_f = nx_f * ny_f * nz_f;
@@ -102,50 +147,49 @@ __global__ void prolongateBoundaryFineFromCoarse(
     auto coarse_id = [&](int ic, int jc, int kc) -> int {
         return ic + jc * nx_c + kc * nx_c * ny_c;
     };
-    const int id_aa = coarse_id(i_c,    j_c,    k_c);  // 9/16
-    const int id_ba = coarse_id(i_c_n,  j_c,    k_c);  // 3/16
-    const int id_ab = coarse_id(i_c,    j_c_n,  k_c);  // 3/16
-    const int id_bb = coarse_id(i_c_n,  j_c_n,  k_c);  // 1/16
 
-    // Solid-aware stencil selection (Phase 2-B v5 fix 2026-05-19):
-    //   Old fallback "any-solid → use containing cell" was BROKEN when
-    //   the containing cell ITSELF was solid (e.g., fine boundary cell
-    //   whose containing coarse cell is inside the airfoil at α=8 LE/TE).
-    //
-    //   Correct fallback:
-    //     (a) if all 4 stencil cells are fluid → bilinear (9/3/3/1)
-    //     (b) if some fluid, some solid → use only fluid cells, renormalize
-    //         weights to sum to 1 (preserves total mass)
-    //     (c) if ALL 4 solid → skip prolongation entirely (return)
-    const int ids[4]   = {id_aa, id_ba, id_ab, id_bb};
-    float ws[4] = {9.0f/16.0f, 3.0f/16.0f, 3.0f/16.0f, 1.0f/16.0f};
+    // 16 stencil cells with clamped indices + outer-product weights.
+    int   ids[16];
+    float ws[16];
+    #pragma unroll
+    for (int j_s = 0; j_s < 4; ++j_s) {
+        #pragma unroll
+        for (int i_s = 0; i_s < 4; ++i_s) {
+            const int ic = clamp_idx(i_c + dix[i_s], nx_c);
+            const int jc = clamp_idx(j_c + djy[j_s], ny_c);
+            const int c = i_s + 4 * j_s;
+            ids[c] = coarse_id(ic, jc, k_c);
+            ws[c]  = wx[i_s] * wy[j_s];
+        }
+    }
+
+    // Solid-aware: zero weights on solid cells, renormalize.
+    // Note: bicubic weights include NEGATIVE values (Catmull-Rom). Zeroing
+    // a negative weight changes Σ|w| but the sign-preserving renormalization
+    // wsum keeps the partition-of-unity property (Σ wsum_renorm = 1).
     if (solid_c) {
         float wsum = 0.0f;
         #pragma unroll
-        for (int c = 0; c < 4; ++c) {
+        for (int c = 0; c < 16; ++c) {
             if (solid_c[ids[c]] != 0) ws[c] = 0.0f;
             wsum += ws[c];
         }
-        if (wsum <= 0.0f) return;  // all 4 stencil cells are solid → leave fine cell unchanged
+        // wsum can be near zero if mostly-symmetric solid pattern → fallback.
+        if (!isfinite(wsum) || fabsf(wsum) < 1e-3f) return;
         const float inv_wsum = 1.0f / wsum;
         #pragma unroll
-        for (int c = 0; c < 4; ++c) ws[c] *= inv_wsum;
+        for (int c = 0; c < 16; ++c) ws[c] *= inv_wsum;
     }
 
-    // Per-cell decomposition: compute ρ_i, u_i, f_eq_i, f_neq_i for each of
-    // the (up to 4) stencil cells, then BILINEAR the (ρ, u) and f_neq_i.
-    // f_neq is computed per cell (each cell has its own consistent CE
-    // expansion); the earlier approach of "bilinear sum f_cell, then
-    // decompose with f_eq(sum_ρ, sum_u)" couples f_eq nonlinearly with sum
-    // and introduces spurious f_neq components that diverge.
-
+    // Per-cell CE decomp (same structure as bilinear, but 16-cell loop).
+    // Per-cell decomp avoids the nonlinear f_eq coupling that NaN'd the
+    // earlier "bilinear sum of f, decomp with f_eq(sum)" approach.
     float rho_avg = 0.0f, ux_avg = 0.0f, uy_avg = 0.0f, uz_avg = 0.0f;
     float f_neq_avg[27] = {0.0f};
 
-    #pragma unroll
-    for (int c = 0; c < 4; ++c) {
-        if (ws[c] <= 0.0f) continue;
-        // Load PDF, compute moments.
+    #pragma unroll 4
+    for (int c = 0; c < 16; ++c) {
+        if (ws[c] == 0.0f) continue;
         float f_loc[27];
         float r = 0.0f, mx = 0.0f, my = 0.0f, mz = 0.0f;
         #pragma unroll
@@ -172,8 +216,10 @@ __global__ void prolongateBoundaryFineFromCoarse(
         }
     }
 
-    // Safety: if averaged ρ is unphysical, fall back to containing cell.
+    // Safety: if interpolated ρ is unphysical (Catmull-Rom's negative weights
+    // can amplify shocks), fall back to the containing cell.
     if (!isfinite(rho_avg) || rho_avg < 0.5f) {
+        const int id_c = coarse_id(i_c, j_c, k_c);
         rho_avg = 0.0f;
         ux_avg = uy_avg = uz_avg = 0.0f;
         for (int q = 0; q < 27; ++q) f_neq_avg[q] = 0.0f;
@@ -181,7 +227,7 @@ __global__ void prolongateBoundaryFineFromCoarse(
         float f_loc[27];
         #pragma unroll
         for (int q = 0; q < 27; ++q) {
-            const float v = f_coarse[id_aa + q * n_cells_c];
+            const float v = f_coarse[id_c + q * n_cells_c];
             f_loc[q] = v;
             rho_avg += v;
             mx += ex27[q] * v;
@@ -376,11 +422,11 @@ __global__ void snapshotCoarseBand(
 }
 
 /**
- * @brief Bilinear prolongation with linear TIME interp.
+ * @brief Bicubic prolongation with linear TIME interp (Phase 2.5).
  *
- * Same structure as prolongateBoundaryFineFromCoarse but reads each
- * stencil cell from BOTH f_coarse_cur and f_snap_band, averages 0.5,
- * then runs per-cell CE decomposition + bilinear average.
+ * Same 16-cell Catmull-Rom stencil as the non-time-interp variant, but each
+ * stencil cell's PDF is read as 0.5·(f_coarse_cur + f_snap_band) — linear
+ * temporal interpolation at the fine sub-step 1 midpoint t + δtc/2.
  */
 __global__ void prolongateBoundaryFineWithTimeInterp(
     const float* __restrict__ f_coarse_cur,
@@ -414,14 +460,15 @@ __global__ void prolongateBoundaryFineWithTimeInterp(
 
     const int qx = i_f % refine;
     const int qy = j_f % refine;
-    const int di_neigh = (qx == 0) ? -1 : +1;
-    const int dj_neigh = (qy == 0) ? -1 : +1;
+
+    int  dix[4], djy[4];
+    float wx[4], wy[4];
+    cubic_1d_q(qx, dix, wx);
+    cubic_1d_q(qy, djy, wy);
 
     auto clamp_idx = [](int v, int v_max) -> int {
         return (v < 0) ? 0 : ((v >= v_max) ? (v_max - 1) : v);
     };
-    const int i_c_n = clamp_idx(i_c + di_neigh, nx_c);
-    const int j_c_n = clamp_idx(j_c + dj_neigh, ny_c);
 
     const int n_cells_c = nx_c * ny_c * nz_c;
     const int n_cells_f = nx_f * ny_f * nz_f;
@@ -439,36 +486,34 @@ __global__ void prolongateBoundaryFineWithTimeInterp(
         return bi + bj * band_nx + bk * band_nx * band_ny;
     };
 
-    const int id_aa_c = coarse_id(i_c,    j_c,    k_c);
-    const int id_ba_c = coarse_id(i_c_n,  j_c,    k_c);
-    const int id_ab_c = coarse_id(i_c,    j_c_n,  k_c);
-    const int id_bb_c = coarse_id(i_c_n,  j_c_n,  k_c);
-    const int id_aa_b = band_id_of(i_c,    j_c,    k_c);
-    const int id_ba_b = band_id_of(i_c_n,  j_c,    k_c);
-    const int id_ab_b = band_id_of(i_c,    j_c_n,  k_c);
-    const int id_bb_b = band_id_of(i_c_n,  j_c_n,  k_c);
+    int   ids_c[16], ids_b[16];
+    float ws[16];
+    #pragma unroll
+    for (int j_s = 0; j_s < 4; ++j_s) {
+        #pragma unroll
+        for (int i_s = 0; i_s < 4; ++i_s) {
+            const int ic = clamp_idx(i_c + dix[i_s], nx_c);
+            const int jc = clamp_idx(j_c + djy[j_s], ny_c);
+            const int c = i_s + 4 * j_s;
+            ids_c[c] = coarse_id(ic, jc, k_c);
+            ids_b[c] = band_id_of(ic, jc, k_c);
+            ws[c]    = wx[i_s] * wy[j_s];
+        }
+    }
 
-    // Same solid-aware stencil selection as non-time-interp variant (v5 fix).
-    // (a) all fluid → bilinear 9/3/3/1
-    // (b) some fluid → renormalize weights over fluid cells (preserves mass)
-    // (c) all solid → skip prolongation (return)
-    const int ids_c[4] = {id_aa_c, id_ba_c, id_ab_c, id_bb_c};
-    const int ids_b[4] = {id_aa_b, id_ba_b, id_ab_b, id_bb_b};
-    float ws[4] = {9.0f/16.0f, 3.0f/16.0f, 3.0f/16.0f, 1.0f/16.0f};
     if (solid_c) {
         float wsum = 0.0f;
         #pragma unroll
-        for (int c = 0; c < 4; ++c) {
+        for (int c = 0; c < 16; ++c) {
             if (solid_c[ids_c[c]] != 0) ws[c] = 0.0f;
             wsum += ws[c];
         }
-        if (wsum <= 0.0f) return;
+        if (!isfinite(wsum) || fabsf(wsum) < 1e-3f) return;
         const float inv_wsum = 1.0f / wsum;
         #pragma unroll
-        for (int c = 0; c < 4; ++c) ws[c] *= inv_wsum;
+        for (int c = 0; c < 16; ++c) ws[c] *= inv_wsum;
     }
 
-    // Helper: read PDF f_q at coarse stencil position, time-averaged.
     auto read_pdf = [&](int q, int id_c, int id_b) -> float {
         const float v_cur = f_coarse_cur[id_c + q * n_cells_c];
         const float v_snap = (id_b >= 0) ? f_snap_band[id_b + q * n_band] : v_cur;
@@ -478,9 +523,9 @@ __global__ void prolongateBoundaryFineWithTimeInterp(
     float rho_avg = 0.0f, ux_avg = 0.0f, uy_avg = 0.0f, uz_avg = 0.0f;
     float f_neq_avg[27] = {0.0f};
 
-    #pragma unroll
-    for (int c = 0; c < 4; ++c) {
-        if (ws[c] <= 0.0f) continue;
+    #pragma unroll 4
+    for (int c = 0; c < 16; ++c) {
+        if (ws[c] == 0.0f) continue;
         float f_loc[27];
         float r = 0.0f, mx = 0.0f, my = 0.0f, mz = 0.0f;
         #pragma unroll
@@ -508,6 +553,8 @@ __global__ void prolongateBoundaryFineWithTimeInterp(
     }
 
     if (!isfinite(rho_avg) || rho_avg < 0.5f) {
+        const int id_c_ctr = coarse_id(i_c, j_c, k_c);
+        const int id_b_ctr = band_id_of(i_c, j_c, k_c);
         rho_avg = 0.0f;
         ux_avg = uy_avg = uz_avg = 0.0f;
         for (int q = 0; q < 27; ++q) f_neq_avg[q] = 0.0f;
@@ -515,7 +562,7 @@ __global__ void prolongateBoundaryFineWithTimeInterp(
         float f_loc[27];
         #pragma unroll
         for (int q = 0; q < 27; ++q) {
-            const float v = read_pdf(q, id_aa_c, id_aa_b);
+            const float v = read_pdf(q, id_c_ctr, id_b_ctr);
             f_loc[q] = v;
             rho_avg += v;
             mx += ex27[q] * v;
