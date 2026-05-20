@@ -781,9 +781,13 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMalloc(&d_uz, macro_size));
     CUDA_CHECK(cudaMalloc(&d_solid, n_cells * sizeof(unsigned char)));
 
-    // Build mask: --shape selects naca|cylinder|flatplate
+    // Build mask: --shape selects naca|cylinder|flatplate|stl
     auto h_mask = physics::aero::makeFluidMask(nx, ny, nz);
     const char* shape_name = "?";
+    // STL state — populated when --shape stl; reused by qfrac builder.
+    lbm::io::STLMesh stl_mesh;
+    lbm::io::TriangleBVH stl_bvh;
+    bool stl_loaded = false;
     if (args.no_stamp) {
         shape_name = "no-stamp (uniform flow sanity test)";
     } else if (args.shape == 1) {
@@ -808,26 +812,25 @@ int main(int argc, char** argv) {
         std::cout << " Loading STL: " << args.stl_file
                   << "  (scale " << args.stl_scale
                   << ", translate " << args.stl_tx << "," << args.stl_ty << "," << args.stl_tz << ")\n";
-        auto stl = lbm::io::load_stl(args.stl_file);
-        std::cout << " STL: " << stl.tris.size() << " triangles\n";
-        lbm::io::transform_mesh(stl, args.stl_scale,
+        stl_mesh = lbm::io::load_stl(args.stl_file);
+        std::cout << " STL: " << stl_mesh.tris.size() << " triangles\n";
+        lbm::io::transform_mesh(stl_mesh, args.stl_scale,
                                 {args.stl_tx, args.stl_ty, args.stl_tz});
         std::cout << " STL bbox after transform: ["
-                  << stl.bbox_lo[0] << "," << stl.bbox_hi[0] << "] × ["
-                  << stl.bbox_lo[1] << "," << stl.bbox_hi[1] << "] × ["
-                  << stl.bbox_lo[2] << "," << stl.bbox_hi[2] << "] (m)\n";
+                  << stl_mesh.bbox_lo[0] << "," << stl_mesh.bbox_hi[0] << "] × ["
+                  << stl_mesh.bbox_lo[1] << "," << stl_mesh.bbox_hi[1] << "] × ["
+                  << stl_mesh.bbox_lo[2] << "," << stl_mesh.bbox_hi[2] << "] (m)\n";
 
-        // D2: build BVH for fast ray-tri queries (~log N per cell vs O(N) brute).
         const auto t_bvh0 = std::chrono::steady_clock::now();
-        lbm::io::TriangleBVH bvh;
-        bvh.build(stl);
+        stl_bvh.build(stl_mesh);
         const auto t_bvh1 = std::chrono::steady_clock::now();
-        std::cout << " STL BVH: " << bvh.n_nodes() << " nodes, "
-                  << bvh.n_tris() << " tris, build "
+        std::cout << " STL BVH: " << stl_bvh.n_nodes() << " nodes, "
+                  << stl_bvh.n_tris() << " tris, build "
                   << std::chrono::duration<double>(t_bvh1 - t_bvh0).count() << " s\n";
+        stl_loaded = true;
 
         const auto t_stl0 = std::chrono::steady_clock::now();
-        physics::aero::stampSTL(h_mask, nx, ny, nz, dx, stl, &bvh);
+        physics::aero::stampSTL(h_mask, nx, ny, nz, dx, stl_mesh, &stl_bvh);
         const auto t_stl1 = std::chrono::steady_clock::now();
         std::cout << " STL BVH-accelerated stamp: "
                   << std::chrono::duration<double>(t_stl1 - t_stl0).count()
@@ -871,16 +874,40 @@ int main(int argc, char** argv) {
     float*         d_qf_link_val = nullptr;    // sparse path: link_val[K]
     const bool use_qbb = (args.bc_mode == "qbb-snode");
     if (use_qbb) {
-        if (args.shape != 0) {
-            std::cerr << "ERROR: --bc qbb-snode currently supports only NACA "
-                         "(shape=naca). Got shape=" << args.shape << ". Aborting.\n";
+        if (args.shape != 0 && args.shape != 3) {
+            std::cerr << "ERROR: --bc qbb-snode supports NACA (shape=naca) or "
+                         "STL (shape=stl). Got shape=" << args.shape << ". Aborting.\n";
             std::exit(1);
         }
-        std::cout << " Building D3Q27 q-fractions (sub-sample + bisect)...\n";
+        if (args.shape == 3 && !args.sparse_qfrac) {
+            std::cerr << "ERROR: --shape stl --bc qbb-snode requires --sparse-qfrac.\n";
+            std::exit(1);
+        }
+        if (args.shape == 0) {
+            std::cout << " Building D3Q27 q-fractions (sub-sample + bisect)...\n";
+        } else {
+            std::cout << " Building D3Q27 q-fractions (STL ray-cast via BVH)...\n";
+        }
         if (args.sparse_qfrac) {
-            auto sq = physics::aero::makeNacaQFractionSparse(
-                h_mask, nx, ny, nz, dx,
-                xLE, yLE, chord, 12.0f, alpha_rad);
+            physics::aero::SparseQFraction sq;
+            if (args.shape == 0) {
+                sq = physics::aero::makeNacaQFractionSparse(
+                    h_mask, nx, ny, nz, dx,
+                    xLE, yLE, chord, 12.0f, alpha_rad);
+            } else {
+                // STL: BVH-accelerated direct ray-tri intersect.
+                if (!stl_loaded) {
+                    std::cerr << "ERROR: --shape stl but STL not loaded.\n";
+                    std::exit(1);
+                }
+                const auto t_qf0 = std::chrono::steady_clock::now();
+                sq = physics::aero::makeSTLQFractionSparse(
+                    h_mask, nx, ny, nz, dx, stl_mesh, stl_bvh);
+                const auto t_qf1 = std::chrono::steady_clock::now();
+                std::cout << " STL qfrac build: "
+                          << std::chrono::duration<double>(t_qf1 - t_qf0).count()
+                          << " s\n";
+            }
             const int K = (int)sq.link_q.size();
             std::cout << " QBB SPARSE enabled: " << K << " fractional links over "
                       << n_cells << " cells (offset+q+val: "

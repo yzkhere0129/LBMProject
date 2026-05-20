@@ -20,9 +20,12 @@
 #include "io/stl_reader.h"
 #include "io/triangle_bvh.h"
 #include "core/streaming.h"
+#include "core/lattice_d3q27.h"
+#include "physics/aero/obstacle_geometry.h"  // SparseQFraction
 #include <vector>
 #include <array>
 #include <cmath>
+#include <algorithm>
 
 namespace lbm {
 namespace physics {
@@ -124,6 +127,130 @@ inline void stampSTL(std::vector<unsigned char>& mask,
             }
         }
     }
+}
+
+/**
+ * @brief Compute sparse qfrac for a stamped STL mask.
+ *
+ * For each fluid cell with at least one solid neighbour (CSR pass 1),
+ * for each q ∈ [1, 27) where neighbor IS solid, cast a ray from the
+ * fluid cell centre along direction c_q (unit length) and find the
+ * nearest triangle intersection. qfrac = t_intersect / link_length.
+ *
+ * Direct ray-tri intersection (no bisection) — more accurate and faster
+ * than the bisection approach used by makeNacaQFractionSparse(). BVH
+ * acceleration mandatory; brute force gets pathological at 10k+ tris.
+ *
+ * Fallback: if no triangle intersected by the link (rare — happens when
+ * the link grazes a triangle edge), qfrac = 0.5 (halfway BB).
+ */
+inline lbm::physics::aero::SparseQFraction makeSTLQFractionSparse(
+    const std::vector<unsigned char>& mask,
+    int nx, int ny, int nz, float dx,
+    const lbm::io::STLMesh& mesh,
+    const lbm::io::TriangleBVH& bvh)
+{
+    using lbm::core::D3Q27;
+    constexpr float QMIN = 1e-6f;
+    const size_t n_cells = static_cast<size_t>(nx) * ny * nz;
+    const auto& tris = mesh.tris;
+
+    // Pre-compute unit direction + link length (physical) per q.
+    std::array<std::array<float, 3>, D3Q27::Q> u_q;
+    std::array<float, D3Q27::Q> link_len;
+    for (int q = 0; q < D3Q27::Q; ++q) {
+        const float ex = D3Q27::h_ex[q];
+        const float ey = D3Q27::h_ey[q];
+        const float ez = D3Q27::h_ez[q];
+        const float L = std::sqrt(ex*ex + ey*ey + ez*ez);
+        link_len[q] = L * dx;
+        if (L > 1e-20f) {
+            u_q[q] = { ex / L, ey / L, ez / L };
+        } else {
+            u_q[q] = { 0.0f, 0.0f, 0.0f };  // q=0 rest particle, never queried
+        }
+    }
+
+    // Pass 1: count solid-neighbour links per fluid cell.
+    lbm::physics::aero::SparseQFraction out;
+    out.offset.assign(n_cells + 1, 0);
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i) {
+                const size_t id = static_cast<size_t>(i)
+                                + static_cast<size_t>(j) * nx
+                                + static_cast<size_t>(k) * nx * ny;
+                if (mask[id] != lbm::core::Streaming::CELL_FLUID) continue;
+                int cnt = 0;
+                for (int q = 1; q < D3Q27::Q; ++q) {
+                    const int ni = i + D3Q27::h_ex[q];
+                    const int nj = j + D3Q27::h_ey[q];
+                    const int nk = k + D3Q27::h_ez[q];
+                    if (ni < 0 || ni >= nx || nj < 0 || nj >= ny ||
+                        nk < 0 || nk >= nz) continue;
+                    const size_t nid = static_cast<size_t>(ni)
+                                     + static_cast<size_t>(nj) * nx
+                                     + static_cast<size_t>(nk) * nx * ny;
+                    if (mask[nid] == lbm::core::Streaming::CELL_FLUID) continue;
+                    ++cnt;
+                }
+                out.offset[id + 1] = cnt;
+            }
+    for (size_t i = 1; i <= n_cells; ++i) out.offset[i] += out.offset[i-1];
+    const int K = out.offset[n_cells];
+    out.link_q.assign(K, 0);
+    out.link_qfrac.assign(K, 1.0f);
+
+    // Pass 2: fill qfrac via BVH-accelerated ray-tri intersection.
+    std::vector<int> head = out.offset;
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i) {
+                const size_t id = static_cast<size_t>(i)
+                                + static_cast<size_t>(j) * nx
+                                + static_cast<size_t>(k) * nx * ny;
+                if (mask[id] != lbm::core::Streaming::CELL_FLUID) continue;
+                const float xC = (i + 0.5f) * dx;
+                const float yC = (j + 0.5f) * dx;
+                const float zC = (k + 0.5f) * dx;
+                for (int q = 1; q < D3Q27::Q; ++q) {
+                    const int ni = i + D3Q27::h_ex[q];
+                    const int nj = j + D3Q27::h_ey[q];
+                    const int nk = k + D3Q27::h_ez[q];
+                    if (ni < 0 || ni >= nx || nj < 0 || nj >= ny ||
+                        nk < 0 || nk >= nz) continue;
+                    const size_t nid = static_cast<size_t>(ni)
+                                     + static_cast<size_t>(nj) * nx
+                                     + static_cast<size_t>(nk) * nx * ny;
+                    if (mask[nid] == lbm::core::Streaming::CELL_FLUID) continue;
+
+                    // BVH traversal: collect min positive t over candidate tris.
+                    const float O[3] = { xC, yC, zC };
+                    const float D[3] = { u_q[q][0], u_q[q][1], u_q[q][2] };
+                    const float t_max = link_len[q];
+                    float t_best = 1e30f;
+                    auto cb = [&](int t_idx) {
+                        const auto& tri = tris[t_idx];
+                        float t_param;
+                        if (stl_detail::ray_tri_intersect(O, D, tri.v0, tri.v1, tri.v2, t_param)) {
+                            if (t_param > 0.0f && t_param < t_best) t_best = t_param;
+                        }
+                    };
+                    bvh.traverse_ray(O, D, cb);
+
+                    float qf;
+                    if (t_best >= 1e29f || t_best > t_max * 1.01f) {
+                        // No hit, or hit past solid cell centre — grazing.
+                        qf = 0.5f;
+                    } else {
+                        qf = std::clamp(t_best / t_max, QMIN, 1.0f);
+                    }
+                    const int slot = head[id]++;
+                    out.link_q[slot]     = static_cast<unsigned char>(q);
+                    out.link_qfrac[slot] = qf;
+                }
+            }
+    return out;
 }
 
 }  // namespace aero
