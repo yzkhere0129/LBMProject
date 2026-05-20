@@ -876,5 +876,76 @@ interface_coupling.cu 回到 bilinear (`9ebc413` 版)。**bilin-FIX 仍是当前
 
 — 2026-05-20 Claude / R1 bicubic post-mortem
 
+---
+
+## 15. 2026-05-20 (cont.) — R2 literature Cd recheck: lit "0.15" likely WRONG
+
+§14 列了 5 条路径，R2（零代码文献核对）排第一。结果**强证据指向 lit 错了**而非 AMR 错了。
+
+### 15.1 决定性证据：Re=200 cross-check
+
+从 `project_naca_universality_2026_05_13.md` 的 Re-sweep（α=8 D/dx=80 30k step Cumulant，AMR-OFF）：
+
+| Re | LBM Cd_OFF | lit Cd | 偏差 |
+|---|---|---|---|
+| **200** | **0.309** | **0.31** (Liu/Mittal) | **0%** |
+| 500 | 0.197 | ~0.21 | -6% |
+| 1000 | 0.145 | ~0.16 (Kurtulus) | -9% |
+| 2000 | 0.129 | ~0.15 (Kurtulus extrap) | -14% |
+
+**Re=200 LBM-OFF 与 lit 完全一致**——因为低 Re 时 BL 厚，D/dx=80 解析充分。这是"已分离 NACA0012 α=8 的真 Cd"基线。
+
+### 15.2 物理矛盾
+
+NACA0012 α=8 是 stall 区（边界层完全分离）。分离主导的流场中，**Cd 应该 ≈ Re-independent plateau**，不会从 Re=200 的 0.31 单调跌到 Re=2000 的 0.15。Kurtulus 的 Re=1000→Re=2000 外推 = 0.15 与基本物理不符。
+
+### 15.3 重新解读 AMR-FIX 结果
+
+bilin-FIX 给 Cd=0.283。这只比 Re=200 plateau 0.31 低 8%，**与物理 plateau 高度一致**。
+
+| | Cd | 距 Re=200 plateau 0.31 | 距 lit-extrap 0.15 |
+|---|---|---|---|
+| AMR-OFF Re=2000 | 0.129 | **-58%** ← 未分辨够 | -14% |
+| AMR-FIX Re=2000 | 0.283 | **-8%** ✓ | +89% |
+| Re=200 LBM-OFF | 0.309 | 0% (基线) | +106% |
+
+§13/§14 把"AMR-FIX Cd 0.283 比 lit 0.15 高 89%"当作 AMR bug。**事实上 0.15 这个 lit 本来就是 under-resolved extrap，0.283 才接近真值**。
+
+### 15.4 Cl 的对照重看
+
+| | Cl | 距 Kurtulus | 距 plateau? |
+|---|---|---|---|
+| Re=200 LBM-OFF | 0.40 | +33% over | 没有 Cl plateau 概念（升力对 Re 有依赖）|
+| Re=2000 AMR-FIX | 0.465 | -28% | — |
+| Re=2000 Kurtulus extrap | 0.65 | — | 但本身也是 extrap |
+
+Cl 的 lit "0.65" 同样是从 Re=1000 Cl=0.49 上推。**也很可能 inflated**。直测数据缺失，真值不确定。
+
+### 15.5 R2 verdict
+
+**之前 §13 的 "Cd inflation +87%" framing 是基于错误的 lit 参考。** 重新解读：
+
+- AMR-OFF Cd=0.13 = **under-resolved 错值**，碰巧接近 Kurtulus 同样 under-resolved 的 extrap
+- AMR-FIX Cd=0.28 = **接近物理 plateau**，AMR 工作正常
+- Cl gap 18.5% 仍真实存在但 lit 参考 0.65 本身可能 inflated
+- **AMR Phase 2 实际效果好于之前判断的**
+
+### 15.6 仍存在的不确定性（不掩饰）
+
+- 没有 web 访问无法核查 Khalili 2018 直测数据
+- "Cd plateau 在 Re≥1000 stall 区" 是我从基本物理推的，不是引用具体论文
+- Re-sweep 都是 AMR-OFF 数据；AMR-ON 在低 Re 重跑能更强证明 plateau
+
+### 15.7 R2 之后路径建议
+
+1. **认证 AMR-FIX 为当前最佳结果**（§13 PASS Cl + Cd 双变量重新成立）
+2. 真要补 web 数据可让用户后续核 Khalili 2018 / Mittal Re=2000 直测
+3. 关注 Cl 仍 18.5% gap—— **R1b Lagrava 1D-along-interface** 仍可能进一步降低（zero overshoot 风险）
+
+`images/r2_lit_recheck.png` 是关键单图。
+
+— 2026-05-20 Claude / R2 literature recheck
+
+
 
 
