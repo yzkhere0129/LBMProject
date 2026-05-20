@@ -1078,6 +1078,70 @@ GPU 65 min for 30k step settled mean (when solo on GPU).
 
 — 2026-05-20 Claude / STL pipeline complete + F-18 demo staged (GPU busy)
 
+---
+
+## 18. 2026-05-20 (cont.) — STL D4, F-35 prep, unit tests, analysis staging
+
+GPU 仍被别人占用，做了几件 zero-GPU productive 工作。
+
+### 18.1 D4 — surface normal in SparseQFraction (commit `26bf469`)
+
+`SparseQFraction` 加 3 个数组：`link_nx`, `link_ny`, `link_nz`（每条 fluid-solid 链一个 normal）。`makeSTLQFractionSparse` 自动填充——记录命中三角面的 CCW outward normal。NACA 解析路径留空（其 normal 可从 chord-frame 现算）。当前 force probe 不读，但**给下游 force-probe 升级（Caiazzo-Junk 压力积分、recoil/Marangoni 耦合）留了干净接口**。
+
+### 18.2 F-35 silhouette 准备就绪
+
+`Model/obj_1_F-35,,,.stl`（1030 tris，binary）已 process：
+- bbox: 115 × 90 × 74（model units）
+- 投影 → `test_data/f35_silhouette_xy.stl`（1416 tris）
+- 可视化 `images/f35_vs_f18_silhouettes.png`
+
+**F-35 demo CLI**（GPU 空了之后跑）：
+```bash
+./build/aero_naca0012_cumulant \
+    --shape stl --stl-file test_data/f35_silhouette_xy.stl \
+    --stl-scale 0.00873 --stl-tx 9.44 --stl-ty 9.61 --stl-tz -0.04 \
+    --bc stair --resolution 80 --re 2000 --alpha 0 \
+    --steps 5000 --probe-every 50 --vtk-every 2500 \
+    --output-dir output_f35_5k
+```
+
+### 18.3 STL D1-D4 单元测试 (`tests/aero/test_stl_pipeline.cu`)
+
+6 个测试覆盖：
+- `STLReader.BinaryRoundtrip` — 写+读 binary STL，bbox + 法向量正确
+- `STLReader.ASCIIRoundtrip` — ASCII STL 解析
+- `STLReader.TransformMesh` — scale+translate 后 bbox 正确
+- `TriangleBVH.BuildSphereStructure` — BVH 构建无误
+- `StampSTL.UnitCubeFootprint` — 立方体 stamp 体积 ≈ 1m³（±40% on 16³ grid）
+- `MakeSTLQFractionSparse.NoSpuriousLinksOutsideObject` — qfrac 在 [QMIN, 1.0]，D4 normal 单位长度
+
+**全部 PASS**，编译干净。`cmake --build . --target test_stl_pipeline && ./tests/test_stl_pipeline`。
+
+### 18.4 Code-review patch
+
+ASCII STL parser 加 `vert_idx < 3` clamp，防御性修补（malformed STL 不再 overflow `tri.v2`）。
+
+### 18.5 Pre-staged: 仿真完成后的分析脚本
+
+`scripts/aero/plot_stl_demo.py`：
+- 输入：`output_<name>/` 目录
+- 输出：`images/<name>_forces.png`（Cd/Cl/mass 时序）+ `images/<name>_flowfield.png`（VTK mid-z ω_z + |u| with silhouette outline）
+- 可复用于任何 STL demo（F-18、F-35、用户后续 STL）
+
+### 18.6 当前 status: ready-to-launch
+
+```bash
+# F-18 demo
+bash scripts/aero/run_f18_demo.sh 5000 5k
+python3 scripts/aero/plot_stl_demo.py output_f18_5k f18_5k
+
+# F-35 demo  
+# (同上但参数 stl-scale=0.00873, stl-tx=9.44, stl-ty=9.61)
+```
+
+— 2026-05-20 Claude / D4 + F-35 + tests + analysis script
+
+
 
 
 

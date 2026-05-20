@@ -90,6 +90,11 @@ target_link_libraries(test_vtk_liquid_fraction
 )
 gtest_discover_tests(test_vtk_liquid_fraction)
 
+# Aero tests - STL pipeline (D1-D4: reader, BVH, ray-tri intersect, qfrac).
+# Compiled as .cu because core/streaming.h has CUDA kernels in headers; host
+# code uses only CELL_FLUID/CELL_SOLID constants which nvcc compiles fine.
+add_cuda_test(test_stl_pipeline aero/test_stl_pipeline.cu)
+
 # Unit tests - VTK Vector I/O (Phase 5: Vector field output)
 # DISABLED: API mismatch with VTKWriter::writeStructuredGridWithVectors
 # TODO: Update test to match new VTKWriter API
