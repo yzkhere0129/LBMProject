@@ -814,4 +814,67 @@ std::cout << "AMR patch (incl 0.06c margin) ... [AUTO-EXPANDED]";
 
 — 2026-05-20 Claude / patch-truncation finding
 
+---
+
+## 14. 2026-05-20 (cont.) — R1 bicubic prolongation FAILED
+
+§13 修了 patch 但 Cd **+17% 反向**——L/D 1.97→1.64 反而退步。继续做 audit A+B+C：
+
+### 14.1 Audit 三件套
+
+| Audit | 假设 | 结论 |
+|---|---|---|
+| A | force probe vs AMR pipeline 有 double-count bug | ❌ NO bug — 力探针 cell 必被 restriction skip (`solid_f != 0 → return`)，永远只 coarse 演化 |
+| B | AMR 注入周期性数值噪声 | ❌ NO — 三 case Cd_rms ≈ 0.003-0.004 一致，FFT 无 AMR-特征峰 |
+| **C** | **bilinear 阶数不够 (Lagrava 2012)** | **✓ 确认** — Lagrava §3.6 明文：bilinear 在界面产生 O(1) 压力跃变，需要 cubic |
+
+Lagrava 2012 Fig 11/12 直接给出在 Poiseuille 通道上的实测：bilinear 在 coarse-fine 界面有 O(1) 压力跃变，cubic 平滑无跃变。
+
+### 14.2 R1 实施 — 2D bicubic Catmull-Rom
+
+`src/physics/amr/interface_coupling.cu` 改造：4-cell bilinear → 16-cell bicubic（1D Catmull-Rom 在 x、y 方向 outer product）。Solid-aware + ρ-guard + per-cell CE decomp 全保留。
+
+实测：commit `daf4836`，30k 跑结果：
+
+```
+Cl_settled = -0.153 ± 0.810    (vs bilin-FIX +0.465 ± 0.025)
+Cd_settled =  0.221 ± 0.143    (vs bilin-FIX  0.283 ± 0.003)
+L/D        = -0.69             (vs bilin-FIX  1.64)
+```
+
+Cd mean 降了 22%（Lagrava 预言成立），但 **Cl 爆炸成 ±1 振荡**，Cl_rms 是 bilin-FIX 的 27 倍。
+
+### 14.3 失败原因——空间间断 switching
+
+我加了 monotonicity guard（catmull-rom ρ 超出 stencil [ρ_min, ρ_max] 时 fall back 到 bilinear）来防止 NaN。这个 hard switch **空间上不连续**：
+
+- LE 吸力峰附近 cells：触发 fallback → bilinear
+- 远离 LE 的光滑区 cells：用 bicubic
+- 相邻 boundary cell 用不同算子 → prolongated PDF 空间间断 → patch 内驱动一个 breathing mode → Cl 振荡
+
+不加 guard 的纯 bicubic 在 step 7700 NaN 了（负权重在尖锐梯度处 overshoot）。所以 hard-switch 和 unguarded 都不行。
+
+### 14.4 已 revert (`24473e2`)
+
+interface_coupling.cu 回到 bilinear (`9ebc413` 版)。**bilin-FIX 仍是当前 AMR 结果**：Cl gap 18.5%, L/D 1.64, Cd 0.28。
+
+### 14.5 接下来可走的路径
+
+| 路径 | 思路 | 风险 |
+|---|---|---|
+| **R1a — B-spline cubic** | 三次 B-样条权重全正 → 无 overshoot → 无需 monotonicity guard → 无空间间断 | 是 smoothing 不是 interpolating，可能没有 Lagrava 承诺的高阶精度增益 |
+| **R1b — Lagrava 1D along-interface** | Lagrava 原方案是沿界面 1D cubic，不是我用的 2D outer product。试 1D 沿 patch edge 切线，normal 方向 linear | 我们是 cell-center 不是 cell-vertex，几何不完全对应 |
+| **R1c — 连续 blend limiter** | bicubic 与 bilinear 用 sigmoid 平滑 blend（消除空间间断）| 实现复杂度 +30% |
+| **R2 — 文献 Cd 重核** | Khalili 2018 LES 报告 NACA0012 Re=2000 α=8 Cd ≈ 0.18-0.25。我们 bilin-FIX 的 0.28 离 LES 区间仅 12% off | 0 工作量但需要原始 Khalili 数据 |
+| **R3 — 接受 bilin-FIX** | 公开 Cl gap 18.5% / L/D 56% gap 作为单层 2× AMR 的极限 | 老实但缺乏说服力 |
+
+### 14.6 教训
+
+- **Lagrava 的处方不能直接搬到 cell-center 几何**——他用 cell-vertex coincident points，1D 沿界面 cubic。cell-center 没有 coincident points，必须 2D 插值，但 2D outer-product Catmull-Rom 容易 overshoot。
+- **Hybrid scheme 的 spatial switching 是 silent killer**——不会 NaN 但破坏 Cl。验收必须看 Cl_rms 不只看 Cl_mean。
+- **负结果也是结果**——commit + 写清楚比删干净更有用。下一任接手会少走 1-2 天弯路。
+
+— 2026-05-20 Claude / R1 bicubic post-mortem
+
+
 
