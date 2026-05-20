@@ -1141,6 +1141,53 @@ python3 scripts/aero/plot_stl_demo.py output_f18_5k f18_5k
 
 — 2026-05-20 Claude / D4 + F-35 + tests + analysis script
 
+---
+
+## 19. 2026-05-21 — Master regression check + ear-clip + 3D NACA plan
+
+Three no-GPU tracks while GPU contention persisted.
+
+### 19.1 Master regression check (E)
+
+Full `cmake --build` of CompressibleCFD with all STL additions:
+- **STL changes don't break anything**. All my new files + the `SparseQFraction` extension compile clean across the project.
+- **One pre-existing failure**: `tests/integration/test_darcy_stability.cu` fails to compile (`error: argument of type "float" is incompatible with const float *` at lines 112/215/298/363). This commit `b8eab0e` lives on **master**, not introduced by STL work. Out of scope for current branch; AM workflow owner should fix when next touching Darcy.
+
+### 19.2 Ear-clip triangulation for silhouettes (B, commit `fa8d4ab`)
+
+`scripts/aero/project_stl_to_silhouette.py` previously used centroid-fan triangulation. Works for star-convex shapes but breaks on concave (the fan triangles extend OUTSIDE the polygon → silhouette has gaps that stampSTL can leak through). Replaced with **ear-clipping** (O(N²), handles any simple polygon CCW or CW). Added helpers:
+- `_signed_area_2d`, `_ensure_ccw`
+- `_is_convex_vertex`, `_point_in_triangle`
+- `_ear_clip_2d` with fan-tri fallback for degenerate input
+
+NOT re-run on F-18/F-35 (user vetoed CPU-heavy STL re-processing during this session). Existing silhouettes still use fan-tri version; will be exercised on next regen.
+
+### 19.3 3D NACA wing feasibility doc (D, commit `fa8d4ab`)
+
+`docs/3D_NACA_WING_PLAN.md` — full math + memory budget.
+
+Key conclusions for **4 GB GPU constraint**:
+- Target AR=4 NACA wing (s=4c) at usable resolution → **10-80 GB**, not possible.
+- **Achievable Phase 3.1**: periodic-span 0.5c at D/dx=30 → 1.5 GB. Proves nz>4 code path works; result should match quasi-2D within FP32 noise. ~1 hour run.
+- **Achievable Phase 3.2**: finite-span 1c wing at D/dx=20 → 1.25 GB. LE radius 0.3 cells (terrible). Cd/Cl will be poor but wingtip vortex roll-up visually achievable.
+- Beyond 4 GB: needs multi-GPU MPI, multi-level AMR, or grid stretching.
+
+Code changes needed for Phase 3.1: ~1-2 days (CLI `--lz-over-c`, span-limit option in stampNacaAirfoil4Digit, optional z wall BC).
+
+### 19.4 Branch state at end of session
+
+`feature/compressible-aero` @ `fa8d4ab` — **40 commits ahead of master**.
+
+Major chains:
+- §1-§11: aero + NACA development (pre-AMR)
+- §12-§16: AMR Phase 2 (PASS bilin-FIX after R1/R1b both failed)
+- §15: literature Cd recheck → AMR Cd is physically OK
+- §17-§18: STL D1-D4 pipeline complete + tests + F-18/F-35 staged
+- §19: regression check + ear-clip + 3D plan
+
+— 2026-05-21 Claude / E+B+D completed
+
+
 
 
 
