@@ -22,6 +22,8 @@
 #include "physics/cumulant/cumulant_d3q27.h"
 #include "physics/cumulant/streaming_d3q27_qbb.h"
 #include "physics/aero/obstacle_geometry.h"
+#include "physics/aero/stl_geometry.h"
+#include "io/stl_reader.h"
 #include "physics/amr/fine_patch.h"
 #include "io/vtk_writer.h"
 #include "utils/cuda_check.h"
@@ -85,6 +87,12 @@ struct Args {
     // Phase 2.7 sanity-test flag: skip obstacle stamp (no NACA, no qfrac).
     // Combined with --amr-enable runs uniform-flow test through AMR pipeline.
     int   no_stamp = 0;
+    // STL geometry (--shape stl).
+    std::string stl_file;
+    float stl_scale = 1.0f;
+    float stl_tx = 0.0f;  // translate after scaling, in OUTPUT units (m)
+    float stl_ty = 0.0f;
+    float stl_tz = 0.0f;
 };
 
 // Simple BGK D3Q27 collision (control test for Cumulant)
@@ -226,8 +234,14 @@ static Args parseArgs(int argc, char** argv) {
             if      (v == "naca")      a.shape = 0;
             else if (v == "cylinder")  a.shape = 1;
             else if (v == "flatplate") a.shape = 2;
-            else { std::cerr << "Unknown shape: " << v << " (naca|cylinder|flatplate)\n"; std::exit(1); }
+            else if (v == "stl")       a.shape = 3;
+            else { std::cerr << "Unknown shape: " << v << " (naca|cylinder|flatplate|stl)\n"; std::exit(1); }
         }
+        else if (s == "--stl-file")    a.stl_file = next();
+        else if (s == "--stl-scale")   a.stl_scale = std::stof(next());
+        else if (s == "--stl-tx")      a.stl_tx = std::stof(next());
+        else if (s == "--stl-ty")      a.stl_ty = std::stof(next());
+        else if (s == "--stl-tz")      a.stl_tz = std::stof(next());
         else if (s == "--cyl-off-y")   a.cyl_off_y = std::stof(next());
         else if (s == "--plate-thick-cells") a.plate_thick_cells = std::stof(next());
         else if (s == "--bc") {
@@ -263,6 +277,9 @@ static Args parseArgs(int argc, char** argv) {
               "  --amr-enable           [Phase 1] allocate isolated fine patch around NACA (no coupling yet)\n"
               "  --amr-x-lo X / --amr-x-hi X    patch x extent in chord units (rel xLE; default -0.05 / +1.05, AUTO-EXPANDS to airfoil bbox + 0.06c margin)\n"
               "  --amr-y-lo Y / --amr-y-hi Y    patch y extent in chord units (rel yLE; default ±0.10, AUTO-EXPANDS to airfoil bbox + 0.06c margin)\n"
+              "  --shape stl --stl-file PATH    load STL geometry (ASCII or binary)\n"
+              "  --stl-scale X                  uniform scale applied to STL vertices (default 1.0)\n"
+              "  --stl-tx X / --stl-ty Y / --stl-tz Z  translation (m) applied after scaling\n"
               "  --amr-refine N         spatial refinement factor (Phase 1: only 2 supported)\n";
             std::exit(0);
         } else { std::cerr << "Unknown: " << s << std::endl; std::exit(1); }
@@ -781,6 +798,30 @@ int main(int argc, char** argv) {
             h_mask, nx, ny, nz, dx,
             xLE, yLE, chord, args.plate_thick_cells * dx, alpha_rad);
         shape_name = "flatplate";
+    } else if (args.shape == 3) {
+        // STL: load + transform + brute-force ray-cast stamp.
+        if (args.stl_file.empty()) {
+            std::cerr << "ERROR: --shape stl requires --stl-file PATH\n";
+            std::exit(1);
+        }
+        std::cout << " Loading STL: " << args.stl_file
+                  << "  (scale " << args.stl_scale
+                  << ", translate " << args.stl_tx << "," << args.stl_ty << "," << args.stl_tz << ")\n";
+        auto stl = lbm::io::load_stl(args.stl_file);
+        std::cout << " STL: " << stl.tris.size() << " triangles\n";
+        lbm::io::transform_mesh(stl, args.stl_scale,
+                                {args.stl_tx, args.stl_ty, args.stl_tz});
+        std::cout << " STL bbox after transform: ["
+                  << stl.bbox_lo[0] << "," << stl.bbox_hi[0] << "] × ["
+                  << stl.bbox_lo[1] << "," << stl.bbox_hi[1] << "] × ["
+                  << stl.bbox_lo[2] << "," << stl.bbox_hi[2] << "] (m)\n";
+        const auto t_stl0 = std::chrono::steady_clock::now();
+        physics::aero::stampSTL(h_mask, nx, ny, nz, dx, stl);
+        const auto t_stl1 = std::chrono::steady_clock::now();
+        std::cout << " STL ray-cast stamp: "
+                  << std::chrono::duration<double>(t_stl1 - t_stl0).count()
+                  << " s\n";
+        shape_name = "stl";
     } else {
         physics::aero::stampNacaAirfoil4Digit(
             h_mask, nx, ny, nz, dx,
