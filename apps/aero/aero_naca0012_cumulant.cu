@@ -24,6 +24,7 @@
 #include "physics/aero/obstacle_geometry.h"
 #include "physics/aero/stl_geometry.h"
 #include "io/stl_reader.h"
+#include "io/triangle_bvh.h"
 #include "physics/amr/fine_patch.h"
 #include "io/vtk_writer.h"
 #include "utils/cuda_check.h"
@@ -815,10 +816,20 @@ int main(int argc, char** argv) {
                   << stl.bbox_lo[0] << "," << stl.bbox_hi[0] << "] × ["
                   << stl.bbox_lo[1] << "," << stl.bbox_hi[1] << "] × ["
                   << stl.bbox_lo[2] << "," << stl.bbox_hi[2] << "] (m)\n";
+
+        // D2: build BVH for fast ray-tri queries (~log N per cell vs O(N) brute).
+        const auto t_bvh0 = std::chrono::steady_clock::now();
+        lbm::io::TriangleBVH bvh;
+        bvh.build(stl);
+        const auto t_bvh1 = std::chrono::steady_clock::now();
+        std::cout << " STL BVH: " << bvh.n_nodes() << " nodes, "
+                  << bvh.n_tris() << " tris, build "
+                  << std::chrono::duration<double>(t_bvh1 - t_bvh0).count() << " s\n";
+
         const auto t_stl0 = std::chrono::steady_clock::now();
-        physics::aero::stampSTL(h_mask, nx, ny, nz, dx, stl);
+        physics::aero::stampSTL(h_mask, nx, ny, nz, dx, stl, &bvh);
         const auto t_stl1 = std::chrono::steady_clock::now();
-        std::cout << " STL ray-cast stamp: "
+        std::cout << " STL BVH-accelerated stamp: "
                   << std::chrono::duration<double>(t_stl1 - t_stl0).count()
                   << " s\n";
         shape_name = "stl";

@@ -18,6 +18,7 @@
 #pragma once
 
 #include "io/stl_reader.h"
+#include "io/triangle_bvh.h"
 #include "core/streaming.h"
 #include <vector>
 #include <array>
@@ -65,27 +66,27 @@ inline bool ray_tri_intersect(const float O[3], const float D[3],
 }  // namespace stl_detail
 
 /**
- * @brief Stamp solid cells from STL mesh into mask.
+ * @brief Stamp solid cells from STL mesh into mask, BVH-accelerated.
  *
  * Ray-casts in +x direction from each cell centre. Cells with odd
  * intersection count are marked CELL_SOLID.
  *
- * O(N_cells × N_tris) cost — for D/dx=80, 1c chord, 15M cells × 5k tris
- * = 75e9 ops ≈ 25 sec single-threaded. Acceptable for D1. D2 will add BVH.
+ * D2 upgrade: BVH (triangle_bvh.h) reduces per-cell cost from O(N_tris)
+ * to ~O(log N_tris) average. For 100k tris × 1M cells in bbox, brute
+ * force = 1e11 ops (15 min); BVH ~ few seconds.
  *
- * Early-exit optimisation: skip cells outside STL bbox without ray-cast.
- * For a NACA-scale STL filling ~0.1% of the domain, this avoids 99.9%
- * of the ray casts.
+ * If `bvh == nullptr`, falls back to brute-force (kept for safety; the
+ * caller usually passes a pre-built BVH).
  */
 inline void stampSTL(std::vector<unsigned char>& mask,
                      int nx, int ny, int nz, float dx,
-                     const lbm::io::STLMesh& mesh)
+                     const lbm::io::STLMesh& mesh,
+                     const lbm::io::TriangleBVH* bvh = nullptr)
 {
     const auto& tris = mesh.tris;
     const auto& bbox_lo = mesh.bbox_lo;
     const auto& bbox_hi = mesh.bbox_hi;
 
-    // Cells fully outside bbox can be left FLUID.
     const int i_lo = std::max(0, (int)std::floor(bbox_lo[0] / dx) - 1);
     const int i_hi = std::min(nx, (int)std::ceil (bbox_hi[0] / dx) + 1);
     const int j_lo = std::max(0, (int)std::floor(bbox_lo[1] / dx) - 1);
@@ -103,21 +104,18 @@ inline void stampSTL(std::vector<unsigned char>& mask,
                 const float x = (i + 0.5f) * dx;
                 const float O[3] = { x, y, z };
                 int n_hit = 0;
-                for (const auto& t : tris) {
-                    // Early reject: ray (+x) cannot intersect triangle if all
-                    // triangle vertices are at x < ray_x (-x of ray).
-                    if (t.v0[0] < x && t.v1[0] < x && t.v2[0] < x) continue;
-                    // Or all triangle y far from ray y / all z far from ray z.
-                    const float yt_lo = std::min({t.v0[1], t.v1[1], t.v2[1]});
-                    const float yt_hi = std::max({t.v0[1], t.v1[1], t.v2[1]});
-                    if (y < yt_lo || y > yt_hi) continue;
-                    const float zt_lo = std::min({t.v0[2], t.v1[2], t.v2[2]});
-                    const float zt_hi = std::max({t.v0[2], t.v1[2], t.v2[2]});
-                    if (z < zt_lo || z > zt_hi) continue;
+                auto test_tri = [&](int t_idx) {
+                    const auto& t = tris[t_idx];
+                    if (t.v0[0] < x && t.v1[0] < x && t.v2[0] < x) return;
                     float t_param;
                     if (stl_detail::ray_tri_intersect(O, D, t.v0, t.v1, t.v2, t_param)) {
                         ++n_hit;
                     }
+                };
+                if (bvh) {
+                    bvh->traverse_ray(O, D, test_tri);
+                } else {
+                    for (int ti = 0; ti < (int)tris.size(); ++ti) test_tri(ti);
                 }
                 if (n_hit & 1) {
                     const int id = i + j * nx + k * nx * ny;

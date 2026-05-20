@@ -98,6 +98,12 @@ sphere = [(0.5 * v0, 0.5 * v1, 0.5 * v2) for v0, v1, v2 in ico]
 write_binary_stl(f"{ROOT}/test_data/test_sphere_r05.stl", sphere)
 print(f"sphere: {len(sphere)} tris → {ROOT}/test_data/test_sphere_r05.stl")
 
+# Dense sphere for BVH speedup test (subdivs=4 → 5120 tris)
+ico_dense = icosphere(subdivs=4)
+sphere_dense = [(0.5 * v0, 0.5 * v1, 0.5 * v2) for v0, v1, v2 in ico_dense]
+write_binary_stl(f"{ROOT}/test_data/test_sphere_r05_dense.stl", sphere_dense)
+print(f"dense sphere: {len(sphere_dense)} tris → {ROOT}/test_data/test_sphere_r05_dense.stl")
+
 cube = cube_tris(L=1.0)
 write_ascii_stl(f"{ROOT}/test_data/test_cube_l1.stl", cube)
 print(f"cube: {len(cube)} tris → {ROOT}/test_data/test_cube_l1.stl")
