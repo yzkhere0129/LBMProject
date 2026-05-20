@@ -200,6 +200,12 @@ inline lbm::physics::aero::SparseQFraction makeSTLQFractionSparse(
     const int K = out.offset[n_cells];
     out.link_q.assign(K, 0);
     out.link_qfrac.assign(K, 1.0f);
+    // D4 (2026-05-20): surface normal at hit point (from triangle's CCW normal).
+    // Useful for future Caiazzo-Junk pressure-integration force probes;
+    // current memForceNaca_QBB_sparse Bouzidi MEM doesn't read these.
+    out.link_nx.assign(K, 0.0f);
+    out.link_ny.assign(K, 0.0f);
+    out.link_nz.assign(K, 0.0f);
 
     // Pass 2: fill qfrac via BVH-accelerated ray-tri intersection.
     std::vector<int> head = out.offset;
@@ -224,23 +230,26 @@ inline lbm::physics::aero::SparseQFraction makeSTLQFractionSparse(
                                      + static_cast<size_t>(nk) * nx * ny;
                     if (mask[nid] == lbm::core::Streaming::CELL_FLUID) continue;
 
-                    // BVH traversal: collect min positive t over candidate tris.
+                    // BVH traversal: collect min positive t + nearest-triangle index.
                     const float O[3] = { xC, yC, zC };
                     const float D[3] = { u_q[q][0], u_q[q][1], u_q[q][2] };
                     const float t_max = link_len[q];
                     float t_best = 1e30f;
+                    int   t_best_idx = -1;
                     auto cb = [&](int t_idx) {
                         const auto& tri = tris[t_idx];
                         float t_param;
                         if (stl_detail::ray_tri_intersect(O, D, tri.v0, tri.v1, tri.v2, t_param)) {
-                            if (t_param > 0.0f && t_param < t_best) t_best = t_param;
+                            if (t_param > 0.0f && t_param < t_best) {
+                                t_best = t_param;
+                                t_best_idx = t_idx;
+                            }
                         }
                     };
                     bvh.traverse_ray(O, D, cb);
 
                     float qf;
                     if (t_best >= 1e29f || t_best > t_max * 1.01f) {
-                        // No hit, or hit past solid cell centre — grazing.
                         qf = 0.5f;
                     } else {
                         qf = std::clamp(t_best / t_max, QMIN, 1.0f);
@@ -248,6 +257,13 @@ inline lbm::physics::aero::SparseQFraction makeSTLQFractionSparse(
                     const int slot = head[id]++;
                     out.link_q[slot]     = static_cast<unsigned char>(q);
                     out.link_qfrac[slot] = qf;
+                    // D4: store hit-triangle outward normal (zero vector if no hit).
+                    if (t_best_idx >= 0) {
+                        const auto& n = tris[t_best_idx].normal;
+                        out.link_nx[slot] = n[0];
+                        out.link_ny[slot] = n[1];
+                        out.link_nz[slot] = n[2];
+                    }
                 }
             }
     return out;

@@ -118,7 +118,8 @@ inline STLMesh load_ascii(std::ifstream& f) {
             if      (vert_idx == 0) tri.v0 = v;
             else if (vert_idx == 1) tri.v1 = v;
             else if (vert_idx == 2) tri.v2 = v;
-            ++vert_idx;
+            // (defensive) malformed STL with > 3 vertices per facet: silently ignore extras
+            if (vert_idx < 3) ++vert_idx;
         } else if (tok == "endfacet") {
             renormalize_normal(tri);
             update_bbox(m, tri.v0);

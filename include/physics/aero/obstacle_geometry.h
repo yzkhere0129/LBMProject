@@ -396,6 +396,17 @@ struct SparseQFraction {
     std::vector<int>           offset;     // size n_cells + 1
     std::vector<unsigned char> link_q;     // q ∈ [1, 27)
     std::vector<float>         link_qfrac;
+
+    // D4 (2026-05-20): optional per-link unit outward normal of the surface
+    // hit by the ray cast in direction c_q. Three arrays of size K each.
+    // Populated by makeSTLQFractionSparse (D3 STL builder). NACA analytical
+    // path leaves these empty — its surface normal is derivable from chord-frame
+    // and never needed by the current force probe. Future force-probe variants
+    // (e.g., Caiazzo-Junk pressure integration, recoil/Marangoni couplings)
+    // can read these directly.
+    std::vector<float> link_nx;
+    std::vector<float> link_ny;
+    std::vector<float> link_nz;
 };
 
 /**
