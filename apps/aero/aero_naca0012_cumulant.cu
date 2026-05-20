@@ -56,7 +56,13 @@ struct Args {
     float omega_6    = 1.0f;
     float lx_over_c  = 30.0f;    // domain length in chord units
     float ly_over_c  = 20.0f;    // domain height in chord units
+    float lz_over_c  = -1.0f;    // span in chord units; if > 0, overrides nz_thin
+                                  // as nz = int(resolution * lz_over_c). For
+                                  // Phase 3.1 3D NACA wing demos.
     float xLE_over_c = 10.0f;    // LE position from inlet, chord units
+    // z-direction BC: "periodic" (default — quasi-2D + 3D periodic-span tests)
+    // or "wall" (no-slip top/bottom z faces — finite-span wing in flow).
+    std::string bc_z_mode = "periodic";
     int   use_bgk    = 0;        // 1 = use BGK D3Q27 instead of Cumulant
     int   use_trt    = 0;        // 1 = use TRT D3Q27 (magic Λ=3/16 by default)
     float trt_lambda = 0.1875f;  // TRT magic parameter Λ = (τ+-1/2)(τ--1/2)
@@ -218,6 +224,15 @@ static Args parseArgs(int argc, char** argv) {
         else if (s == "--u-max-lu")    a.u_max_lu = std::stof(next());
         else if (s == "--lx-over-c")   a.lx_over_c = std::stof(next());
         else if (s == "--ly-over-c")   a.ly_over_c = std::stof(next());
+        else if (s == "--lz-over-c")   a.lz_over_c = std::stof(next());
+        else if (s == "--bc-z") {
+            std::string v = next();
+            if (v != "periodic" && v != "wall") {
+                std::cerr << "Unknown --bc-z: " << v << " (periodic|wall)\n";
+                std::exit(1);
+            }
+            a.bc_z_mode = v;
+        }
         else if (s == "--xle-over-c")  a.xLE_over_c = std::stof(next());
         else if (s == "--bgk")         a.use_bgk = 1;
         else if (s == "--trt")         a.use_trt = 1;
@@ -278,6 +293,8 @@ static Args parseArgs(int argc, char** argv) {
               "  --amr-enable           [Phase 1] allocate isolated fine patch around NACA (no coupling yet)\n"
               "  --amr-x-lo X / --amr-x-hi X    patch x extent in chord units (rel xLE; default -0.05 / +1.05, AUTO-EXPANDS to airfoil bbox + 0.06c margin)\n"
               "  --amr-y-lo Y / --amr-y-hi Y    patch y extent in chord units (rel yLE; default ±0.10, AUTO-EXPANDS to airfoil bbox + 0.06c margin)\n"
+              "  --lz-over-c Z     span in chord units; overrides --nz-thin via nz=round(resolution*Z)\n"
+              "  --bc-z M          z-direction BC: periodic (default) | wall (finite-span)\n"
               "  --shape stl --stl-file PATH    load STL geometry (ASCII or binary)\n"
               "  --stl-scale X                  uniform scale applied to STL vertices (default 1.0)\n"
               "  --stl-tx X / --stl-ty Y / --stl-tz Z  translation (m) applied after scaling\n"
@@ -546,6 +563,87 @@ __device__ inline float lookup_sparse_qf_local(
     return 0.5f;
 }
 
+// G (2026-05-21): per-z-slice MEM force probe for spanwise Cl(z) analysis.
+// Same formula as memForceNaca_QBB_sparse, but atomicAdd's to Fx[z]/Fy[z]/Fz[z]
+// instead of scalar totals. Caller integrates over z to recover the totals.
+// For Phase 3.2 finite-span wing this gives sectional lift distribution.
+__global__ void memForceNaca_QBB_sparse_perz(
+    const float* __restrict__ f,
+    const unsigned char* __restrict__ solid_mask,
+    const int*           __restrict__ qf_offset,
+    const unsigned char* __restrict__ qf_link_q,
+    const float*         __restrict__ qf_link_val,
+    float omega,
+    int nx, int ny, int nz,
+    double* Fx_z, double* Fy_z, double* Fz_z)
+{
+    using lbm::core::D3Q27;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    const int idz = blockIdx.z * blockDim.z + threadIdx.z;
+    if (idx >= nx || idy >= ny || idz >= nz) return;
+
+    const int id = idx + idy * nx + idz * nx * ny;
+    const int n_cells = nx * ny * nz;
+    if (solid_mask[id] != 0) return;
+
+    float rho = 0.0f, mx = 0.0f, my = 0.0f, mz = 0.0f;
+    #pragma unroll
+    for (int q = 0; q < 27; ++q) {
+        const float fq = f[id + q * n_cells];
+        rho += fq;
+        mx += ex27[q] * fq;
+        my += ey27[q] * fq;
+        mz += ez27[q] * fq;
+    }
+    const float rho_safe = fmaxf(rho, 1e-12f);
+    const float ux = mx / rho_safe;
+    const float uy = my / rho_safe;
+    const float uz = mz / rho_safe;
+
+    const float inv_one_minus_omega = 1.0f / (1.0f - omega);
+    constexpr float QMIN_F = 1e-3f;
+    constexpr float QMAX_F = 0.999f;
+
+    double fx_local = 0.0, fy_local = 0.0, fz_local = 0.0;
+    for (int q = 1; q < 27; ++q) {
+        int dst_x = idx + ex27[q];
+        int dst_y = idy + ey27[q];
+        int dst_z = idz + ez27[q];
+        if (dst_z < 0)  dst_z += nz;
+        if (dst_z >= nz) dst_z -= nz;
+        if (dst_x < 0 || dst_x >= nx || dst_y < 0 || dst_y >= ny) continue;
+        const int dst_id = dst_x + dst_y * nx + dst_z * nx * ny;
+        if (solid_mask[dst_id] == 0) continue;
+
+        const int q_opp = lbm::core::opposite27[q];
+        float qf = lookup_sparse_qf_local(id, (unsigned char)q,
+            qf_offset, qf_link_q, qf_link_val);
+        if (qf > QMAX_F) qf = QMAX_F;
+        if (qf < QMIN_F) qf = QMIN_F;
+
+        const float f_in  = f[id + q     * n_cells];
+        const float f_out = f[id + q_opp * n_cells];
+
+        const float feq_a   = D3Q27::computeEquilibrium(q,     rho, ux, uy, uz);
+        const float feq_b   = D3Q27::computeEquilibrium(q_opp, rho, ux, uy, uz);
+        const float feq_sym = feq_a + feq_b;
+
+        const float t1 = (f_in - f_out)
+                       + (f_in + f_out - omega * feq_sym) * inv_one_minus_omega;
+        const float t2 = qf * (f_in + f_out) / (1.0f + qf);
+        const float f_out_new = ((1.0f - qf) / (1.0f + qf)) * 0.5f * t1 + t2;
+
+        const double sum = (double)f_in + (double)f_out_new;
+        fx_local += (double)ex27[q] * sum;
+        fy_local += (double)ey27[q] * sum;
+        fz_local += (double)ez27[q] * sum;
+    }
+    if (fx_local != 0.0) atomicAdd(&Fx_z[idz], fx_local);
+    if (fy_local != 0.0) atomicAdd(&Fy_z[idz], fy_local);
+    if (fz_local != 0.0) atomicAdd(&Fz_z[idz], fz_local);
+}
+
 __global__ void memForceNaca_QBB_sparse(
     const float* __restrict__ f,
     const unsigned char* __restrict__ solid_mask,
@@ -726,7 +824,19 @@ int main(int argc, char** argv) {
     const float dx = chord / args.resolution;
     const int nx = (int)std::round(Lx / dx);
     const int ny = (int)std::round(Ly / dx) + 1;
-    const int nz = args.nz_thin;
+    // nz: if --lz-over-c > 0, derive nz = round(resolution * lz_over_c).
+    //     else use legacy --nz-thin (default 4 for quasi-2D).
+    // 3D NACA wing demos (T2.1) use --lz-over-c to make span an explicit
+    // chord-unit parameter; rest of the code path handles any nz >= 4.
+    const int nz = (args.lz_over_c > 0.0f)
+                   ? std::max(4, (int)std::round(args.resolution * args.lz_over_c))
+                   : args.nz_thin;
+    if (args.bc_z_mode == "wall") {
+        std::cerr << "WARNING: --bc-z wall accepted at CLI level but not yet wired\n"
+                     "         into the streaming kernel (which always uses z-periodic).\n"
+                     "         Finite-span wing demo (Phase 3.2) requires this — TODO.\n"
+                     "         Falling back to periodic z for now.\n";
+    }
     const int n_cells = nx * ny * nz;
 
     const float dt = args.u_max_lu * dx / U_inf_phys;

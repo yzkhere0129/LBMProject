@@ -13,11 +13,20 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = "/home/yzk/CompressibleCFD"
+# Note (2026-05-21 cleanup): output_30k_amr_bicubic/ and output_30k_amr_r1b/
+# were deleted to free disk. Their conclusions are documented in HANDOFF
+# §14 (R1 bicubic Cl_rms 27× blowup) and §16 (R1b 1D-cubic same failure mode).
+# If you want to regenerate the verdict plot with the R1/R1b bars, rerun:
+#   bash scripts/aero/run_f18_demo.sh ...   # similar binary, replace stl args
+# The plot below loads only what's present; missing rows are skipped.
 CASES = [
     ("AMR-OFF (baseline)",                "output_30k_amr_off",            "C0"),
     ("AMR-ON ±0.10c bilin (BUG patch)",   "output_30k_amr_on_bilin_time",  "C3"),
     ("AMR-ON expand bilin (§13 FIX)",     "output_30k_amr_patch_fixed",    "C1"),
-    ("AMR-ON 1D-cubic R1b",               "output_30k_amr_r1b",            "C2"),
+    # R1 + R1b dirs deleted post-verdict; keep entries here as documentation
+    # of what comparison was made. They'll silently skip in settled() below.
+    # ("AMR-ON 2D-bicubic R1",            "output_30k_amr_bicubic",        "C5"),
+    # ("AMR-ON 1D-cubic R1b",             "output_30k_amr_r1b",            "C2"),
 ]
 LIT_CL = 0.57
 LIT_CD = 0.15
