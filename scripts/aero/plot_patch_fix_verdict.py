@@ -16,8 +16,8 @@ ROOT = "/home/yzk/CompressibleCFD"
 CASES = [
     ("AMR-OFF (baseline)",                "output_30k_amr_off",            "C0"),
     ("AMR-ON ±0.10c bilin (BUG patch)",   "output_30k_amr_on_bilin_time",  "C3"),
-    ("AMR-ON expand bilin (FIX patch)",   "output_30k_amr_patch_fixed",    "C1"),
-    ("AMR-ON expand BICUBIC (R1)",        "output_30k_amr_bicubic",        "C2"),
+    ("AMR-ON expand bilin (§13 FIX)",     "output_30k_amr_patch_fixed",    "C1"),
+    ("AMR-ON 1D-cubic R1b",               "output_30k_amr_r1b",            "C2"),
 ]
 LIT_CL = 0.57
 LIT_CD = 0.15
@@ -66,27 +66,24 @@ if len(valid) < 2:
 
 # ===== Verdict =====
 if len(valid) >= 4:
-    bug = valid[1]; bilin_fix = valid[2]; bicubic = valid[3]
-    print("\n=== Bicubic R1 verdict (vs §13 bilin-FIX) ===")
-    cd_change = (bicubic["Cd_s"] - bilin_fix["Cd_s"]) / bilin_fix["Cd_s"] * 100
-    cl_change = (bicubic["Cl_s"] - bilin_fix["Cl_s"]) / bilin_fix["Cl_s"] * 100
-    ld_change = (bicubic["L_D"] - bilin_fix["L_D"]) / bilin_fix["L_D"] * 100
-    print(f"  Cd change bilin → bicubic:  {cd_change:+.1f}%   (lit target ~0.15)")
-    print(f"  Cl change bilin → bicubic:  {cl_change:+.1f}%   (lit target  ~0.57)")
-    print(f"  L/D change bilin → bicubic: {ld_change:+.1f}%   (lit target  ~3.80)")
+    bilin_fix = valid[2]; r1b = valid[3]
+    print("\n=== R1b verdict (vs §13 bilin-FIX) ===")
+    cd_change = (r1b["Cd_s"] - bilin_fix["Cd_s"]) / bilin_fix["Cd_s"] * 100
+    cl_change = (r1b["Cl_s"] - bilin_fix["Cl_s"]) / bilin_fix["Cl_s"] * 100
+    rms_change = (r1b["Cl_e"] - bilin_fix["Cl_e"]) / bilin_fix["Cl_e"] * 100
+    print(f"  Cl change bilin → R1b:    {cl_change:+.1f}%   (closer to lit 0.57 = better)")
+    print(f"  Cd change bilin → R1b:    {cd_change:+.1f}%   (within plateau band → physical)")
+    print(f"  Cl_rms change:            {rms_change:+.1f}%   (smaller = more stable)")
+    print(f"  Cl gap to lit 0.57:       {r1b['cl_gap']:.1f}%   (vs bilin-FIX {bilin_fix['cl_gap']:.1f}%)")
     print()
-    if cd_change < -20:
-        print(f"  ✓ Cd dropped substantially: Lagrava O(1) interface error CONFIRMED + FIXED")
-    elif cd_change < -5:
-        print(f"  ~ Cd dropped {cd_change:+.1f}%: partial improvement, more work needed")
+    if r1b["cl_gap"] < 15 and r1b["Cl_e"] < bilin_fix["Cl_e"] * 1.5:
+        print(f"  ✓ Cl gap < 15% with controlled rms — R1b SUCCESS")
+    elif r1b["cl_gap"] < bilin_fix["cl_gap"]:
+        print(f"  ~ Cl improved (gap {bilin_fix['cl_gap']:.0f}%→{r1b['cl_gap']:.0f}%) but still > 15%")
     else:
-        print(f"  ✗ Cd did NOT drop: bicubic did not fix the issue")
-    if bicubic["ld_gap"] < 30:
-        print(f"  ✓ L/D gap {bicubic['ld_gap']:.1f}% (< 30%): physical credibility achieved")
-    elif bicubic["ld_gap"] < bilin_fix["ld_gap"]:
-        print(f"  ~ L/D gap improved {bilin_fix['ld_gap']:.0f}%→{bicubic['ld_gap']:.0f}%, still > 30%")
-    else:
-        print(f"  ✗ L/D gap WORSE: something else dominates Cd")
+        print(f"  ✗ Cl gap did not improve — accept bilin-FIX")
+    if r1b["Cl_e"] > bilin_fix["Cl_e"] * 2:
+        print(f"  ✗ Cl_rms blown up — instability (compare to R1 27× bicubic disaster)")
 
 # ===== Plot 1: bars =====
 fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
