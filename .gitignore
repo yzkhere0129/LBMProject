@@ -109,6 +109,9 @@ test_reports/
 backups/
 Testing/
 
+# User-provided STL models (large, not for git)
+Model/
+
 # Config files (assuming they are for specific tests and not part of the core config)
 /configs/
 
