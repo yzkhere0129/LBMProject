@@ -94,6 +94,11 @@ struct Args {
     // Phase 2.7 sanity-test flag: skip obstacle stamp (no NACA, no qfrac).
     // Combined with --amr-enable runs uniform-flow test through AMR pipeline.
     int   no_stamp = 0;
+    // G — per-z spanwise force breakdown. Writes per-slice Fx/Fy/Fz to
+    // <output>/forces_perz.csv at each probe step (one row per probe sample,
+    // columns: step, z0_Fx, z0_Fy, z0_Fz, z1_Fx, ..., zN-1_Fz).
+    // Useful for finite-span wing demos (sectional Cl(z) plot).
+    int   perz_force = 0;
     // STL geometry (--shape stl).
     std::string stl_file;
     float stl_scale = 1.0f;
@@ -276,6 +281,7 @@ static Args parseArgs(int argc, char** argv) {
         else if (s == "--amr-y-hi")    a.amr_y_hi = std::stof(next());
         else if (s == "--amr-refine")  a.amr_refine = std::stoi(next());
         else if (s == "--no-stamp")    a.no_stamp = 1;
+        else if (s == "--perz-force")  a.perz_force = 1;
         else if (s == "-h" || s == "--help") {
             std::cout <<
               "Usage: aero_naca0012_cumulant [opts]\n"
@@ -295,6 +301,7 @@ static Args parseArgs(int argc, char** argv) {
               "  --amr-y-lo Y / --amr-y-hi Y    patch y extent in chord units (rel yLE; default ±0.10, AUTO-EXPANDS to airfoil bbox + 0.06c margin)\n"
               "  --lz-over-c Z     span in chord units; overrides --nz-thin via nz=round(resolution*Z)\n"
               "  --bc-z M          z-direction BC: periodic (default) | wall (finite-span)\n"
+              "  --perz-force      write per-z-slice forces to forces_perz.csv (needs --bc qbb-snode + --sparse-qfrac)\n"
               "  --shape stl --stl-file PATH    load STL geometry (ASCII or binary)\n"
               "  --stl-scale X                  uniform scale applied to STL vertices (default 1.0)\n"
               "  --stl-tx X / --stl-ty Y / --stl-tz Z  translation (m) applied after scaling\n"
@@ -383,7 +390,8 @@ __global__ void streamD3Q27_naca(
     const float* __restrict__ f_src,
     float* __restrict__ f_dst,
     const unsigned char* __restrict__ solid_mask,
-    int nx, int ny, int nz)
+    int nx, int ny, int nz,
+    bool z_wall)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int idy = blockIdx.y * blockDim.y + threadIdx.y;
@@ -398,9 +406,15 @@ __global__ void streamD3Q27_naca(
         int src_x = idx - ex27[q];
         int src_y = idy - ey27[q];
         int src_z = idz - ez27[q];
-        if (src_z < 0)  src_z += nz;
-        if (src_z >= nz) src_z -= nz;
-        bool out_of_domain = false;
+        bool oob_z = false;
+        if (src_z < 0 || src_z >= nz) {
+            if (z_wall) { oob_z = true; }
+            else {
+                if (src_z < 0)  src_z += nz;
+                if (src_z >= nz) src_z -= nz;
+            }
+        }
+        bool out_of_domain = oob_z;
         if (src_x < 0 || src_x >= nx) out_of_domain = true;
         if (src_y < 0 || src_y >= ny) out_of_domain = true;
         if (out_of_domain) {
@@ -831,11 +845,9 @@ int main(int argc, char** argv) {
     const int nz = (args.lz_over_c > 0.0f)
                    ? std::max(4, (int)std::round(args.resolution * args.lz_over_c))
                    : args.nz_thin;
-    if (args.bc_z_mode == "wall") {
-        std::cerr << "WARNING: --bc-z wall accepted at CLI level but not yet wired\n"
-                     "         into the streaming kernel (which always uses z-periodic).\n"
-                     "         Finite-span wing demo (Phase 3.2) requires this — TODO.\n"
-                     "         Falling back to periodic z for now.\n";
+    const bool z_wall = (args.bc_z_mode == "wall");
+    if (z_wall) {
+        std::cout << " --bc-z wall: halfway BB at z=0/z=nz-1 faces (Phase 3.2 finite-span).\n";
     }
     const int n_cells = nx * ny * nz;
 
@@ -1061,6 +1073,29 @@ int main(int argc, char** argv) {
     csv << "step,t,Fx_LU,Fy_LU,Fz_LU,Fx_phys_per_m,Fy_phys_per_m,Cd,Cl,total_mass,ux_mean,ux_std,ux_max_dev\n";
     csv.precision(8);
     double initial_total_mass = -1.0;  // captured at step 0; sentinel until then
+
+    // L — per-z force probe output. Opened only when --perz-force is set.
+    // Format: step then 3*nz columns z0_Fx,z0_Fy,z0_Fz,z1_Fx,...,zN_Fz (lattice units).
+    std::ofstream csv_perz;
+    double* d_Fx_z = nullptr;
+    double* d_Fy_z = nullptr;
+    double* d_Fz_z = nullptr;
+    if (args.perz_force) {
+        if (!use_qbb || !args.sparse_qfrac) {
+            std::cerr << "ERROR: --perz-force requires --bc qbb-snode + --sparse-qfrac.\n";
+            std::exit(1);
+        }
+        csv_perz.open(args.output_dir + "/forces_perz.csv");
+        csv_perz << "step";
+        for (int kz = 0; kz < nz; ++kz)
+            csv_perz << ",z" << kz << "_Fx,z" << kz << "_Fy,z" << kz << "_Fz";
+        csv_perz << "\n";
+        csv_perz.precision(8);
+        CUDA_CHECK(cudaMalloc(&d_Fx_z, nz * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_Fy_z, nz * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_Fz_z, nz * sizeof(double)));
+        std::cout << " --perz-force ON: writing forces_perz.csv at every probe step\n";
+    }
 
     const float rho_phys = 1.0f;
     const float Lz_phys = nz * dx;
@@ -1288,6 +1323,29 @@ int main(int argc, char** argv) {
                                                 d_Fx, d_Fy, d_Fz);
             }
             CUDA_CHECK_KERNEL();
+
+            // L — per-z force probe (optional, --perz-force). Same probe step
+            // as the scalar force, separate kernel writes Fx_z[nz]/Fy_z/Fz_z.
+            if (args.perz_force && use_qbb && args.sparse_qfrac) {
+                CUDA_CHECK(cudaMemset(d_Fx_z, 0, nz * sizeof(double)));
+                CUDA_CHECK(cudaMemset(d_Fy_z, 0, nz * sizeof(double)));
+                CUDA_CHECK(cudaMemset(d_Fz_z, 0, nz * sizeof(double)));
+                memForceNaca_QBB_sparse_perz<<<grid3, block3>>>(
+                    d_f_src, d_solid, d_qf_offset, d_qf_link_q, d_qf_link_val,
+                    wall_omega, nx, ny, nz, d_Fx_z, d_Fy_z, d_Fz_z);
+                CUDA_CHECK_KERNEL();
+                CUDA_CHECK(cudaDeviceSynchronize());
+                std::vector<double> hFx(nz), hFy(nz), hFz(nz);
+                CUDA_CHECK(cudaMemcpy(hFx.data(), d_Fx_z, nz*sizeof(double), cudaMemcpyDeviceToHost));
+                CUDA_CHECK(cudaMemcpy(hFy.data(), d_Fy_z, nz*sizeof(double), cudaMemcpyDeviceToHost));
+                CUDA_CHECK(cudaMemcpy(hFz.data(), d_Fz_z, nz*sizeof(double), cudaMemcpyDeviceToHost));
+                csv_perz << step;
+                for (int kz = 0; kz < nz; ++kz) {
+                    csv_perz << "," << hFx[kz] << "," << hFy[kz] << "," << hFz[kz];
+                }
+                csv_perz << "\n";
+            }
+
             CUDA_CHECK(cudaDeviceSynchronize());
             double Fx, Fy, Fz;
             CUDA_CHECK(cudaMemcpy(&Fx, d_Fx, sizeof(double), cudaMemcpyDeviceToHost));
@@ -1362,14 +1420,14 @@ int main(int argc, char** argv) {
             physics::cumulant::streamD3Q27_naca_qbb_sparse<<<grid3, block3>>>(
                 d_f_src, d_f_dst, d_solid,
                 d_qf_offset, d_qf_link_q, d_qf_link_val,
-                nx, ny, nz, wall_omega);
+                nx, ny, nz, wall_omega, z_wall);
         } else if (use_qbb) {
             physics::cumulant::streamD3Q27_naca_qbb<<<grid3, block3>>>(
                 d_f_src, d_f_dst, d_solid, d_qfrac,
-                nx, ny, nz, wall_omega);
+                nx, ny, nz, wall_omega, z_wall);
         } else {
             streamD3Q27_naca<<<grid3, block3>>>(d_f_src, d_f_dst, d_solid,
-                                                nx, ny, nz);
+                                                nx, ny, nz, z_wall);
         }
         CUDA_CHECK_KERNEL();
         CUDA_CHECK(cudaDeviceSynchronize());
@@ -1575,5 +1633,8 @@ int main(int argc, char** argv) {
     if (d_qf_offset)  cudaFree(d_qf_offset);
     if (d_qf_link_q)  cudaFree(d_qf_link_q);
     if (d_qf_link_val) cudaFree(d_qf_link_val);
+    if (d_Fx_z) cudaFree(d_Fx_z);
+    if (d_Fy_z) cudaFree(d_Fy_z);
+    if (d_Fz_z) cudaFree(d_Fz_z);
     return 0;
 }

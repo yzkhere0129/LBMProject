@@ -50,7 +50,8 @@ __global__ void streamD3Q27_naca_qbb(
     const unsigned char* __restrict__ solid_mask,
     const float* __restrict__ qfrac,
     int nx, int ny, int nz,
-    float omega);
+    float omega,
+    bool z_wall = false);  // K (2026-05-21): true → halfway BB at z=0/nz-1; default periodic
 
 /**
  * @brief Sparse-qfrac variant. qfrac is stored as CSR (offset + link_q +
@@ -66,7 +67,8 @@ __global__ void streamD3Q27_naca_qbb_sparse(
     const unsigned char* __restrict__ qf_link_q,    // K
     const float*         __restrict__ qf_link_val,  // K
     int nx, int ny, int nz,
-    float omega);
+    float omega,
+    bool z_wall = false);  // K (2026-05-21): true → halfway BB at z=0/nz-1; default periodic
 
 } // namespace cumulant
 } // namespace physics

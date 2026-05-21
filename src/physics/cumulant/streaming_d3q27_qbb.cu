@@ -46,7 +46,8 @@ __global__ void streamD3Q27_naca_qbb(
     const unsigned char* __restrict__ solid_mask,
     const float* __restrict__ qfrac,
     int nx, int ny, int nz,
-    float omega)
+    float omega,
+    bool z_wall)
 {
     using lbm::core::ex27;
     using lbm::core::ey27;
@@ -90,15 +91,26 @@ __global__ void streamD3Q27_naca_qbb(
         int src_y = idy - ey27[Q];
         int src_z = idz - ez27[Q];
 
-        // z is periodic
-        if (src_z < 0)   src_z += nz;
-        if (src_z >= nz) src_z -= nz;
+        // z: periodic by default; full bounce-back if `z_wall` flag is set.
+        // (Phase 3.2 finite-span wing demos need no-slip at z=0/z=nz-1.)
+        bool oob_z = false;
+        if (src_z < 0 || src_z >= nz) {
+            if (z_wall) {
+                oob_z = true;  // handle below with opposite27 reflection
+            } else {
+                if (src_z < 0)   src_z += nz;
+                if (src_z >= nz) src_z -= nz;
+            }
+        }
 
         // x: halfway BB (driver overwrites i=0/nx-1 with inlet/outlet);
-        // y: free-slip mirror (preserves tangential u_x, flips u_y).
+        // y: free-slip mirror (preserves tangential u_x, flips u_y);
+        // z (if wall): halfway BB (opposite27).
         bool oob_x = (src_x < 0 || src_x >= nx);
         bool oob_y = (src_y < 0 || src_y >= ny);
-        if (oob_x || oob_y) {
+        if (oob_x || oob_y || oob_z) {
+            // Priority: y mirror takes precedence (preserves tangent at top/bottom),
+            // else opposite27 for x/z walls.
             const int reflected_q = oob_y ? y_mirror27_qbb[Q]
                                           : opposite27[Q];
             f_dst[id + Q * n_cells] = f_src[id + reflected_q * n_cells];
@@ -165,7 +177,8 @@ __global__ void streamD3Q27_naca_qbb_sparse(
     const unsigned char* __restrict__ qf_link_q,
     const float*         __restrict__ qf_link_val,
     int nx, int ny, int nz,
-    float omega)
+    float omega,
+    bool z_wall)
 {
     using lbm::core::ex27;
     using lbm::core::ey27;
@@ -206,12 +219,18 @@ __global__ void streamD3Q27_naca_qbb_sparse(
         int src_y = idy - ey27[Q];
         int src_z = idz - ez27[Q];
 
-        if (src_z < 0)   src_z += nz;
-        if (src_z >= nz) src_z -= nz;
+        bool oob_z = false;
+        if (src_z < 0 || src_z >= nz) {
+            if (z_wall) { oob_z = true; }
+            else {
+                if (src_z < 0)   src_z += nz;
+                if (src_z >= nz) src_z -= nz;
+            }
+        }
 
         bool oob_x = (src_x < 0 || src_x >= nx);
         bool oob_y = (src_y < 0 || src_y >= ny);
-        if (oob_x || oob_y) {
+        if (oob_x || oob_y || oob_z) {
             const int reflected_q = oob_y ? y_mirror27_qbb[Q]
                                           : opposite27[Q];
             f_dst[id + Q * n_cells] = f_src[id + reflected_q * n_cells];
