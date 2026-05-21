@@ -99,6 +99,11 @@ struct Args {
     // columns: step, z0_Fx, z0_Fy, z0_Fz, z1_Fx, ..., zN-1_Fz).
     // Useful for finite-span wing demos (sectional Cl(z) plot).
     int   perz_force = 0;
+    // O (2026-05-21): NACA span-limit. If span_lo_over_lz / span_hi_over_lz
+    // are in (0, 1), stamp NACA only in z fraction [span_lo, span_hi] · nz.
+    // Default 0..1 → stamp full nz (legacy z-extruded). For Phase 3.2 demos.
+    float span_lo_over_lz = 0.0f;
+    float span_hi_over_lz = 1.0f;
     // STL geometry (--shape stl).
     std::string stl_file;
     float stl_scale = 1.0f;
@@ -282,6 +287,8 @@ static Args parseArgs(int argc, char** argv) {
         else if (s == "--amr-refine")  a.amr_refine = std::stoi(next());
         else if (s == "--no-stamp")    a.no_stamp = 1;
         else if (s == "--perz-force")  a.perz_force = 1;
+        else if (s == "--span-lo")     a.span_lo_over_lz = std::stof(next());
+        else if (s == "--span-hi")     a.span_hi_over_lz = std::stof(next());
         else if (s == "-h" || s == "--help") {
             std::cout <<
               "Usage: aero_naca0012_cumulant [opts]\n"
@@ -302,6 +309,7 @@ static Args parseArgs(int argc, char** argv) {
               "  --lz-over-c Z     span in chord units; overrides --nz-thin via nz=round(resolution*Z)\n"
               "  --bc-z M          z-direction BC: periodic (default) | wall (finite-span)\n"
               "  --perz-force      write per-z-slice forces to forces_perz.csv (needs --bc qbb-snode + --sparse-qfrac)\n"
+              "  --span-lo / --span-hi  NACA stamp z-fraction [0,1]; default 0..1 (full extrude). Use 0.25..0.75 for finite-span wing.\n"
               "  --shape stl --stl-file PATH    load STL geometry (ASCII or binary)\n"
               "  --stl-scale X                  uniform scale applied to STL vertices (default 1.0)\n"
               "  --stl-tx X / --stl-ty Y / --stl-tz Z  translation (m) applied after scaling\n"
@@ -959,9 +967,20 @@ int main(int argc, char** argv) {
                   << " s\n";
         shape_name = "stl";
     } else {
+        // Span limit indices (default = full nz)
+        const int k_z_lo = (args.span_lo_over_lz > 0.0f)
+                           ? (int)std::round(args.span_lo_over_lz * nz) : -1;
+        const int k_z_hi = (args.span_hi_over_lz < 1.0f)
+                           ? (int)std::round(args.span_hi_over_lz * nz) : -1;
+        if (k_z_lo >= 0 || k_z_hi >= 0) {
+            std::cout << " NACA span-limit: stamping z ∈ ["
+                      << (k_z_lo < 0 ? 0 : k_z_lo) << ", "
+                      << (k_z_hi < 0 ? nz : k_z_hi) << ") (finite-span wing).\n";
+        }
         physics::aero::stampNacaAirfoil4Digit(
             h_mask, nx, ny, nz, dx,
-            xLE, yLE, chord, /*thickness%*/ 12.0f, alpha_rad);
+            xLE, yLE, chord, /*thickness%*/ 12.0f, alpha_rad,
+            k_z_lo, k_z_hi);
         shape_name = "naca0012";
     }
     std::cout << " Shape: " << shape_name << "\n";

@@ -90,7 +90,13 @@ inline void stampNacaAirfoil4Digit(std::vector<unsigned char>& mask,
                                    int nx, int ny, int nz, float dx,
                                    float cx_LE, float cy_LE,
                                    float chord, float thick_pct,
-                                   float alpha_rad) {
+                                   float alpha_rad,
+                                   int k_z_lo = -1, int k_z_hi = -1) {
+    // Span-limit (O, 2026-05-21): if k_z_lo / k_z_hi ≥ 0, only stamp at
+    // z indices k ∈ [k_z_lo, k_z_hi). Default -1/-1 → stamp all z (legacy
+    // z-extruded behavior). For finite-span wing demos.
+    const int k_lo = (k_z_lo < 0) ? 0  : k_z_lo;
+    const int k_hi = (k_z_hi < 0) ? nz : k_z_hi;
     const float t = thick_pct / 100.0f;
     // Standard aero convention: α>0 = "nose up" → TE below LE (chord slope -sin α).
     // Stamper applies R(-α_std) = R(+alpha_rad) on world→chord with sin negated.
@@ -117,7 +123,7 @@ inline void stampNacaAirfoil4Digit(std::vector<unsigned char>& mask,
             const float s = xr / chord;
             const float y_t = naca_thickness(s) * chord;
             if (s >= 0.0f && s <= 1.0f && std::abs(yr) <= y_t) {
-                for (int k = 0; k < nz; ++k) {
+                for (int k = k_lo; k < k_hi; ++k) {
                     const size_t id =
                         static_cast<size_t>(i) +
                         static_cast<size_t>(j) * nx +
