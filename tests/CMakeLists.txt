@@ -95,6 +95,13 @@ gtest_discover_tests(test_vtk_liquid_fraction)
 # code uses only CELL_FLUID/CELL_SOLID constants which nvcc compiles fine.
 add_cuda_test(test_stl_pipeline aero/test_stl_pipeline.cu)
 
+# Phase 3.2 smoke (CPU-only logic): span-limit NACA stamp + qfrac on it.
+# .cpp file but compiled via nvcc through add_cuda_test to pull in lbm_core.
+add_executable(test_phase3_2_smoke aero/test_phase3_2_smoke.cpp)
+set_source_files_properties(aero/test_phase3_2_smoke.cpp PROPERTIES LANGUAGE CUDA)
+set_target_properties(test_phase3_2_smoke PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_link_libraries(test_phase3_2_smoke lbm_core lbm_physics CUDA::cudart)
+
 # Unit tests - VTK Vector I/O (Phase 5: Vector field output)
 # DISABLED: API mismatch with VTKWriter::writeStructuredGridWithVectors
 # TODO: Update test to match new VTKWriter API
