@@ -11,9 +11,10 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 find_package(CUDAToolkit REQUIRED)
 
 # Set CUDA architecture (adjust for your GPU)
-# Common architectures: 75 (RTX 20xx), 80 (A100), 86 (RTX 30xx), 89 (RTX 40xx)
+# Common architectures: 61 (GTX 1080/Pascal), 75 (RTX 20xx/T4),
+# 80 (A100), 86 (RTX 30xx/A40), 89 (RTX 40xx), 90 (H100).
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 75 80 86)
+    set(CMAKE_CUDA_ARCHITECTURES 61 75 80 86)
 endif()
 
 # Compiler flags
