@@ -24,6 +24,10 @@ ap.add_argument("--ly", type=float, default=8.0)
 ap.add_argument("--lz", type=float, default=4.0)
 ap.add_argument("--x-nose", type=float, default=3.0,
                 help="nose position from inlet, in chord units")
+ap.add_argument("--model-len", type=float, default=0.0,
+                help="true model length for scaling (chord=1/model-len). "
+                     "Use the un-pitched length so a pitched aircraft keeps "
+                     "constant size. 0 = derive from x-extent (un-pitched).")
 a = ap.parse_args()
 
 
@@ -37,7 +41,7 @@ def bbox(path):
 
 
 lo, hi = bbox(a.stl)
-length_model = hi[0] - lo[0]          # x = length after alignment
+length_model = a.model_len if a.model_len > 0 else (hi[0] - lo[0])
 scale = 1.0 / length_model            # -> aircraft length = 1 chord = 1 m
 
 # Scaled bbox.

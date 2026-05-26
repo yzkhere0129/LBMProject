@@ -20,6 +20,9 @@ import numpy as np
 ap = argparse.ArgumentParser()
 ap.add_argument("input_stl")
 ap.add_argument("output_stl")
+ap.add_argument("--pitch", type=float, default=0.0,
+                help="nose-up pitch in deg about the span (y) axis = angle "
+                     "of attack. Flow stays +x; positive lifts the nose.")
 args = ap.parse_args()
 
 
@@ -105,10 +108,24 @@ tail = Pr[:, 0] > 0.5 * Pr[:, 0].max()
 if abs(Pr[tail, 2].min()) > Pr[tail, 2].max():
     Pr[:, 1] *= -1.0
     Pr[:, 2] *= -1.0
+
+# True aircraft length (invariant under pitch) = x-extent before pitching.
+model_len = Pr[:, 0].ptp()
+
+# Optional nose-up pitch about the span (y) axis: rotate in the x-z plane.
+# Nose is at -x; positive theta sends it to +z (nose up = +AoA).
+if args.pitch != 0.0:
+    th = np.radians(args.pitch)
+    c_, s_ = np.cos(th), np.sin(th)
+    x, z = Pr[:, 0].copy(), Pr[:, 2].copy()
+    Pr[:, 0] = x * c_ + z * s_
+    Pr[:, 2] = -x * s_ + z * c_
+
 tris = Pr.reshape(-1, 3, 3).astype(np.float32)
 write_binary_stl(args.output_stl, tris)
 
 span = Pr.max(0) - Pr.min(0)
+print(f"model_len={model_len:.4f}")     # machine-readable: true chord length
 print(f"aligned bbox span  x(len)={span[0]:.1f}  y(span)={span[1]:.1f}  z(vert)={span[2]:.1f}")
 print(f"aspect  span/len={span[1]/span[0]:.2f}  vert/len={span[2]/span[0]:.2f}")
 print(f"wrote {args.output_stl}  ({len(tris)} triangles)")

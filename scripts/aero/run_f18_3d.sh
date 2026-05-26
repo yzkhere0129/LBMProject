@@ -14,7 +14,9 @@
 # OOM / GPU contention: drop to RES=32 LY=10 (15.8M, ~3.7 GB).
 
 set -u
-ROOT=/home/yzk/CompressibleCFD
+# Repo root, derived from this script's location (scripts/aero/run_f18_3d.sh)
+# so the launcher works wherever the repo is cloned (incl. the lab machine).
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 BIN=$ROOT/build/aero_naca0012_cumulant
 SRC=$ROOT/Model/obj_1_FA-18E_Final01.stl
 ALIGNED=$ROOT/test_data/f18_3d_aligned.stl
