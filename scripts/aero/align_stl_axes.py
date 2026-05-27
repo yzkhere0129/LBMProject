@@ -82,7 +82,7 @@ e_len, e_span, e_vert = V[:, order[0]], V[:, order[1]], V[:, order[2]]
 s = P @ e_len
 lo, hi = s.min(), s.max(); L = hi - lo
 def end_width(mask):
-    return P[mask][:, :].dot(e_span).ptp()  # lateral spread proxy
+    return np.ptp(P[mask][:, :].dot(e_span))  # lateral spread proxy
 w_lo = end_width(s < lo + 0.12 * L)
 w_hi = end_width(s > hi - 0.12 * L)
 # nose = narrow end; we want nose at -x, i.e. nose should map to small x.
@@ -110,7 +110,7 @@ if abs(Pr[tail, 2].min()) > Pr[tail, 2].max():
     Pr[:, 2] *= -1.0
 
 # True aircraft length (invariant under pitch) = x-extent before pitching.
-model_len = Pr[:, 0].ptp()
+model_len = np.ptp(Pr[:, 0])
 
 # Optional nose-up pitch about the span (y) axis: rotate in the x-z plane.
 # Nose is at -x; positive theta sends it to +z (nose up = +AoA).
