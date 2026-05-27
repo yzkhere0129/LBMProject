@@ -14,6 +14,7 @@ disambiguated by cross-section width (nose end is the narrow pointed one).
 Output is recentered to the origin so CLI --stl-tx/ty/tz place it directly.
 """
 import argparse
+import os
 import struct
 import numpy as np
 
@@ -53,6 +54,7 @@ def load_stl(path):
 
 
 def write_binary_stl(path, tris):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "wb") as f:
         f.write(b"axis-aligned by align_stl_axes.py".ljust(80, b"\x00")[:80])
         f.write(struct.pack("<I", len(tris)))
