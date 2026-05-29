@@ -3,26 +3,33 @@
 Q = 1/2 (||Ω||² - ||S||²) where S = symmetric, Ω = antisymmetric parts of ∇u.
 Q > 0 cells are rotation-dominated → vortex.
 
+TUM-engineering style: nested TRANSLUCENT Q shells colored by |u| with a soft
+green map, over a bright sheened aircraft (real STL), framed nose-upstream-left
+with the wake trailing right.
+
 Pipeline:
-  1. Load .vtk snapshot (structured grid with velocity vectors).
-  2. Compute gradient + Q via PyVista's compute_derivative.
-  3. Extract isosurface at Q = max(top-1% quantile, 4% of Q_max) so we get
-     tight vortex cores rather than a fat low-Q envelope.
-  4. Color the isosurface by velocity magnitude (|u|).
-  5. Add the REAL aircraft surface: read the STL path + scale/translate the
-     solver used from <out_dir>/run.log and apply them (falls back to the
-     crude mask-broadcast box if run.log/STL are unavailable).
-  6. Clip the vortices to a focus box around the aircraft + near wake and
-     frame the camera tightly on it (no empty far field).
-  7. Render with off_screen Plotter → PNG.
+  1. Load snap_<step>.vtk (velocity vectors); compute Q via compute_derivative.
+  2. Draw 3 nested Q-isosurfaces at {4%, 10%, 22%} of Q_max, opacity 0.25/0.42/
+     0.68 (faint outer shell -> bright core), colored by |u| (cmap YlGn_r,
+     tight clim around freestream so the small in-core deficit shows).
+  3. Body = REAL transformed aircraft STL (scale/translate parsed from
+     <out_dir>/run.log; path re-resolved to this repo if logged elsewhere).
+     Colored by Cp if a sibling rho3d_<step>.vtk density field exists
+     (Cp=(rho-1)/(1.5 U^2)), else a bright grey sheen. Mask box is the fallback.
+  4. Clip vortices to a tight focus box (body + <wake_chords> downstream);
+     camera nose-left / wake-right, 3/4 from above-side; white bg.
+
+NOTE: a steady/laminar/coarse field has few vortices -> expect sparse shells,
+not a turbulent plume. The plume needs a turbulent re-run (higher Re + finer
+mesh), not a render tweak.
 
 Usage:
-  python3 scripts/aero/plot_q_isosurface.py <vtk_file> [<mask.txt>] [<out_png>] [<wake_chords>]
+  plot_q_isosurface.py <vtk> [<mask.txt>] [<out_png>] [<wake_chords>] [<body_mode>]
+  body_mode = auto (Cp if density present else grey) | cp | proxy | grey
 
   python3 scripts/aero/plot_q_isosurface.py \
-      output_f18_3d_5k/snap_0005000.vtk \
-      output_f18_3d_5k/mask_zmid.txt \
-      images/f18_q_iso.png 1.3
+      output_f18_3d_5k/snap_0005000.vtk output_f18_3d_5k/mask_zmid.txt \
+      images/f18_q_iso.png 1.5
 """
 import os
 import re
@@ -107,7 +114,37 @@ def build_body_mesh_from_mask(mask_path, mesh):
     return surf
 
 
-def main(vtk_path, mask_path=None, out_path=None, q_frac=0.99, down=1.3):
+def find_density_vtk(vtk_path):
+    """The solver writes a sibling rho3d_<step>.vtk (SCALARS density) next to
+    each snap_<step>.vtk. Return its path if present, else None."""
+    cand = vtk_path.replace("snap_", "rho3d_")
+    return cand if (cand != vtk_path and os.path.exists(cand)) else None
+
+
+def resolve_body(vtk_path, mask_path, mesh):
+    """Load the real transformed aircraft STL (transform from run.log; path
+    re-resolved to this repo if logged from another machine). Mask box fallback."""
+    out_dir = os.path.dirname(os.path.abspath(vtk_path))
+    rl = parse_run_log(out_dir)
+    if rl is not None:
+        stl_path, scale, t = rl
+        if not os.path.exists(stl_path):
+            cand = os.path.join(os.path.dirname(out_dir), "test_data",
+                                os.path.basename(stl_path))
+            if os.path.exists(cand):
+                stl_path = cand
+        print(f"Body: real STL {stl_path} (scale {scale}, translate {t})")
+        body = load_stl_body(stl_path, scale, t)
+        if body is not None:
+            print(f"  STL body points = {body.n_points}")
+            return body
+    if mask_path:
+        print("Body: mask-broadcast box (fallback)...")
+        return build_body_mesh_from_mask(mask_path, mesh)
+    return None
+
+
+def main(vtk_path, mask_path=None, out_path=None, down=1.5, body_mode="auto"):
     if out_path is None:
         out_path = "images/q_iso.png"
     print(f"Loading {vtk_path}...")
@@ -116,101 +153,90 @@ def main(vtk_path, mask_path=None, out_path=None, q_frac=0.99, down=1.3):
 
     print("Computing gradient + Q criterion...")
     mesh = mesh.compute_derivative(scalars="velocity", qcriterion="qcrit",
-                                    gradient=False)
-    qmin, qmax = mesh.point_data["qcrit"].min(), mesh.point_data["qcrit"].max()
-    print(f"  Q ∈ [{qmin:.3e}, {qmax:.3e}]")
+                                   gradient=False)
+    q = mesh.point_data["qcrit"]
+    qmax = float(q.max())
+    mesh.point_data["umag"] = np.linalg.norm(mesh.point_data["velocity"], axis=1)
+    U = float(np.median(mesh.point_data["umag"]))          # ~ freestream LU speed
+    print(f"  Q in [{q.min():.3e}, {qmax:.3e}], U_inf~={U:.4f} LU")
 
-    # Floor the auto threshold at a fraction of Q_max so we get tight vortex
-    # cores, not a fat low-Q envelope that swallows the aircraft.
-    q_thresh = max(auto_q_threshold(mesh.point_data["qcrit"], q_frac),
-                   0.04 * float(qmax))
-    print(f"  Q_thresh = {q_thresh:.3e}  (Q_max={qmax:.3e})")
+    body = resolve_body(vtk_path, mask_path, mesh)
+    if body is None or body.n_points == 0:
+        print("ERROR: no body geometry resolved."); return
 
-    # Add velocity magnitude for coloring
-    vel = mesh.point_data["velocity"]
-    mesh.point_data["umag"] = np.linalg.norm(vel, axis=1)
+    bb = body.bounds
+    L = bb[1] - bb[0]                                       # body length (~1 chord)
+    focus = [bb[0] - 0.15 * L, bb[1] + down * L,            # x: nose margin + wake
+             bb[2] - 0.40 * L, bb[3] + 0.40 * L,            # y: tip-vortex spread
+             bb[4] - 0.50 * L, bb[5] + 0.50 * L]            # z: fin/keel wake
 
-    print("Extracting Q isosurface...")
-    iso = mesh.contour(isosurfaces=[q_thresh], scalars="qcrit")
-    print(f"  isosurface points = {iso.n_points}, cells = {iso.n_cells}")
+    # ---- body coloring: real Cp if a density field exists, else grey sheen ----
+    rho_vtk = find_density_vtk(vtk_path)
+    use_cp = (body_mode == "cp") or (body_mode == "auto" and rho_vtk is not None)
+    body_scalar = None
+    if use_cp and rho_vtk is not None:
+        print(f"Body Cp from density field {rho_vtk}")
+        rho = load_vtk_grid(rho_vtk)
+        # p = cs^2 rho, p_inf = cs^2 (rho_inf=1) -> Cp = (rho-1)/(1.5 U^2).
+        rho.point_data["Cp"] = (rho.point_data["density"] - 1.0) / (1.5 * U * U)
+        body = body.sample(rho)
+        body_scalar = "Cp"
+    elif body_mode == "proxy":
+        print("Body Cp = 1-(|u|/U)^2 Bernoulli proxy (inviscid; blocky near wall)")
+        body = body.sample(mesh)
+        body.point_data["Cp"] = 1.0 - (body.point_data["umag"] / U) ** 2
+        body_scalar = "Cp"
 
-    # Color iso by velocity magnitude (sample velocity onto iso surface)
-    iso_pts = iso.points
-    iso = iso.sample(mesh)  # interpolate all scalars from mesh
-
-    # Body: prefer the real transformed STL (read transform from run.log);
-    # fall back to the crude mask-broadcast box only if that fails.
-    body = None
-    out_dir = os.path.dirname(os.path.abspath(vtk_path))
-    rl = parse_run_log(out_dir)
-    if rl is not None:
-        stl_path, scale, t = rl
-        # run.log records an absolute path from the machine it ran on; if that
-        # doesn't exist here, resolve to this repo's test_data/<basename>.
-        if not os.path.exists(stl_path):
-            repo = os.path.dirname(out_dir)
-            cand = os.path.join(repo, "test_data", os.path.basename(stl_path))
-            if os.path.exists(cand):
-                stl_path = cand
-        print(f"Loading real STL body: {stl_path} (scale {scale}, translate {t})")
-        body = load_stl_body(stl_path, scale, t)
-        if body is not None:
-            print(f"  STL body points = {body.n_points}")
-    if body is None and mask_path:
-        print("Building body surface from mask (fallback)...")
-        body = build_body_mesh_from_mask(mask_path, mesh)
-        if body is not None:
-            print(f"  body points = {body.n_points}")
-
-    # Focus box: tight on the aircraft + near wake so the empty far field is
-    # cropped out. Margins are in body-length (L) units; downstream gets more
-    # so the forming tip/wake vortices stay in frame.
-    if body is not None and body.n_points > 0:
-        bb = body.bounds
-        L = bb[1] - bb[0]                       # body length (~1 chord)
-        focus = [bb[0] - 0.10 * L, bb[1] + down * L,
-                 bb[2] - 0.12 * L, bb[3] + 0.12 * L,
-                 bb[4] - 0.30 * L, bb[5] + 0.30 * L]
-    else:
-        focus = list(mesh.bounds)
-
-    # Clip the vortex isosurface to the focus box (keep cells fully inside).
-    if iso.n_points > 0:
-        p = iso.points
-        keep = ((p[:, 0] >= focus[0]) & (p[:, 0] <= focus[1]) &
-                (p[:, 1] >= focus[2]) & (p[:, 1] <= focus[3]) &
-                (p[:, 2] >= focus[4]) & (p[:, 2] <= focus[5]))
-        if keep.any():
-            iso = iso.extract_points(keep, adjacent_cells=False)
-
+    # ---- render ----
     print("Rendering...")
     pv.set_plot_theme("document")
     pl = pv.Plotter(off_screen=True, window_size=(1600, 1000))
-
-    if iso.n_points > 0:
-        pl.add_mesh(iso, scalars="umag", cmap="turbo",
-                    clim=[0.0, max(0.05, float(iso.point_data["umag"].max()))],
-                    show_scalar_bar=True,
-                    scalar_bar_args={"title": "|u| (LU)", "n_labels": 4})
-    else:
-        print("WARN: no Q-isosurface points in focus box.")
-
-    if body is not None and body.n_points > 0:
-        pl.add_mesh(body, color="#888c94", opacity=1.0,
-                    specular=0.3, smooth_shading=True, show_scalar_bar=False)
-
-    # Front-3/4 view (from upstream -x, one side -y, above +z), fitted tightly
-    # to the focus box via reset_camera(bounds=...) then cropped with zoom.
-    fc = np.array([0.5 * (focus[0] + focus[1]),
-                   0.5 * (focus[2] + focus[3]),
-                   0.5 * (focus[4] + focus[5])])
-    off = np.array([-1.3, -1.6, 0.95])          # view direction (magnitude irrelevant)
-    pl.camera_position = [tuple(fc + off), tuple(fc), (0, 0, 1)]
-    pl.reset_camera()                            # fit all actors (body + clipped vortices)
-    pl.camera.zoom(1.5)
-
-    pl.add_axes()
+    try:
+        pl.enable_depth_peeling(10)                        # correct nested transparency
+    except Exception:
+        pass
     pl.background_color = "white"
+
+    # Nested translucent Q shells, soft green, colored by |u| (tight clim so the
+    # small velocity deficit in the cores actually shows). Faint outer -> bright core.
+    clim = [0.55 * U, 1.12 * U]
+    n_drawn = 0
+    for lev, op in [(0.04 * qmax, 0.25), (0.10 * qmax, 0.42), (0.22 * qmax, 0.68)]:
+        iso = mesh.contour(isosurfaces=[lev], scalars="qcrit")
+        if iso.n_points == 0:
+            continue
+        iso = iso.clip_box(focus, invert=False)
+        if iso.n_points == 0:
+            continue
+        iso = iso.sample(mesh)
+        last = (lev >= 0.22 * qmax)
+        pl.add_mesh(iso, scalars="umag", cmap="YlGn_r", clim=clim, opacity=op,
+                    smooth_shading=True, specular=0.1, show_scalar_bar=last,
+                    scalar_bar_args={"title": "|u| (LU)", "n_labels": 4})
+        n_drawn += 1
+    if n_drawn == 0:
+        print("WARN: no Q-isosurface in focus box (flow may be steady/attached).")
+
+    # Body: bright sheened surface (grey hero look, or Cp if available).
+    if body_scalar:
+        pl.add_mesh(body, scalars=body_scalar, cmap="coolwarm", clim=[-1.0, 1.0],
+                    smooth_shading=True, specular=0.5, specular_power=15,
+                    scalar_bar_args={"title": "Cp", "n_labels": 5})
+    else:
+        pl.add_mesh(body, color="#d9d2c5", smooth_shading=True, specular=0.55,
+                    specular_power=18, ambient=0.25, diffuse=0.7,
+                    show_scalar_bar=False)
+
+    # Camera: nose upstream-LEFT, wake trailing RIGHT, 3/4 from above-side.
+    # (camera on -y side + above +z => downstream +x projects to screen-right.)
+    # Focus on the FOCUS-BOX center so framing adapts to `down` (small down ->
+    # centered on body for steady baselines; large down -> includes the wake).
+    fc = np.array([0.5 * (focus[0] + focus[1]), 0.5 * (focus[2] + focus[3]),
+                   0.5 * (focus[4] + focus[5])])
+    span = max(focus[1] - focus[0], focus[3] - focus[2], focus[5] - focus[4])
+    off = (span / np.sqrt(0.36 + 0.64 + 0.16)) * np.array([-0.6, -0.8, 0.4])
+    pl.camera_position = [tuple(fc + off), tuple(fc), (0, 0, 1)]
+    pl.camera.zoom(1.35)                                   # crop residual margin
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     pl.screenshot(out_path, transparent_background=False)
@@ -225,5 +251,6 @@ if __name__ == "__main__":
     vtk = sys.argv[1]
     mask = sys.argv[2] if len(sys.argv) > 2 else None
     out  = sys.argv[3] if len(sys.argv) > 3 else None
-    down = float(sys.argv[4]) if len(sys.argv) > 4 else 1.3  # wake length (chords)
-    main(vtk, mask, out, down=down)
+    down = float(sys.argv[4]) if len(sys.argv) > 4 else 1.5  # wake length (chords)
+    mode = sys.argv[5] if len(sys.argv) > 5 else "auto"      # auto|cp|proxy|grey
+    main(vtk, mask, out, down=down, body_mode=mode)

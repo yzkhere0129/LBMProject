@@ -1587,6 +1587,12 @@ int main(int argc, char** argv) {
                 args.output_dir + buf,
                 h_ux.data(), h_uy.data(), h_uz.data(),
                 nx, ny, nz, dx, dx, dx, "velocity");
+            // Full-3D density for surface Cp coloring: p = cs^2 rho, so
+            // Cp = (rho - 1) / (1.5 u_max_lu^2) since cs^2=1/3 and rho_inf=1.
+            std::snprintf(buf, sizeof(buf), "/rho3d_%07d", step + 1);
+            io::VTKWriter::writeStructuredPoints(
+                args.output_dir + buf,
+                h_rho.data(), nx, ny, nz, dx, dx, dx, "density");
             // Dump rho z-mid slice as ASCII for pressure analysis
             std::snprintf(buf, sizeof(buf), "/rho_zmid_%07d.txt", step + 1);
             std::ofstream rf(args.output_dir + buf);
